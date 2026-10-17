@@ -52,7 +52,7 @@ built the same way.
   repository), or is pinned to one release; tags are taken as they are,
   without assuming a versioning scheme
 - Proposed commit message names the release (and the one before), its page
-  and the asset
+  and the asset, and includes the release notes, shortened
 - `status` works offline for local changes; only the check for new releases
   asks GitHub
 - Files must stay exact copies of the asset: local modifications are
@@ -117,6 +117,11 @@ Update bin/tool to acme/tool v1.1 (was v1.0)
 Release: https://github.com/acme/tool/releases/tag/v1.1
 Title:   Tool 1.1
 Asset:   tool-1.1-linux-x64
+
+Release notes:
+  ## What's Changed
+  * Fix crash on empty input
+  * Faster startup
 ```
 
 Each commit contains the file and its updated entry in `.git-assetsync`.

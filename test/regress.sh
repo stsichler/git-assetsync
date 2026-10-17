@@ -146,9 +146,10 @@ asset() { printf '%s\n' "$2" > "$F/$1"; }
 # files as assets in the fake GitHub. DAY: the day in October 2026 it is
 # published (at noon; or DAYThh:mm:ssZ). Options: --pre (prerelease),
 # --draft, --latest (marked as latest), --nodigest (no digest in the API),
-# --baddigest (a wrong one), --title TITLE, --host HOST (default github.com)
+# --baddigest (a wrong one), --title TITLE, --notes FILE (its description),
+# --host HOST (default github.com)
 release() {
-  local pre=false draft=false latest=false nodigest=false baddigest=false title= host=github.com
+  local pre=false draft=false latest=false nodigest=false baddigest=false title= notes= host=github.com
   while :; do
     case $1 in
       --pre) pre=true; shift ;;
@@ -157,6 +158,7 @@ release() {
       --nodigest) nodigest=true; shift ;;
       --baddigest) baddigest=true; shift ;;
       --title) title=$2; shift 2 ;;
+      --notes) notes=$2; shift 2 ;;
       --host) host=$2; shift 2 ;;
       *) break ;;
     esac
@@ -170,6 +172,7 @@ release() {
   mkdir -p "$base/$n/assets"
   printf '{"tag_name": "%s", "name": "%s", "published_at": "%s", "prerelease": %s, "draft": %s, "latest": %s, "nodigest": %s, "baddigest": %s}\n' \
     "$tag" "${title:-$tag}" "$date" $pre $draft $latest $nodigest $baddigest > "$base/$n/release.json"
+  [ -n "$notes" ] && cp "$notes" "$base/$n/notes.md"
   local f
   for f; do cp "$f" "$base/$n/assets/"; done
 }
@@ -255,6 +258,41 @@ N=$(git rev-list --count HEAD)
 quiet git assetsync pull --all --no-edit
 check "pull --all: both updated" "$(cat bin/tool.bin other.bin | oneline)" "tool 1.3 tool 1.3 "
 check "pull --all: a commit per file" "$(($(git rev-list --count HEAD) - N))" "2"
+
+# release notes, shortened, in the message of an update
+cd "$T"
+asset rn.txt "rn 1"
+printf 'First release\n' > "$F/notes1.md"
+release --notes "$F/notes1.md" acme/rn v1 10 "$F/rn.txt"
+new_repo r1b
+addc rn.txt acme/rn
+check "add: no release notes" "$(git log -1 --format=%B | grep -c 'First release')" "0"
+asset rn.txt "rn 2"
+printf '<!-- template\r\ncomment -->\r\n## What'"'"'s Changed\r\n\r\n\r\n* Fix A by @x\r\n* Fix B\r\n\r\n' > "$F/notes2.md"
+release --notes "$F/notes2.md" acme/rn v2 11 "$F/rn.txt"
+git assetsync pull rn.txt >/dev/null 2>&1        # with the editor: comment lines stripped
+check "pull: release notes, indented, comments and blank lines dropped" \
+  "$(git log -1 --format=%B | sed -n '/^Release notes:$/,$p')" \
+  "$(printf 'Release notes:\n  ## What'"'"'s Changed\n\n  * Fix A by @x\n  * Fix B')"
+asset rn.txt "rn 3"
+i=1; : > "$F/notes3.md"
+while [ $i -le 25 ]; do echo "- change $i" >> "$F/notes3.md"; i=$((i + 1)); done
+"$PYTHON" -c 'print("x" * 300)' >> "$F/notes3.md"
+release --notes "$F/notes3.md" acme/rn v3 12 "$F/rn.txt"
+pullc rn.txt
+check "long notes: 20 lines and a hint" "$(git log -1 --format=%B | grep -v '^$' | tail -2 | oneline)" \
+  "  - change 20   [... see the release page for more] "
+check "long notes: 20 lines" "$(git log -1 --format=%B | grep -c '^  - change')" "20"
+asset rn.txt "rn 4"
+"$PYTHON" -c 'print("y" * 300)' > "$F/notes4.md"
+release --notes "$F/notes4.md" acme/rn v4 13 "$F/rn.txt"
+pullc rn.txt
+check "long line: cut" "$(git log -1 --format=%B | grep -v '^$' | tail -1 | wc -c | tr -d ' ')" "203"
+check "long line: marked" "$(git log -1 --format=%B | grep -v '^$' | tail -1 | grep -c '^  y*\[\.\.\.\]$')" "1"
+asset rn.txt "rn 5"
+release acme/rn v5 14 "$F/rn.txt"
+pullc rn.txt
+check "no notes: no section" "$(git log -1 --format=%B | grep -c 'Release notes')" "0"
 
 
 # =============================================================================

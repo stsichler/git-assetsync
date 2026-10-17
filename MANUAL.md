@@ -339,6 +339,13 @@ Update bin/tool to acme/tool v1.1 (was v1.0)
 Release: https://github.com/acme/tool/releases/tag/v1.1
 Title:   Tool 1.1
 Asset:   tool-1.1-linux-x64
+
+Release notes:
+  ## What's Changed
+  * Fix crash on empty input by @someone in https://github.com/acme/tool/pull/42
+  * Faster startup
+
+  **Full Changelog**: https://github.com/acme/tool/compare/v1.0...v1.1
 ```
 
 The subject names the file, the source and the release – `Add …` for a new
@@ -346,7 +353,17 @@ file, `Update … to … (was …)` for another release, `Update … (asset
 replaced)` when the asset of the same release changed, `Restore …` when
 `pull --force` brought back the asset after local modifications. The body
 links the release page and names its title (if it differs from the tag)
-and the asset. Release notes are not included.
+and the asset.
+
+When the file is updated to another release, its **release notes** (the
+description on the release page) follow, shortened, so the log tells what
+changed without following the link: at most 20 lines of at most 200
+characters (cut lines end in `[...]`, a cut text with a hint at the
+release page), HTML comments (left over from templates) and repeated blank
+lines dropped. They are indented by two spaces – otherwise `git commit`
+would take Markdown headings like `## What's Changed` for comment lines and
+remove them when the editor opens. Only the notes of the new release are
+included, not those of releases in between.
 
 `add` and `pull --no-commit` stage only and put the proposal into
 `.git/SQUASH_MSG`, which a plain `git commit` offers (as do IDEs like VS

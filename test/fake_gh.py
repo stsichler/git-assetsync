@@ -8,6 +8,7 @@ Fixture layout (written by the 'release' helper in regress.sh):
 
     <dir>/<host>/<owner>/<repo>/<n>/release.json   one directory per release
     <dir>/<host>/<owner>/<repo>/<n>/assets/<name>  its assets
+    <dir>/<host>/<owner>/<repo>/<n>/notes.md       optional: its description
 
 release.json: {"tag_name", "name", "published_at", "prerelease", "draft",
 "latest" (marked as latest), "nodigest" (no digest in the answer),
@@ -57,6 +58,9 @@ def releases(host, repo):
             elif not meta.get("nodigest"):
                 a["digest"] = "sha256:" + hashlib.sha256(data).hexdigest()
             assets.append((a, f))
+        notes = d / "notes.md"
+        if notes.is_file():
+            meta["body"] = notes.read_bytes().decode("utf-8")
         result.append((meta, assets))
     return result
 
@@ -68,6 +72,7 @@ def answer(host, repo, meta, assets):
             "created_at": meta["published_at"],
             "published_at": None if draft else meta["published_at"],
             "html_url": f"https://{host}/{repo}/releases/tag/{meta['tag_name']}",
+            "body": meta.get("body"),
             "assets": [a for a, _ in assets]}
 
 

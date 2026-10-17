@@ -48,8 +48,9 @@ command.
         --no-fetch              don't ask the platform for new releases
 
     pull PATH... | --all        update the files to the selected release and
-                                commit with a message naming it; refused if
-                                a file is modified (committed or not)
+                                commit with a message naming it (with its
+                                release notes, shortened); refused if a file
+                                is modified (committed or not)
         --all                   all files with something to pull
         --force                 discard local modifications
         --no-edit               commit without opening the editor
@@ -127,6 +128,8 @@ REGISTRY_HEADER = ("# git-assetsync: files of this repository that are taken fro
                    "# synced/digest/blob record the asset each file comes from.\n")
 # add warns about binary files at least this big that are not stored in LFS
 LFS_HINT_SIZE = 1 << 20
+# release notes in a commit message: at most this many lines of this length
+NOTES_LINES, NOTES_WIDTH = 20, 200
 
 
 class FsError(Exception):
@@ -290,6 +293,7 @@ class Release:
     prerelease: bool = False
     draft: bool = False
     assets: list = field(default_factory=list)
+    notes: str = ""           # description / changelog (Markdown)
 
 
 class NotFound(FsError):
@@ -346,7 +350,7 @@ class GitHub:
         return Release(d.get("tag_name", ""), d.get("name") or "",
                        d.get("published_at") or d.get("created_at") or "",
                        d.get("html_url", ""), bool(d.get("prerelease")),
-                       bool(d.get("draft")), assets)
+                       bool(d.get("draft")), assets, d.get("body") or "")
 
     def latest(self):
         """The release GitHub calls latest: marked so, or the newest that is
@@ -1099,6 +1103,30 @@ def release_lines(release, asset):
     return lines + [f"Asset:   {asset.name}"]
 
 
+def notes_lines(notes):
+    """Release notes shortened for a commit message: HTML comments (left
+    over from templates) and repeated blank lines dropped, at most
+    NOTES_LINES lines of NOTES_WIDTH characters. Indented, so that lines
+    like Markdown headings ('## Changes') don't look like comments to `git
+    commit`, which would strip them when the editor opens."""
+    text = notes.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    lines = []
+    for line in text.split("\n"):
+        line = line.rstrip()
+        if line or (lines and lines[-1]):
+            lines.append(line if len(line) <= NOTES_WIDTH else line[:NOTES_WIDTH - 5] + "[...]")
+    while lines and not lines[-1]:
+        lines.pop()
+    more = len(lines) > NOTES_LINES
+    lines = lines[:NOTES_LINES]
+    while lines and not lines[-1]:
+        lines.pop()
+    if more:
+        lines.append("[... see the release page for more]")
+    return [f"  {line}" if line else "" for line in lines]
+
+
 def build_message(entry, release, asset, discarded):
     """Commit message for pull: what the file is updated to (or restored)."""
     rel, name, tag, old = entry.rel, entry.name, release.tag, entry.synced
@@ -1111,6 +1139,9 @@ def build_message(entry, release, asset, discarded):
     else:
         subject = f"Restore {rel} from {name} {tag}"
     lines = [subject, ""] + release_lines(release, asset)
+    notes = notes_lines(release.notes) if old and tag != old else []
+    if notes:
+        lines += ["", "Release notes:"] + notes
     if discarded:
         lines += ["", "Local modifications of this repository were discarded."]
     return "\n".join(lines) + "\n"
