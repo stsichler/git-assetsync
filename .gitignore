@@ -1,0 +1,11 @@
+# Personal notes for Claude Code and the developer - never commit
+CLAUDE.local.md
+/dev-notes/
+
+# Python / editors / OS
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
