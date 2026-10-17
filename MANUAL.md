@@ -15,7 +15,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Proposed commit messages](#proposed-commit-messages)
-  - [GitHub access](#github-access) · [Integrity](#integrity)
+  - [GitHub and GitLab access](#github-and-gitlab-access) · [Integrity](#integrity)
   - [Git LFS](#git-lfs) · [Line endings](#line-endings) · [Offline operation](#offline-operation)
   - [Colors](#colors) · [CI](#ci) · [Exit codes](#exit-codes) · [Windows](#windows)
   - [Shipping git-assetsync with your repository](#shipping-git-assetsync-with-your-repository)
@@ -24,8 +24,9 @@ git-assetsync. For motivation and installation see the [README](README.md).
 
 ### Sources, releases and assets
 
-A **source** is a project that publishes releases – for now a repository on
-GitHub (or GitHub Enterprise). A **release** is identified by its **tag**
+A **source** is a project that publishes releases: a repository on GitHub
+(also GitHub Enterprise) or a project on GitLab (gitlab.com or
+self-managed), alike. A **release** is identified by its **tag**
 (e.g. `v1.3.1` or `tool-20261016`); its title is only shown. Each release
 has **assets**: the files attached to it.
 
@@ -75,9 +76,10 @@ Git-config format:
   `url` is its web address. Without `release`, the source follows the
   latest release; `release` is a tag (the source is pinned to that
   release) or a pattern with `*`, `?` or `[…]` (the newest release whose
-  tag matches). `prerelease = true` lets prereleases count. `type =
-  github` names the platform for hosts other than github.com (GitHub
-  Enterprise); for github.com it is not needed. `add` names new sources
+  tag matches). `prerelease = true` lets prereleases count. `type`
+  (`github` or `gitlab`) names the platform; it is only needed for hosts
+  other than github.com, gitlab.com and those whose name starts with
+  `gitlab` (like `gitlab.example.com`). `add` names new sources
   `owner/repo` after the URL, with a number appended if that name is
   taken (`acme/tool-2`: same project, other release selection).
 - **`[file "PATH"]`** – a file of the repository (path relative to the
@@ -182,7 +184,7 @@ shown as usual. The hints in parentheses follow `advice.statusHints`.
 | `-v`, `--verbose` | also list all files with asset, source, release selection and synced release |
 | `--exit-code` | exit with 1 if something is to pull or a file is modified |
 | `--hook` | terse output on stderr, for hooks (see [`install-hooks`](#install-hooks-uninstall-hooks)) |
-| `--no-fetch` | don't ask GitHub for new releases: only local modifications are shown, see [Offline operation](#offline-operation) |
+| `--no-fetch` | don't ask GitHub or GitLab for new releases: only local modifications are shown, see [Offline operation](#offline-operation) |
 
 Like `git status`, it exits with 0 unless `--exit-code` is given; errors
 exit with 2.
@@ -224,7 +226,7 @@ how to commit them with the proposed message; the exit code is then 1.
 ### `add`
 
 ```
-git assetsync add PATH SOURCE [--asset PATTERN] [--release TAG|PATTERN] [--prerelease] [--type github] [--force] [-n]
+git assetsync add PATH SOURCE [--asset PATTERN] [--release TAG|PATTERN] [--prerelease] [--type github|gitlab] [--force] [-n]
 ```
 
 The arguments are in the same order as for `git filesync add`. Takes the
@@ -237,8 +239,9 @@ takes it as it is).
   directory. Its name doesn't have to be the asset's, and stays the same
   when later assets are named differently.
 - **`SOURCE`** is the name of a `[source]` in `.git-assetsync`, or a URL
-  (`https://github.com/owner/repo`); `owner/repo` is short for a
-  repository on github.com. A URL takes the source with that URL and the
+  (`https://github.com/owner/repo`, `https://gitlab.com/group/project`,
+  also with subgroups; the URL of any page of the project works as well);
+  `owner/repo` is short for a repository on github.com. A URL takes the source with that URL and the
   same release selection, or creates one. A source name takes that source
   with its release selection – unless `--release`/`--prerelease` ask for
   another one, then its URL with that selection.
@@ -256,7 +259,7 @@ takes it as it is).
 | `--asset PATTERN` | the asset to take (glob, must match exactly one; default: the release's only asset) |
 | `--release TAG\|PATTERN` | release to take: a tag pins the source to that release, a pattern takes the newest release whose tag matches (default: the latest release) |
 | `--prerelease` | prereleases count too (with a pattern, or instead of the latest release) |
-| `--type github` | platform of the URL's host; needed for GitHub Enterprise |
+| `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
 | `--force` | replace an existing entry for `PATH`, or overwrite an existing file that differs from the asset |
 | `-n`, `--dry-run` | only show which release and asset would be taken; nothing is downloaded |
 
@@ -291,7 +294,7 @@ an existing directory.
 - `pre-push`: `git assetsync status --hook` – reminds of new releases and
   local modifications before pushing
 - `post-merge`: `git assetsync status --hook --no-fetch` – reminds of local
-  modifications after `git pull`/`git merge`, without asking GitHub
+  modifications after `git pull`/`git merge`, without asking GitHub or GitLab
 
 Existing hooks are not changed; `install-hooks` prints the lines to add
 instead. `uninstall-hooks` removes the hooks, or only its lines from hooks
@@ -307,13 +310,13 @@ its files take:
 
 | `release` | Release taken |
 |---|---|
-| (none) | the **latest** release, as GitHub defines it: the one marked as latest, otherwise the newest that is neither a prerelease nor a draft |
+| (none) | the **latest** release, as the platform defines it – GitHub: the one marked as latest, otherwise the newest that is neither a prerelease nor a draft; GitLab: the newest by release date |
 | a tag, e.g. `v1.0` | exactly that release (**pinned**); also if it is a prerelease |
 | a pattern, e.g. `tool-*` | the **newest release by publication date** whose tag matches |
 
 Tags are taken as opaque strings: there is no versioning scheme, and they
-are never compared or sorted by name. "Newest" always means the date
-GitHub reports – so a pattern works for tags like `v1.2.3`, date tags like
+are never compared or sorted by name. "Newest" always means the date the
+platform reports (GitLab: the release date) – so a pattern works for tags like `v1.2.3`, date tags like
 `tool-20261016`, and repositories that release several tools under
 different tag prefixes. A pattern without wildcard characters is an exact
 tag. There is no reserved value like `latest`: a tag could be called that.
@@ -372,22 +375,42 @@ file after the commit. If `.git/SQUASH_MSG` is in use by git itself (after
 `git merge --squash`), it is left alone, and the command prints a
 `git commit -F` command with a message file instead.
 
-### GitHub access
+### GitHub and GitLab access
 
-git-assetsync asks GitHub through the [GitHub CLI](https://cli.github.com):
-`gh api`, used only as an authenticated HTTP client, so it works with
-whatever `gh` is logged in to – `gh auth login`, or a token in `GH_TOKEN`
-(e.g. in CI). Private repositories need read access. For GitHub Enterprise,
-log in to the host with `gh auth login --hostname HOST` and give the
-source's `type` (`add --type github`).
+git-assetsync asks the platforms through their command-line tools, used
+only as authenticated HTTP clients: `gh api` for GitHub
+([GitHub CLI](https://cli.github.com)), `glab api` for GitLab
+([GitLab CLI](https://gitlab.com/gitlab-org/cli)). So it works with
+whatever they are logged in to – `gh auth login` / `glab auth login`, or a
+token in `GH_TOKEN` / `GITLAB_TOKEN` (e.g. in CI); for public GitLab
+projects `glab` works without login, too. Private projects need read
+access. For GitHub Enterprise or a self-managed GitLab, log in to the
+host (`gh auth login --hostname HOST`, `glab auth login --hostname HOST`).
+The host is always passed on, so `GH_HOST` or the repository you run in
+doesn't redirect the requests. Only the tool for the platforms you use is
+needed.
 
-`status` asks once per source (`releases/latest` or the release of the
-tag); a pattern lists all releases (100 per request). Downloads use the
-asset's API URL.
+`status` asks once per source (the latest release, or the release of the
+tag); a pattern lists all releases (100 per request).
 
-`ASSETSYNC_GH` sets another command instead of `gh`, split like a shell
-would (e.g. `ASSETSYNC_GH="/opt/gh/bin/gh"`; on Windows use forward
-slashes). The tests use it to play GitHub without network.
+Downloads: on GitHub through the asset's API URL. On GitLab, the assets of
+a release are its **links** (the release's automatically generated source
+archives are not assets). A link to an API URL on the project's host – as
+for files in the generic package registry, the usual way to attach build
+results – is downloaded through `glab api`, with your login; so are links
+to job artifacts (`…/-/jobs/ID/artifacts/raw/…`) and project uploads
+(`…/uploads/…`) on that host, via their API counterparts. Links to other
+servers are downloaded plainly, without login – they have to be public
+(`http://` links work, with a warning).
+
+On GitLab, releases with a release date in the future ("upcoming
+releases") count as prereleases: they are skipped unless the source has
+`prerelease = true`. There are no drafts there.
+
+`ASSETSYNC_GH` / `ASSETSYNC_GLAB` set other commands instead of `gh` /
+`glab`, split like a shell would (e.g. `ASSETSYNC_GH="/opt/gh/bin/gh"`; on
+Windows use forward slashes). The tests use them to play GitHub and GitLab
+without network.
 
 ### Integrity
 
@@ -397,6 +420,9 @@ For older assets, the digest is computed from the download; their size is
 checked. Either way the digest is recorded in the entry, and a later
 change of the asset in the same release (a re-upload with other content)
 shows up as pending – if GitHub reports digests for it.
+
+GitLab reports no digests: the digest is computed from the download, and
+a re-uploaded asset of the same release is not noticed.
 
 ### Git LFS
 
@@ -423,8 +449,9 @@ files count as modified. To keep an asset byte for byte, mark it `-text`
 
 `status` works without network for everything local: whether the committed
 and working tree files are still their assets is decided from the recorded
-`blob`. Only the check for new releases needs GitHub; `--no-fetch` skips
-it (`new releases not checked`). `add` and `pull` always need GitHub.
+`blob`. Only the check for new releases needs GitHub or GitLab;
+`--no-fetch` skips it (`new releases not checked`). `add` and `pull`
+always need them.
 
 ### Colors
 
@@ -460,7 +487,8 @@ jobs:
 
 `gh` is preinstalled on GitHub's runners; `GH_TOKEN` logs it in. For
 sources in other private repositories, use a token with read access to
-them.
+them. For GitLab sources, install `glab` in the job (and give
+`GITLAB_TOKEN` for private projects).
 
 ### Exit codes
 

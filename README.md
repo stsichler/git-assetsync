@@ -7,7 +7,8 @@
 
 **Keep files in your repository in sync with release assets of other
 projects.** Check in a binary, firmware image or generated file that another
-project publishes as a GitHub release asset, see when a new release is out,
+project publishes as a release asset on GitHub or GitLab, see when a new
+release is out,
 and update it with one command, in a commit that says where it came from.
 
 > git-assetsync is developed together with [Claude](https://claude.ai) by
@@ -25,8 +26,8 @@ $ git assetsync pull bin/tool.bin
 ```
 
 **Status: early development.** The first version covers single files from
-GitHub releases. Unpacking archives (all or some of their files),
-converting assets with filters (e.g. binary → C source) and GitLab are
+releases on GitHub and GitLab. Unpacking archives (all or some of their
+files) and converting assets with filters (e.g. binary → C source) are
 planned next.
 
 ## Why?
@@ -44,8 +45,8 @@ built the same way.
 
 ## Features
 
-- Takes a file from a release asset on GitHub (also GitHub Enterprise);
-  all files of a repository are listed in one file, `.git-assetsync`, at
+- Takes a file from a release asset on GitHub or GitLab, alike – also
+  GitHub Enterprise and self-managed GitLab, and private projects; all files of a repository are listed in one file, `.git-assetsync`, at
   its root (git-config format, like `.gitmodules`)
 - Follows the latest release, the newest release whose tag matches a
   pattern (e.g. `tool-*` for one of several tools released from one
@@ -54,10 +55,11 @@ built the same way.
 - Proposed commit message names the release (and the one before), its page
   and the asset, and includes the release notes, shortened
 - `status` works offline for local changes; only the check for new releases
-  asks GitHub
+  asks the platform
 - Files must stay exact copies of the asset: local modifications are
   reported, `pull` refuses them, `--force` restores the asset
-- Checks the download against the digest GitHub reports
+- Checks the download against the digest GitHub reports (GitLab reports
+  none)
 - Commands named like Git commands behave like them (`status`, `pull`,
   `mv`); dry runs for `pull`, `add`, `unlink`, `mv`
 - Git LFS and line-ending conversions: files are recorded as `git add`
@@ -67,9 +69,11 @@ built the same way.
 
 ## Installation
 
-Requirements: Python ≥ 3.8, Git ≥ 2.28, the [GitHub CLI](https://cli.github.com)
-`gh` (logged in with `gh auth login`, or a token in `GH_TOKEN`), and
-`git-lfs` for files stored in Git LFS. Linux, macOS and Windows (Git for
+Requirements: Python ≥ 3.8, Git ≥ 2.28; for GitHub sources the
+[GitHub CLI](https://cli.github.com) `gh`, for GitLab sources the
+[GitLab CLI](https://gitlab.com/gitlab-org/cli) `glab` (logged in with
+`gh auth login` / `glab auth login`, or a token in `GH_TOKEN` /
+`GITLAB_TOKEN`); `git-lfs` for files stored in Git LFS. Linux, macOS and Windows (Git for
 Windows).
 
 There is no release yet. Until then, take `git-assetsync.py` from `main`
@@ -141,7 +145,7 @@ release.
 
 `git assetsync <command> -h` lists the options of a command. The
 **[manual](MANUAL.md)** describes all commands and options in detail,
-along with the `.git-assetsync` file, release selection, GitHub access,
+along with the `.git-assetsync` file, release selection, GitHub and GitLab access,
 Git LFS, line endings and CI.
 
 ## Development
@@ -153,13 +157,15 @@ test/regress.sh            # Linux/macOS (bash); needs git, python3, git-lfs for
 ```
 
 The script builds throwaway repositories in a temp directory and plays
-GitHub with `test/fake_gh.py`, which answers `gh api` calls from fixture
-files – no network or GitHub account needed. It checks adding, status,
+GitHub and GitLab with `test/fake_gh.py` and `test/fake_glab.py`, which
+answer `gh api` / `glab api` calls from fixture files – no network or
+account needed. It checks adding, status,
 pull, release selection (latest, patterns, pinned, prereleases, drafts,
 paging), asset selection and digests, local modifications, the
 `.git-assetsync` file (sources, unlink, mv, commit consistency), commit
 proposals, offline status, line endings, Git LFS, unsafe registry entries,
-GitHub Enterprise, dry runs, hooks and colors. It runs on every push via
+GitHub Enterprise, GitLab (also self-managed, subgroups, the kinds of asset
+links), dry runs, hooks and colors. It runs on every push via
 GitHub Actions, on Linux (also with the oldest supported Python and Git),
 macOS and Windows.
 

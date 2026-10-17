@@ -9,8 +9,10 @@
 #
 # The script builds throwaway repositories in a temp directory ($T, removed
 # on exit) and runs git-assetsync against them. GitHub is played by
-# test/fake_gh.py (via ASSETSYNC_GH): it answers 'gh api' calls from a
-# fixture directory ($GH) that the 'release' helper fills - no network
+# test/fake_gh.py (via ASSETSYNC_GH), GitLab by test/fake_glab.py (via
+# ASSETSYNC_GLAB): they answer 'gh api' / 'glab api' calls from a fixture
+# directory ($GH) that the 'release' helper fills; asset links to other
+# servers are served by test/http_server.py on 127.0.0.1 - no network
 # needed. Each check prints "ok   <name>" or "FAIL <name>: got [...]
 # expected [...]"; the exit code is 1 if any check failed. The Git LFS
 # section is skipped when git-lfs is not installed.
@@ -33,6 +35,7 @@
 #   11. Hosts: GitHub Enterprise, unsupported platforms
 #   12. Dry runs
 #   13. Hooks and colors
+#   14. GitLab
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -43,15 +46,16 @@
 # directory above this test; the fake gh next to this test.
 S=${1:-$(dirname "$0")/../git-assetsync.py}
 S=$(cd "$(dirname "$S")" && pwd)/$(basename "$S")
-FAKE=$(cd "$(dirname "$0")" && pwd)/fake_gh.py
+TD=$(cd "$(dirname "$0")" && pwd)
 if command -v cygpath >/dev/null; then    # Git Bash: C:/... for Python
-  S=$(cygpath -m "$S"); FAKE=$(cygpath -m "$FAKE")
+  S=$(cygpath -m "$S"); TD=$(cygpath -m "$TD")
 fi
 
 # Scratch directory for all repositories; removed on exit. In Git Bash on
 # Windows as a Windows path (C:/...), which native git and Python understand.
 T=$(cd "$(mktemp -d)" && pwd -P)       # physical path (macOS: /var -> /private/var)
-trap 'rm -rf "$T"' EXIT
+HTTP_PID=
+trap '[ -n "$HTTP_PID" ] && kill $HTTP_PID 2>/dev/null; rm -rf "$T"' EXIT
 command -v cygpath >/dev/null && T=$(cygpath -m "$T")
 cd "$T" || exit 2
 
@@ -63,7 +67,14 @@ PYTHON=${PYTHON:-python3}
 export HOME=$T/home GH=$T/gh F=$T/files
 mkdir -p "$HOME" "$GH" "$F"
 export FAKE_GH_DIR=$GH
-export ASSETSYNC_GH="\"$PYTHON\" \"$FAKE\""
+export ASSETSYNC_GH="\"$PYTHON\" \"$TD/fake_gh.py\""
+export ASSETSYNC_GLAB="\"$PYTHON\" \"$TD/fake_glab.py\""
+# the "other server" for GitLab asset links: serves the fixture directory
+"$PYTHON" "$TD/http_server.py" "$GH" "$T/http.port" &
+HTTP_PID=$!
+i=0
+while [ ! -f "$T/http.port" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+export FAKE_HTTP=http://127.0.0.1:$(cat "$T/http.port")
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@x GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@x
 export GIT_EDITOR=true                 # accept commit messages unchanged
 export GIT_PAGER=cat                   # never start a pager
@@ -147,9 +158,10 @@ asset() { printf '%s\n' "$2" > "$F/$1"; }
 # published (at noon; or DAYThh:mm:ssZ). Options: --pre (prerelease),
 # --draft, --latest (marked as latest), --nodigest (no digest in the API),
 # --baddigest (a wrong one), --title TITLE, --notes FILE (its description),
-# --host HOST (default github.com)
+# --host HOST (default github.com), --links KIND (GitLab: how asset links
+# point to the files - api, job, upload or http, see fake_glab.py)
 release() {
-  local pre=false draft=false latest=false nodigest=false baddigest=false title= notes= host=github.com
+  local pre=false draft=false latest=false nodigest=false baddigest=false title= notes= host=github.com links=api
   while :; do
     case $1 in
       --pre) pre=true; shift ;;
@@ -160,6 +172,7 @@ release() {
       --title) title=$2; shift 2 ;;
       --notes) notes=$2; shift 2 ;;
       --host) host=$2; shift 2 ;;
+      --links) links=$2; shift 2 ;;
       *) break ;;
     esac
   done
@@ -170,8 +183,8 @@ release() {
   mkdir -p "$base"
   n=$(($(ls "$base" | lines) + 1))
   mkdir -p "$base/$n/assets"
-  printf '{"tag_name": "%s", "name": "%s", "published_at": "%s", "prerelease": %s, "draft": %s, "latest": %s, "nodigest": %s, "baddigest": %s}\n' \
-    "$tag" "${title:-$tag}" "$date" $pre $draft $latest $nodigest $baddigest > "$base/$n/release.json"
+  printf '{"tag_name": "%s", "name": "%s", "published_at": "%s", "prerelease": %s, "draft": %s, "latest": %s, "nodigest": %s, "baddigest": %s, "links": "%s"}\n' \
+    "$tag" "${title:-$tag}" "$date" $pre $draft $latest $nodigest $baddigest $links > "$base/$n/release.json"
   [ -n "$notes" ] && cp "$notes" "$base/$n/notes.md"
   local f
   for f; do cp "$f" "$base/$n/assets/"; done
@@ -769,15 +782,20 @@ asset e.txt enterprise
 release --host ghe.example.com acme/ent v1 10 "$F/e.txt"
 new_repo r11
 check "unknown host without type" "$(asd add e.txt https://ghe.example.com/acme/ent --asset e.txt 2>&1)" \
-  "error: https://ghe.example.com/acme/ent: platform of ghe.example.com unknown - give its type (add --type github, or 'type = github' in its [source])"
+  "error: https://ghe.example.com/acme/ent: platform of ghe.example.com unknown - give its type (add --type github|gitlab, or 'type = ...' in its [source])"
 reset_calls
 addc e.txt https://ghe.example.com/acme/ent --asset e.txt --type github
 check "GitHub Enterprise: fetched" "$(cat e.txt)" "enterprise"
 check "GitHub Enterprise: --hostname" "$(grep -c '^api --hostname ghe.example.com ' "$GH/calls.log")" "2"
 check "GitHub Enterprise: type recorded" "$(reg source.acme/ent.type)" "github"
 check "GitHub Enterprise: status" "$(st)" ""
-check "GitLab: not yet" "$(asd add x https://gitlab.com/group/proj --asset x 2>&1)" \
-  "error: https://gitlab.com/group/proj: GitLab is not supported yet"
+check "unknown type" "$(git config -f .git-assetsync source.acme/ent.type bitbucket; git assetsync status 2>&1 | head -1)" \
+  "error: e.txt: https://ghe.example.com/acme/ent: unknown type 'bitbucket' (supported: github, gitlab)"
+git checkout -q .git-assetsync
+# GH_HOST must not redirect requests for github.com (gh would follow it)
+reset_calls
+GH_HOST=ghe.example.com quiet asd add -n x.txt acme/tool
+check "github.com: --hostname always given" "$(grep -c '^api --hostname github.com ' "$GH/calls.log")" "1"
 
 
 # =============================================================================
@@ -821,6 +839,117 @@ printf '#!/bin/sh\necho mine\n' > .git/hooks/post-merge
 check "existing hook: not touched" "$(git assetsync install-hooks | grep -c 'post-merge: hook exists')" "1"
 check "colors: --color=always" "$(git assetsync status -s --color=always | grep -c "$(printf '\033')")" "1"
 check "colors: none in pipes" "$(git assetsync status -s | grep -c "$(printf '\033')")" "0"
+
+
+# =============================================================================
+section "14. GitLab"
+# =============================================================================
+cd "$T"
+asset gl.bin "gl 1"
+asset gl.txt "gl text 1"
+release --host gitlab.com --title "GL 1" grp/proj v1 10 "$F/gl.bin" "$F/gl.txt"
+
+new_repo r14
+reset_calls
+OUT=$(asd add gl.bin https://gitlab.com/grp/proj --asset 'gl.b*' 2>&1)
+check "GitLab: add" "$(cat gl.bin)" "gl 1"
+check "GitLab: source without type" "$(reg source.grp/proj.url) $(reg source.grp/proj.type)" "https://gitlab.com/grp/proj "
+check "GitLab: digest computed" "$(reg file.gl.bin.digest)" "sha256:$(sha "$F/gl.bin")"
+check "GitLab: glab with --hostname" "$(grep -c '^glab api --hostname gitlab.com ' "$GH/calls.log")" "2"
+check "GitLab: generic package downloaded via the API" \
+  "$(grep -c '^glab api --hostname gitlab.com projects/grp%2Fproj/packages/generic/pkg/v1/gl.bin$' "$GH/calls.log")" "1"
+git commit -q --no-edit
+check "GitLab: message" "$(msg)" \
+  "Add gl.bin from grp/proj v1 Release: https://gitlab.com/grp/proj/-/releases/v1 Title:   GL 1 Asset:   gl.bin "
+check "GitLab: clean" "$(st)" ""
+check "GitLab: URL of a page of the project" "$(rc asd add gl2.txt https://gitlab.com/grp/proj/-/releases --asset gl.txt)" "0"
+check "... same source" "$(reg file.gl2.txt.source)" "grp/proj"
+git reset -q --hard; rm -f gl2.txt
+check "GitLab: several assets need --asset" "$(asd add x.bin https://gitlab.com/grp/proj 2>&1)" \
+  "error: release v1 of grp/proj has 2 assets: gl.bin, gl.txt - choose one with --asset (or 'asset = PATTERN' in the entry)"
+
+# a new release: pending, pull with release notes
+asset gl.bin "gl 2"
+printf '## Changes\n* faster\n' > "$F/gl-notes.md"
+release --host gitlab.com --notes "$F/gl-notes.md" grp/proj v2 11 "$F/gl.bin"
+check "GitLab: pending" "$(st)" "P"
+pullc gl.bin
+check "GitLab: pulled" "$(cat gl.bin)" "gl 2"
+check "GitLab: message with notes" "$(msg)" \
+  "Update gl.bin to grp/proj v2 (was v1) Release: https://gitlab.com/grp/proj/-/releases/v2 Asset:   gl.bin Release notes:   ## Changes   * faster "
+
+# upcoming releases (released_at in the future) count as prereleases
+asset gl.bin "gl 3 upcoming"
+release --host gitlab.com --pre grp/proj v3 30 "$F/gl.bin"
+check "GitLab: upcoming release not latest" "$(st)" ""
+quiet asd add pre.bin https://gitlab.com/grp/proj --asset gl.bin --release 'v*' --prerelease
+check "GitLab: upcoming with --prerelease" "$(cat pre.bin)" "gl 3 upcoming"
+check "GitLab: pattern by date, without upcoming" \
+  "$(asd add -n x.bin https://gitlab.com/grp/proj --asset gl.bin --release 'v*' 2>&1)" \
+  "would add x.bin from grp/proj-3 v2 (gl.bin, newest release matching v*)"
+check "GitLab: exact tag" "$(asd add -n x.bin https://gitlab.com/grp/proj --asset gl.txt --release v1 2>&1)" \
+  "would add x.bin from grp/proj-3 v1 (gl.txt, release v1)"
+git reset -q --hard; rm -f pre.bin
+
+# subgroups; tags with '/'
+asset sub.txt sub
+release --host gitlab.com grp/sub/deep tools/v1 10 "$F/sub.txt"
+quiet asd add sub.txt https://gitlab.com/grp/sub/deep --release tools/v1
+check "GitLab: subgroup and tag with '/'" "$(cat sub.txt)" "sub"
+
+# asset links: job artifacts and uploads via the API, other servers plainly
+for kind in job upload http; do
+  asset "$kind.txt" "via $kind"
+  release --host gitlab.com --links $kind grp/$kind v1 10 "$F/$kind.txt"
+  reset_calls
+  OUT=$(asd add $kind.txt https://gitlab.com/grp/$kind 2>&1)
+  check "GitLab: $kind link" "$(cat $kind.txt 2>/dev/null)" "via $kind"
+  case $kind in
+    job) check "GitLab: job artifact via the API" \
+           "$(grep -c "^glab api --hostname gitlab.com projects/grp%2Fjob/jobs/1/artifacts/dist/job.txt$" "$GH/calls.log")" "1" ;;
+    upload) check "GitLab: upload via the API" \
+           "$(grep -c "^glab api --hostname gitlab.com projects/grp%2Fupload/uploads/0123456789abcdef0123456789abcdef/upload.txt$" "$GH/calls.log")" "1" ;;
+  esac
+done
+check "GitLab: http link: a warning" "$(echo "$OUT" | grep -c 'warning: http.txt of grp/http: downloading over unencrypted http')" "1"
+git commit -q --no-edit
+asset http.txt "via http 2"
+release --host gitlab.com --links broken grp/http v2 11 "$F/http.txt"
+check "GitLab: failed download" "$(git assetsync pull --no-edit http.txt 2>&1 | grep -c 'download of .*/nothing/http.txt failed: HTTP 404')" "1"
+check "... nothing changed" "$(cat http.txt; git status --porcelain)" "via http"
+
+# self-managed GitLab: by name, or with type
+asset sm.txt selfmanaged
+release --host gitlab.example.org grp/sm v1 10 "$F/sm.txt"
+release --host code.example.org grp/sm v1 10 "$F/sm.txt"
+quiet asd add sm1.txt https://gitlab.example.org/grp/sm
+check "self-managed GitLab, 'gitlab' in the host name" "$(cat sm1.txt)" "selfmanaged"
+check "self-managed GitLab, other name: needs type" "$(asd add sm2.txt https://code.example.org/grp/sm 2>&1)" \
+  "error: https://code.example.org/grp/sm: platform of code.example.org unknown - give its type (add --type github|gitlab, or 'type = ...' in its [source])"
+quiet asd add sm2.txt https://code.example.org/grp/sm --type gitlab
+check "... with --type gitlab" "$(cat sm2.txt) $(reg source.grp/sm-2.type)" "selfmanaged gitlab"
+
+# more than one page of releases
+i=1
+while [ $i -le 100 ]; do
+  mkdir -p "$GH/gitlab.com/grp/many/$i"
+  printf '{"tag_name": "r%s", "published_at": "2026-10-20T12:00:%02dZ"}\n' $i $((i % 60)) > "$GH/gitlab.com/grp/many/$i/release.json"
+  i=$((i + 1))
+done
+asset old.bin old
+release --host gitlab.com grp/many special-1 01 "$F/old.bin"
+reset_calls
+quiet asd add old.bin https://gitlab.com/grp/many --release 'special-*'
+check "GitLab: paging, match on page 2" "$(cat old.bin 2>/dev/null) $(calls)" "old 3"
+
+check "GitLab: unknown project" "$(asd add x.bin https://gitlab.com/grp/nothing 2>&1)" \
+  "error: project grp/nothing not found (or no access)"
+check "GitLab: no releases" "$(mkdir -p "$GH/gitlab.com/grp/empty"; asd add x.bin https://gitlab.com/grp/empty 2>&1)" \
+  "error: no release in grp/empty"
+check "GitLab: not a project URL" "$(asd add x.bin https://gitlab.com/grp 2>&1)" \
+  "error: 'https://gitlab.com/grp' is not a GitLab project URL (https://gitlab.com/group/project)"
+check "glab missing" "$(ASSETSYNC_GLAB=/nonexistent/glab asd add x.bin https://gitlab.com/grp/proj 2>&1 | sed 's/ (.*) / /')" \
+  "error: cannot run the GitLab CLI '/nonexistent/glab' - install it from https://gitlab.com/gitlab-org/cli and log in with 'glab auth login'"
 
 
 # =============================================================================

@@ -11,15 +11,17 @@ git-assetsync - keep files in sync with release assets of other projects.
 
 A repository lists its synced files in .git-assetsync at its root
 (git-config format, like .gitmodules), each taken from a release asset of
-a project on GitHub:
+a project on GitHub or GitLab:
 
     [source "owner/tool"]
         url = https://github.com/owner/tool
         release = tool-*       ; optional: the newest release (by date) whose
                                ; tag matches; an exact tag pins the source
                                ; to that release; without: the latest release
-        prerelease = true      ; optional: prereleases count too
-        type = github          ; optional: for hosts other than github.com
+        prerelease = true      ; optional: prereleases (GitLab: upcoming
+                               ; releases) count too
+        type = github          ; optional: github or gitlab, for hosts other
+                               ; than github.com, gitlab.com and gitlab.*
     [file "bin/tool.bin"]
         source = owner/tool
         asset = tool-*-linux.bin   ; optional: asset of the release (glob, must
@@ -72,8 +74,8 @@ command.
                                 newest one matching (default: the latest)
         --prerelease            prereleases count too (with a pattern, or
                                 instead of the latest)
-        --type github           platform of the URL's host (default: derived
-                                from it; needed for GitHub Enterprise)
+        --type github|gitlab    platform of the URL's host (default: derived
+                                from it: github.com, gitlab.com, gitlab.*)
         --force                 replace an existing entry or file
         -n, --dry-run           only show what would be done
 
@@ -93,10 +95,13 @@ Files stored in Git LFS and line-ending conversions are handled: a file
 is recorded as `git add` stores it. Output is colored like git's
 (color.assetsync / color.ui, --color, NO_COLOR).
 
-GitHub is accessed through the GitHub CLI: `gh api`, authenticated with
-`gh auth login` (or GH_TOKEN); ASSETSYNC_GH sets another command for it.
+GitHub is accessed through the GitHub CLI (`gh api`, logged in with `gh
+auth login` or GH_TOKEN), GitLab through the GitLab CLI (`glab api`,
+`glab auth login` or GITLAB_TOKEN); ASSETSYNC_GH / ASSETSYNC_GLAB set
+other commands for them.
 
-Requires Python >= 3.8, Git >= 2.28 and gh (git-lfs for LFS files).
+Requires Python >= 3.8, Git >= 2.28, and gh or glab (git-lfs for LFS
+files).
 Works on Linux, macOS and Windows.
 Manual: https://github.com/stsichler/git-assetsync/blob/main/MANUAL.md
 """
@@ -108,12 +113,15 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
-from urllib.parse import quote, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, unquote, urlparse
+from urllib.request import urlopen
 
 __version__ = "0.1.0.dev0"
 REGISTRY = ".git-assetsync"
@@ -282,6 +290,7 @@ class Asset:
     id: str
     size: int = None
     digest: str = None        # 'sha256:<hex>' if the platform reports it
+    url: str = None           # where to download it (GitLab: the link's URL)
 
 
 @dataclass
@@ -300,48 +309,110 @@ class NotFound(FsError):
     pass
 
 
-def gh_command():
-    """The GitHub CLI command: ASSETSYNC_GH (split like a shell would, e.g.
-    'python3 fake_gh.py' for tests) or 'gh'."""
-    cmd = os.environ.get("ASSETSYNC_GH", "").strip()
-    return shlex.split(cmd) if cmd else ["gh"]
+def cli_command(var, default):
+    """A platform CLI command: the environment variable var (split like a
+    shell would, e.g. 'python3 fake_gh.py' for tests) or default."""
+    cmd = os.environ.get(var, "").strip()
+    return shlex.split(cmd) if cmd else [default]
 
 
-class GitHub:
-    """Releases of a GitHub repository. `gh api` serves only as an
-    authenticated HTTP client (it handles login, GitHub Enterprise hosts and
-    SSO); the REST semantics are ours, so gh's own output formats don't
-    matter."""
+class Platform:
+    """Releases of a project on a hosting platform. The platform's CLI (`gh
+    api`, `glab api`) serves only as an authenticated HTTP client - it
+    handles login, self-hosted instances and SSO; the REST semantics are
+    ours, so the CLI's own output formats don't matter. Subclasses give the
+    API paths and turn the answers into Releases."""
 
     PER_PAGE = 100
+    CLI = CLI_VAR = CLI_NAME = CLI_URL = KIND = ""
 
-    def __init__(self, host, repo, label):
-        self.host, self.repo, self.label = host, repo, label
+    def __init__(self, host, project, label):
+        self.host, self.project, self.label = host, project, label
 
-    def api(self, path, accept=None, stdout=None):
-        """Raw response of a GET request; NotFound for HTTP 404."""
-        gh = gh_command()
-        args = ["api"] + (["--hostname", self.host] if self.host != "github.com" else []) + \
-            (["-H", f"Accept: {accept}"] if accept else []) + [path]
+    def api(self, path, headers=(), stdout=None):
+        """Raw response of a GET request; NotFound for HTTP 404. The host is
+        always given: the CLIs would otherwise take it from the environment
+        (GH_HOST) or from the repository they run in."""
+        cli = cli_command(self.CLI_VAR, self.CLI)
+        args = ["api", "--hostname", self.host]
+        for h in headers:
+            args += ["-H", h]
         try:
-            p = subprocess.run(gh + args, stdout=stdout or subprocess.PIPE,
+            p = subprocess.run(cli + args + [path], stdout=stdout or subprocess.PIPE,
                                stderr=subprocess.PIPE, env=clean_env())
         except OSError as e:
-            raise FsError(f"cannot run the GitHub CLI '{gh[0]}' ({e.strerror}) - install it "
-                          "from https://cli.github.com and log in with 'gh auth login'")
+            raise FsError(f"cannot run the {self.CLI_NAME} '{cli[0]}' ({e.strerror}) - install "
+                          f"it from {self.CLI_URL} and log in with '{self.CLI} auth login'")
         if p.returncode:
             err = p.stderr.decode("utf-8", "replace").strip()
-            if "(HTTP 404)" in err:
+            if re.search(r"\bHTTP 404\b", err):
                 raise NotFound(err)
             last = err.splitlines()[-1] if err else f"exit code {p.returncode}"
-            raise FsError(f"{self.label}: 'gh api {path}' failed: {last}")
+            raise FsError(f"{self.label}: '{self.CLI} api {path}' failed: {last}")
         return p.stdout
 
     def json(self, path):
         try:
             return json.loads(self.api(path).decode("utf-8"))
         except ValueError as e:
-            raise FsError(f"{self.label}: unexpected answer to 'gh api {path}': {e}")
+            raise FsError(f"{self.label}: unexpected answer to '{self.CLI} api {path}': {e}")
+
+    def not_found(self):
+        return FsError(f"{self.KIND} {self.label} not found (or no access)")
+
+    def check_project(self):
+        """Error if the project doesn't exist (or isn't accessible)."""
+        try:
+            self.api(self.project_path)
+        except NotFound:
+            raise self.not_found()
+
+    def get(self, path):
+        """Release at an API path, None if there is none."""
+        try:
+            return self.release(self.json(path))
+        except NotFound:
+            return None
+
+    def latest(self):
+        """The release the platform calls latest, None if there is none."""
+        r = self.get(self.latest_path)
+        if not r:
+            self.check_project()
+        return r
+
+    def by_tag(self, tag):
+        return self.get(self.tag_path(quote(tag, safe="")))
+
+    def releases(self):
+        """All releases (page by page, independent of the CLI's paging)."""
+        result, page = [], 1
+        while True:
+            try:
+                items = self.json(f"{self.list_path}?per_page={self.PER_PAGE}&page={page}")
+            except NotFound:
+                raise self.not_found()
+            if not isinstance(items, list):
+                raise FsError(f"{self.label}: unexpected answer listing the releases")
+            result += [self.release(d) for d in items]
+            if len(items) < self.PER_PAGE:
+                return result
+            page += 1
+
+
+class GitHub(Platform):
+    """Releases of a GitHub repository (also GitHub Enterprise)."""
+
+    CLI, CLI_VAR, CLI_NAME, CLI_URL, KIND = \
+        "gh", "ASSETSYNC_GH", "GitHub CLI", "https://cli.github.com", "repository"
+
+    project_path = property(lambda self: f"repos/{self.project}")
+    list_path = property(lambda self: f"repos/{self.project}/releases")
+    # marked as latest, or the newest that is neither a prerelease nor a draft
+    latest_path = property(lambda self: f"repos/{self.project}/releases/latest")
+
+    def tag_path(self, tag):
+        return f"repos/{self.project}/releases/tags/{tag}"
 
     @staticmethod
     def release(d):
@@ -352,53 +423,99 @@ class GitHub:
                        d.get("html_url", ""), bool(d.get("prerelease")),
                        bool(d.get("draft")), assets, d.get("body") or "")
 
-    def latest(self):
-        """The release GitHub calls latest: marked so, or the newest that is
-        neither a prerelease nor a draft. None if there is none."""
-        try:
-            return self.release(self.json(f"repos/{self.repo}/releases/latest"))
-        except NotFound:
-            self.check_repo()
-            return None
-
-    def check_repo(self):
-        """Error if the repository doesn't exist (or isn't accessible)."""
-        try:
-            self.api(f"repos/{self.repo}")
-        except NotFound:
-            raise FsError(f"repository {self.label} not found (or no access)")
-
-    def by_tag(self, tag):
-        try:
-            return self.release(self.json(f"repos/{self.repo}/releases/tags/{quote(tag, safe='')}"))
-        except NotFound:
-            return None
-
-    def releases(self):
-        """All releases (page by page, independent of gh's --paginate)."""
-        result, page = [], 1
-        while True:
-            try:
-                items = self.json(f"repos/{self.repo}/releases?per_page={self.PER_PAGE}&page={page}")
-            except NotFound:
-                raise FsError(f"repository {self.label} not found (or no access)")
-            if not isinstance(items, list):
-                raise FsError(f"{self.label}: unexpected answer listing the releases")
-            result += [self.release(d) for d in items]
-            if len(items) < self.PER_PAGE:
-                return result
-            page += 1
-
     def download(self, asset, dest):
         with open(dest, "wb") as f:
-            self.api(f"repos/{self.repo}/releases/assets/{asset.id}",
-                     accept="application/octet-stream", stdout=f)
+            self.api(f"repos/{self.project}/releases/assets/{asset.id}",
+                     headers=["Accept: application/octet-stream"], stdout=f)
+
+
+class GitLab(Platform):
+    """Releases of a GitLab project (gitlab.com or self-managed). Assets are
+    the release's links; GitLab reports no digests. Releases with a future
+    release date ('upcoming') count as prereleases; there are no drafts."""
+
+    CLI, CLI_VAR, CLI_NAME, CLI_URL, KIND = \
+        "glab", "ASSETSYNC_GLAB", "GitLab CLI", "https://gitlab.com/gitlab-org/cli", "project"
+
+    pid = property(lambda self: quote(self.project, safe=""))
+    project_path = property(lambda self: f"projects/{self.pid}")
+    list_path = property(lambda self: f"projects/{self.pid}/releases")
+    # the newest by release date
+    latest_path = property(lambda self: f"projects/{self.pid}/releases/permalink/latest")
+
+    def tag_path(self, tag):
+        return f"projects/{self.pid}/releases/{tag}"
+
+    @staticmethod
+    def release(d):
+        links = (d.get("assets") or {}).get("links") or []
+        assets = [Asset(a.get("name", ""), str(a.get("id", "")), url=a.get("url", ""))
+                  for a in links]
+        return Release(d.get("tag_name", ""), d.get("name") or "",
+                       d.get("released_at") or d.get("created_at") or "",
+                       (d.get("_links") or {}).get("self", ""),
+                       bool(d.get("upcoming_release")), False, assets,
+                       d.get("description") or "")
+
+    def api_path(self, url):
+        """API path for downloading a link on this host - with the login of
+        the CLI, as private projects need: API URLs (e.g. generic packages),
+        and job artifact and upload URLs, which have API equivalents. None
+        for other URLs."""
+        u = urlparse(url)
+        if (u.hostname or "").lower() != self.host or u.scheme not in ("https", "http"):
+            return None
+        path = u.path         # still percent-encoded, as the API wants it
+        query = f"?{u.query}" if u.query else ""
+        if "/api/v4/" in path:
+            return path.split("/api/v4/", 1)[1] + query
+        m = re.fullmatch(r"/(.+?)/-/jobs/(\d+)/artifacts/raw/(.+)", path)
+        if m:
+            return f"projects/{quote(unquote(m.group(1)), safe='')}/jobs/{m.group(2)}" \
+                   f"/artifacts/{m.group(3)}{query}"
+        m = re.fullmatch(r"/-/project/(\d+)/uploads/([0-9a-f]{32})/(.+)", path)
+        if m:
+            return f"projects/{m.group(1)}/uploads/{m.group(2)}/{m.group(3)}"
+        m = re.fullmatch(r"/(.+?)/uploads/([0-9a-f]{32})/(.+)", path)
+        if m:
+            return f"projects/{quote(unquote(m.group(1)), safe='')}/uploads/{m.group(2)}" \
+                   f"/{m.group(3)}"
+        return None
+
+    def download(self, asset, dest):
+        path = self.api_path(asset.url)
+        if path:
+            with open(dest, "wb") as f:
+                self.api(path, stdout=f)
+        else:
+            http_download(asset.url, dest, f"{asset.name} of {self.label}")
+
+
+def http_download(url, dest, what):
+    """Plain download of a URL elsewhere (no login: public files only)."""
+    scheme = urlparse(url).scheme
+    if scheme not in ("https", "http"):
+        raise FsError(f"{what}: cannot download '{url}'")
+    if scheme == "http":
+        warn(f"{what}: downloading over unencrypted http ({url})")
+    try:
+        with urlopen(url, timeout=60) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f, 1 << 20)
+    except HTTPError as e:
+        raise FsError(f"{what}: download of {url} failed: HTTP {e.code} (only links to API "
+                      "URLs, job artifacts and uploads of the project are downloaded with "
+                      "your login)")
+    except (URLError, OSError) as e:
+        raise FsError(f"{what}: download of {url} failed: {getattr(e, 'reason', e)}")
+
+
+PLATFORMS = {"github": GitHub, "gitlab": GitLab}
 
 
 def parse_url(url):
     """(host, project path) of a source URL."""
     u = urlparse(url)
-    path = norm_url(u.path).strip("/")
+    path = norm_url(u.path.split("/-/")[0]).strip("/")
     if u.scheme not in ("https", "http") or not u.hostname or not path:
         raise FsError(f"'{url}' is not a URL like https://github.com/owner/repo")
     return u.hostname.lower(), path
@@ -408,25 +525,28 @@ def source_url(arg):
     """URL for add's SOURCE argument: 'owner/repo' means github.com."""
     if re.fullmatch(r"[\w.-]+/[\w.-]+", arg):
         return f"https://github.com/{norm_url(arg)}"
-    parse_url(arg)
-    return norm_url(arg)
+    host, path = parse_url(arg)
+    return f"{urlparse(arg).scheme}://{host}/{path}"
 
 
 def platform_of(url, kind=None):
-    """Origin (platform client) for a source URL; kind: its type key."""
+    """Platform client for a source URL; kind: its type key, else derived
+    from the host."""
     host, path = parse_url(url)
     kind = (kind or ("github" if host == "github.com" else
-                     "gitlab" if "gitlab" in host else "")).lower()
-    if kind == "github":
-        if path.count("/") != 1:
-            raise FsError(f"'{url}' is not a GitHub repository URL (https://{host}/owner/repo)")
-        return GitHub(host, path, repo_label(url))
-    if kind == "gitlab":
-        raise FsError(f"{url}: GitLab is not supported yet")
-    if kind:
-        raise FsError(f"{url}: unknown type '{kind}' (supported: github)")
-    raise FsError(f"{url}: platform of {host} unknown - give its type (add --type github, "
-                  f"or 'type = github' in its [source])")
+                     "gitlab" if host == "gitlab.com" or "gitlab" in host.split(".")[0]
+                     else "")).lower()
+    if kind not in PLATFORMS:
+        if kind:
+            raise FsError(f"{url}: unknown type '{kind}' (supported: "
+                          f"{', '.join(sorted(PLATFORMS))})")
+        raise FsError(f"{url}: platform of {host} unknown - give its type (add --type "
+                      "github|gitlab, or 'type = ...' in its [source])")
+    if kind == "github" and path.count("/") != 1:
+        raise FsError(f"'{url}' is not a GitHub repository URL (https://{host}/owner/repo)")
+    if path.count("/") < 1:
+        raise FsError(f"'{url}' is not a GitLab project URL (https://{host}/group/project)")
+    return PLATFORMS[kind](host, path, path)
 
 
 def is_pattern(rule):
@@ -1554,7 +1674,7 @@ def main(argv=None):
                    help="release to take: an exact tag (pinned) or the newest matching "
                         "(default: the latest release)")
     p.add_argument("--prerelease", action="store_true", help="prereleases count too")
-    p.add_argument("--type", choices=["github"],
+    p.add_argument("--type", choices=sorted(PLATFORMS),
                    help="platform of the URL's host (default: derived from it)")
     p.add_argument("--force", action="store_true", help="replace an existing entry or file")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
