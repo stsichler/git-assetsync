@@ -11,7 +11,7 @@ jobs:
     name: Linux, current versions
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare git
         run: |
           git lfs install --skip-repo
@@ -27,7 +27,7 @@ jobs:
     name: Linux, oldest supported versions (Python 3.8, Git 2.28)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image
         run: docker build -t assetsync-minver -f test/minver.Containerfile test
       - name: Regression tests
@@ -44,7 +44,7 @@ jobs:
     env:
       PYTHON: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare git
         run: |
           git lfs install --skip-repo
@@ -58,7 +58,7 @@ jobs:
     name: macOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Prepare git
         run: |
           command -v git-lfs >/dev/null || brew install git-lfs
