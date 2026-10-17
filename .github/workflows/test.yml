@@ -5,7 +5,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# The tests need no network and no gh: test/fake_gh.py plays GitHub.
+# The tests need no network, gh or glab: test/fake_gh.py and test/fake_glab.py
+# play GitHub and GitLab, test/http_server.py other servers.
 jobs:
   regress:
     name: Linux, current versions
@@ -17,7 +18,7 @@ jobs:
           git lfs install --skip-repo
           git --version; git lfs version; python3 --version
       - name: Lint
-        run: python3 -m py_compile git-assetsync.py test/fake_gh.py
+        run: python3 -m py_compile git-assetsync.py test/fake_gh.py test/fake_glab.py test/http_server.py
       - name: Regression tests
         run: |
           test/regress.sh </dev/null | tee regress.log
