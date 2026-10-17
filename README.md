@@ -97,8 +97,9 @@ cd my-repo
 
 # 1. Take a file from a release asset (once): fetched and staged like
 #    git add, then committed - git commit offers the proposed message.
-#    The asset is a glob pattern that must match exactly one asset.
-git assetsync add acme/tool 'tool-*-linux-x64' bin/tool
+#    --asset is a glob pattern that must match exactly one asset (not
+#    needed if the release has only one).
+git assetsync add bin/tool acme/tool --asset 'tool-*-linux-x64'
 git commit
 
 # 2. See whether a new release is out
@@ -129,7 +130,7 @@ release.
 |---|---|
 | `status [PATH…]` | state of the files, like `git status`: new releases, local modifications |
 | `pull PATH…`, `pull --all` | update files to the selected release and commit |
-| `add SOURCE ASSET PATH` | take a file from a release asset |
+| `add PATH SOURCE` | take a file from a release asset |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 

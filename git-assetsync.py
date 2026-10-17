@@ -22,7 +22,8 @@ a project on GitHub:
         type = github          ; optional: for hosts other than github.com
     [file "bin/tool.bin"]
         source = owner/tool
-        asset = tool-*-linux.bin   ; asset of the release (glob, must match one)
+        asset = tool-*-linux.bin   ; optional: asset of the release (glob, must
+                                   ; match one); without: its only asset
         synced = <tag of the release the file comes from>
         digest = sha256:<hash of that asset>
         blob = <id of the file as committed>
@@ -56,15 +57,16 @@ command.
                                 proposed message (via .git/SQUASH_MSG)
         -n, --dry-run           only report what would happen
 
-    add SOURCE ASSET PATH       take the file PATH from the release asset
-                                ASSET (glob, must match exactly one asset) of
-                                SOURCE: the name of a [source], or a URL
-                                (owner/repo: github.com) - the source with
-                                that URL and release selection, else a new
-                                one named 'owner/repo' (a number appended if
-                                taken); PATH and .git-assetsync are staged
-                                like `git add` - a plain `git commit` offers
-                                the proposed message
+    add PATH SOURCE             take the file PATH from an asset of the
+                                release SOURCE selects; SOURCE: the name of a
+                                [source], or a URL (owner/repo: github.com) -
+                                the source with that URL and release
+                                selection, else a new one named 'owner/repo'
+                                (a number appended if taken); PATH and
+                                .git-assetsync are staged like `git add` - a
+                                plain `git commit` offers the proposed message
+        --asset PATTERN         the asset (glob, must match exactly one;
+                                default: the release's only asset)
         --release TAG|PATTERN   release to take (exact tag: pinned) or the
                                 newest one matching (default: the latest)
         --prerelease            prereleases count too (with a pattern, or
@@ -452,7 +454,15 @@ def select_release(origin, rule, prerelease):
 
 
 def match_asset(release, pattern, label):
-    """The one asset of release whose name matches pattern."""
+    """The one asset of release whose name matches pattern; without
+    pattern, the release's only asset."""
+    if not pattern:
+        if len(release.assets) == 1:
+            return release.assets[0]
+        names = ", ".join(a.name for a in release.assets)
+        raise FsError(f"release {release.tag} of {label} has "
+                      + (f"{len(release.assets)} assets: {names} - choose one with --asset "
+                         "(or 'asset = PATTERN' in the entry)" if names else "no assets"))
     found = [a for a in release.assets if fnmatch.fnmatchcase(a.name, pattern)]
     if len(found) == 1:
         return found[0]
@@ -871,8 +881,8 @@ def evaluate(ctx, repo, entry):
         st.error = (f"{problem} - entry ignored; remove it with "
                     f"'git config -f {REGISTRY} --remove-section \"file.{entry.rel}\"'")
         return st
-    if not (entry.url and entry.asset):
-        st.error = f"incomplete entry in {REGISTRY} (needs a source with url, and asset)"
+    if not entry.url:
+        st.error = f"incomplete entry in {REGISTRY} (needs a source with url)"
         return st
     try:
         cur = repo.worktree_blob(entry.target)
@@ -1004,7 +1014,8 @@ def print_long(ctx, repo, sts, verbose):
             synced = f"synced {e.synced}" if e.synced else "not synced yet"
             label = st.committed or ("uncommitted" if e.blob else "not synced")
             rows.append((label, st.rel,
-                         f"{e.asset} from {e.name}, {spec_text(e.spec)}; {synced}", "dim"))
+                         f"{e.asset or 'only asset'} from {e.name}, {spec_text(e.spec)}; "
+                         f"{synced}", "dim"))
         section("Files:", [], rows, None)
 
     up_rows = []
@@ -1329,7 +1340,8 @@ def cmd_add(ctx, repo, args):
     entry = Entry(reg, rel)
     for k, v in (("source", name), ("asset", args.asset), ("synced", release.tag),
                  ("digest", digest), ("blob", blob)):
-        entry.set(k, v)
+        if v:
+            entry.set(k, v)
     reg.finish()
     large_binary_hint(repo, rel, target)
     repo.git(["add", "--", lit(rel)])
@@ -1501,11 +1513,12 @@ def main(argv=None):
                    help="only report what would happen")
 
     p = sub.add_parser("add", parents=[colorp], help="take a file from a release asset")
+    p.add_argument("path", metavar="PATH", help="file in this repository")
     p.add_argument("source", metavar="SOURCE",
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
-    p.add_argument("asset", metavar="ASSET",
-                   help="asset of the release (glob pattern, must match exactly one)")
-    p.add_argument("path", metavar="PATH", help="file in this repository")
+    p.add_argument("--asset", metavar="PATTERN",
+                   help="asset of the release (glob pattern, must match exactly one; "
+                        "default: the release's only asset)")
     p.add_argument("--release", metavar="TAG|PATTERN",
                    help="release to take: an exact tag (pinned) or the newest matching "
                         "(default: the latest release)")

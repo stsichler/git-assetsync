@@ -195,7 +195,7 @@ asset tool-1.0.bin "tool 1.0"
 release --title "Tool 1.0" acme/tool v1.0 10 "$F/tool-1.0.bin"
 
 new_repo r1
-OUT=$(asd add acme/tool 'tool-*.bin' bin/tool.bin 2>&1)
+OUT=$(asd add bin/tool.bin acme/tool --asset 'tool-*.bin' 2>&1)
 check "add stages, like git add" "$(git status --porcelain | oneline)" "A  .git-assetsync A  bin/tool.bin "
 check "add: says how to commit" "$(echo "$OUT" | grep -cxE '    git commit|\(it offers the proposed commit message\)')" "2"
 check "add: file is the asset" "$(cat bin/tool.bin)" "tool 1.0"
@@ -248,7 +248,7 @@ check "pull: not an entry" "$(git assetsync pull nothing.txt 2>&1)" \
   "error: 'nothing.txt' is not synced (use 'git assetsync add' to add it)"
 
 # pull --all: only entries with something to do, one commit each
-asd add acme/tool 'tool-*.bin' other.bin >/dev/null 2>&1 && git commit -q --no-edit
+asd add other.bin acme/tool --asset 'tool-*.bin' >/dev/null 2>&1 && git commit -q --no-edit
 asset tool-1.3.bin "tool 1.3"
 release acme/tool v1.3 13 "$F/tool-1.3.bin"
 N=$(git rev-list --count HEAD)
@@ -272,28 +272,28 @@ EOF
 done
 
 new_repo r2
-quiet asd add acme/multi '*.zip' a.zip --release 'toolA-*'
+quiet asd add a.zip acme/multi --asset '*.zip' --release 'toolA-*'
 check "pattern: newest by date, not by name" "$(cat a.zip)" "toolA-20261015"
 check "pattern: release key" "$(reg source.acme/multi.release)" "toolA-*"
-quiet asd add acme/multi '*.zip' a2.zip
+quiet asd add a2.zip acme/multi --asset '*.zip'
 check "source name without options: that source" "$(cat a2.zip) $(reg file.a2.zip.source)" "toolA-20261015 acme/multi"
-quiet asd add https://github.com/acme/multi '*.zip' latest.zip
+quiet asd add latest.zip https://github.com/acme/multi --asset '*.zip'
 check "latest: no prerelease, no draft" "$(cat latest.zip)" "toolA-20261015"
 check "URL without options: another source" "$(reg file.latest.zip.source) $(reg source.acme/multi-2.release)" "acme/multi-2 "
-quiet asd add acme/multi '*.zip' b.zip --release toolB-20261017
+quiet asd add b.zip acme/multi --asset '*.zip' --release toolB-20261017
 check "exact tag: pinned" "$(cat b.zip)" "toolB-20261017"
 check "source name with other --release: its URL, another source" "$(reg file.b.zip.source) $(reg source.acme/multi-3.release)" \
   "acme/multi-3 toolB-20261017"
-quiet asd add acme/multi '*.zip' pre.zip --release 'toolA-*' --prerelease
+quiet asd add pre.zip acme/multi --asset '*.zip' --release 'toolA-*' --prerelease
 check "pattern with --prerelease" "$(cat pre.zip)" "toolA-20261019"
 check "prerelease key" "$(git config -f .git-assetsync --get-regexp 'source\..*\.prerelease' | cut -d' ' -f2)" "true"
-quiet asd add acme/multi '*.zip' prelatest.zip --prerelease
+quiet asd add prelatest.zip acme/multi --asset '*.zip' --prerelease
 check "--prerelease without pattern: newest incl. prereleases" "$(cat prelatest.zip)" "toolA-20261019"
-quiet asd add acme/multi '*.zip' pinpre.zip --release toolA-20261019
+quiet asd add pinpre.zip acme/multi --asset '*.zip' --release toolA-20261019
 check "exact tag of a prerelease" "$(cat pinpre.zip)" "toolA-20261019"
-check "exact tag of a draft: not found" "$(asd add acme/multi '*.zip' d.zip --release toolA-20261020 2>&1)" \
+check "exact tag of a draft: not found" "$(asd add d.zip acme/multi --asset '*.zip' --release toolA-20261020 2>&1)" \
   "error: no release with tag 'toolA-20261020' in acme/multi"
-check "pattern without match" "$(asd add acme/multi '*.zip' x.zip --release 'toolC-*' 2>&1)" \
+check "pattern without match" "$(asd add x.zip acme/multi --asset '*.zip' --release 'toolC-*' 2>&1)" \
   "error: no release with a tag matching 'toolC-*' in acme/multi (prereleases not counted)"
 git commit -q --no-edit
 check "all clean" "$(git assetsync status -s)" ""
@@ -313,7 +313,7 @@ check "latest: as marked by the platform" "$(git assetsync status latest.zip | g
 # tags may contain '/'
 asset slash.bin slash
 release acme/slash tools/v2 10 "$F/slash.bin"
-quiet asd add acme/slash slash.bin slash.bin --release tools/v2
+quiet asd add slash.bin acme/slash --asset slash.bin --release tools/v2
 check "tag with '/'" "$(cat slash.bin)" "slash"
 
 # more than one page of releases (100 per page): the match is on page 2
@@ -326,15 +326,15 @@ done
 asset old.bin old
 release acme/many special-1 01 "$F/old.bin"
 reset_calls
-quiet asd add acme/many old.bin old.bin --release 'special-*'
+quiet asd add old.bin acme/many --asset old.bin --release 'special-*'
 check "paging: match on page 2" "$(cat old.bin 2>/dev/null)" "old"
 check "paging: 2 pages + download" "$(calls)" "3"
 
-check "no releases at all" "$(mkdir -p "$GH/github.com/acme/empty"; asd add acme/empty x x.bin 2>&1)" \
+check "no releases at all" "$(mkdir -p "$GH/github.com/acme/empty"; asd add x.bin acme/empty --asset x 2>&1)" \
   "error: no release in acme/empty"
-check "unknown repository" "$(asd add acme/nothing x x.bin --release 'v*' 2>&1)" \
+check "unknown repository" "$(asd add x.bin acme/nothing --asset x --release 'v*' 2>&1)" \
   "error: repository acme/nothing not found (or no access)"
-check "unknown repository (latest)" "$(asd add acme/nothing x x.bin 2>&1)" \
+check "unknown repository (latest)" "$(asd add x.bin acme/nothing --asset x 2>&1)" \
   "error: repository acme/nothing not found (or no access)"
 
 
@@ -348,13 +348,15 @@ asset app-macos.tar.gz macos
 release acme/app v3 10 "$F/app-linux.tar.gz" "$F/app-windows.zip" "$F/app-macos.tar.gz"
 
 new_repo r3
-check "asset glob with no match" "$(asd add acme/app 'app-*.deb' x.deb 2>&1)" \
+check "asset glob with no match" "$(asd add x.deb acme/app --asset 'app-*.deb' 2>&1)" \
   "error: release v3 of acme/app has no asset matching 'app-*.deb' (assets: app-linux.tar.gz, app-macos.tar.gz, app-windows.zip)"
-check "asset glob with 2 matches" "$(asd add acme/app 'app-*.tar.gz' x.tgz 2>&1)" \
+check "asset glob with 2 matches" "$(asd add x.tgz acme/app --asset 'app-*.tar.gz' 2>&1)" \
   "error: 'app-*.tar.gz' matches 2 assets of release v3 of acme/app: app-linux.tar.gz, app-macos.tar.gz - use a more specific pattern"
 check "nothing written on error" "$(git status --porcelain)" ""
-quiet asd add acme/app 'app-linux.*' app.tgz && git commit -q --no-edit
+quiet asd add app.tgz acme/app --asset 'app-linux.*' && git commit -q --no-edit
 check "asset glob with 1 match" "$(cat app.tgz)" "linux"
+check "no --asset, several assets" "$(asd add y.tgz acme/app 2>&1)" \
+  "error: release v3 of acme/app has 3 assets: app-linux.tar.gz, app-macos.tar.gz, app-windows.zip - choose one with --asset (or 'asset = PATTERN' in the entry)"
 
 # the newest release lacks the asset: an error, no fallback to older ones
 asset other.txt other
@@ -366,11 +368,30 @@ check "... exit code 2" "$(rc git assetsync status)" "2"
 check "... pull fails" "$(rc git assetsync pull --no-edit app.tgz)" "2"
 cd "$T"
 
+# without --asset: the release's only asset; no asset key recorded
+asset single.bin "single 1"
+release acme/single v1 10 "$F/single.bin"
+new_repo r3a
+addc single.bin acme/single
+check "no --asset, one asset: taken" "$(cat single.bin)" "single 1"
+check "no --asset: no asset key" "$(reg file.single.bin.asset)" ""
+check "no --asset: status -v" "$(git assetsync status -v | grep -c '(only asset from acme/single, latest release; synced v1)')" "1"
+asset single.bin "single 2"
+release acme/single v2 11 "$F/single.bin"
+pullc single.bin
+check "no --asset: pulled" "$(cat single.bin)" "single 2"
+asset single.bin "single 3"
+asset extra.txt extra
+release acme/single v3 12 "$F/single.bin" "$F/extra.txt"
+check "no --asset, more assets later: error" "$(git assetsync status 2>&1 | head -1)" \
+  "error: single.bin: release v3 of acme/single has 2 assets: extra.txt, single.bin - choose one with --asset (or 'asset = PATTERN' in the entry)"
+cd "$T"
+
 # a re-uploaded asset (same tag, other content) is an upstream change
 asset re.bin "first upload"
 release acme/re v1 10 "$F/re.bin"
 new_repo r3b
-addc acme/re re.bin re.bin
+addc re.bin acme/re --asset re.bin
 asset re.bin "second upload"
 reupload acme/re v1 "$F/re.bin"
 check "asset replaced: pending" "$(st)" "P"
@@ -383,14 +404,14 @@ check "asset replaced: message" "$(git log -1 --format=%s)" "Update re.bin from 
 asset bad.bin bad
 release --baddigest acme/bad v1 10 "$F/bad.bin"
 new_repo r3c
-OUT=$(asd add acme/bad bad.bin bad.bin 2>&1)
+OUT=$(asd add bad.bin acme/bad --asset bad.bin 2>&1)
 check "digest mismatch: error" "$(echo "$OUT" | grep -c 'downloaded file has sha256:.*, but the release lists sha256:0000')" "1"
 check "digest mismatch: nothing written" "$(ls; git status --porcelain)" ""
 
 # releases from before GitHub reported digests: computed on download
 asset nod.bin nodigest
 release --nodigest acme/nod v1 10 "$F/nod.bin"
-quiet asd add acme/nod nod.bin nod.bin
+quiet asd add nod.bin acme/nod --asset nod.bin
 check "no digest in the API: computed" "$(reg file.nod.bin.digest)" "sha256:$(sha "$F/nod.bin")"
 
 
@@ -401,7 +422,7 @@ cd "$T"
 asset lm.txt "lm 1"
 release acme/lm v1 10 "$F/lm.txt"
 new_repo r4
-addc acme/lm lm.txt lm.txt
+addc lm.txt acme/lm --asset lm.txt
 
 # committed modification
 echo changed > lm.txt && git commit -qam "local change"
@@ -474,27 +495,27 @@ asset one.bin one
 asset two.bin two
 release acme/pair v1 10 "$F/one.bin" "$F/two.bin"
 new_repo r5
-addc acme/pair one.bin one.bin
-addc https://github.com/acme/pair.git two.bin two.bin
+addc one.bin acme/pair --asset one.bin
+addc two.bin https://github.com/acme/pair.git --asset two.bin
 check "same URL and selection: one source" "$(git config -f .git-assetsync --get-regexp 'source\..*\.url' | lines)" "1"
-check "source by name" "$(rc asd add acme/pair one.bin three.bin)" "0"
+check "source by name" "$(rc asd add three.bin acme/pair --asset one.bin)" "0"
 git reset -q --hard
-quiet asd add acme/pair one.bin x.bin --release v1
+quiet asd add x.bin acme/pair --asset one.bin --release v1
 check "source name with another --release: a new source" "$(reg file.x.bin.source) $(reg source.acme/pair-2.release)" "acme/pair-2 v1"
 git reset -q --hard; rm -f x.bin
-check "already synced: refused" "$(asd add acme/pair two.bin one.bin 2>&1)" \
+check "already synced: refused" "$(asd add one.bin acme/pair --asset two.bin 2>&1)" \
   "error: 'one.bin' is already synced (use --force to replace its entry)"
-quiet asd add --force acme/pair two.bin one.bin
+quiet asd add --force one.bin acme/pair --asset two.bin
 check "add --force: replaced" "$(cat one.bin) $(reg file.one.bin.asset)" "two two.bin"
 git reset -q --hard
 echo mine > mine.bin
-check "existing different file: refused" "$(asd add acme/pair one.bin mine.bin 2>&1 | tail -1)" \
+check "existing different file: refused" "$(asd add mine.bin acme/pair --asset one.bin 2>&1 | tail -1)" \
   "error: 'mine.bin' exists and differs from one.bin - use --force to overwrite it"
 check "... file kept" "$(cat mine.bin)" "mine"
 cp "$F/one.bin" same.bin
-check "existing identical file: fine" "$(rc asd add acme/pair one.bin same.bin)" "0"
+check "existing identical file: fine" "$(rc asd add same.bin acme/pair --asset one.bin)" "0"
 git reset -q --hard; rm -f mine.bin same.bin
-check "a directory: refused" "$(mkdir -p dir && asd add acme/pair one.bin dir 2>&1)" \
+check "a directory: refused" "$(mkdir -p dir && asd add dir acme/pair --asset one.bin 2>&1)" \
   "error: cannot add 'dir': is a directory"
 
 # unlink: entry (and unused source) removed, file kept, staged
@@ -536,8 +557,8 @@ cd "$T"
 asset p.txt "p 1"
 release acme/p v1 10 "$F/p.txt"
 new_repo r6
-quiet asd add acme/p p.txt p1.txt
-quiet asd add acme/p p.txt p2.txt
+quiet asd add p1.txt acme/p --asset p.txt
+quiet asd add p2.txt acme/p --asset p.txt
 check "two adds: proposals collected" "$(grep -c '^Add ' .git/SQUASH_MSG)" "2"
 git commit -q --no-edit
 check "commit takes both" "$(git log -1 --format=%B | grep -c '^Add ')" "2"
@@ -594,7 +615,7 @@ release acme/eol v1 10 "$F/crlf.txt" "$F/lf.txt"
 
 new_repo r8
 printf '* text=auto\n' > .gitattributes && git add .gitattributes && git commit -qm attrs
-addc acme/eol crlf.txt crlf.txt
+addc crlf.txt acme/eol --asset crlf.txt
 check "text=auto: stored normalized" "$(git cat-file -p HEAD:crlf.txt | od -c | grep -c '\\r')" "0"
 check "text=auto: blob as git add stores it" "$(reg file.crlf.txt.blob)" "$(git hash-object --path=crlf.txt "$F/crlf.txt")"
 check "text=auto: clean" "$(st) $(git status --porcelain)" " "
@@ -602,7 +623,7 @@ cd "$T"
 
 new_repo r8b
 git config core.autocrlf true
-addc acme/eol lf.txt lf.txt
+addc lf.txt acme/eol --asset lf.txt
 check "autocrlf: checked out with CRLF" "$(od -c lf.txt | grep -c '\\r')" "1"
 check "autocrlf: clean" "$(st) $(git status --porcelain)" " "
 check "autocrlf: registry has no warning-causing LF" "$(git status --porcelain .git-assetsync)" ""
@@ -610,7 +631,7 @@ cd "$T"
 
 # .gitattributes changed afterwards (normalization on): content still the asset
 new_repo r8c
-addc acme/eol crlf.txt crlf.txt
+addc crlf.txt acme/eol --asset crlf.txt
 printf '* text=auto\n' > .gitattributes && git add .gitattributes && git add --renormalize . && git commit -qm "normalize"
 check "renormalized after add: unmodified" "$(st)" ""
 
@@ -627,7 +648,7 @@ else
   release acme/fw v1 10 "$F/fw.bin"
   new_repo r9
   printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' > .gitattributes && git add .gitattributes && git commit -qm lfs
-  addc acme/fw fw.bin fw.bin
+  addc fw.bin acme/fw --asset fw.bin
   check "LFS: committed as pointer" "$(git cat-file -p HEAD:fw.bin | head -1)" "version https://git-lfs.github.com/spec/v1"
   check "LFS: content in the working tree" "$(sha fw.bin)" "$(sha "$F/fw.bin")"
   check "LFS: clean" "$(st) $(git status --porcelain)" " "
@@ -640,7 +661,7 @@ else
 
   # moved to LFS afterwards: still the asset (pointer hash = digest)
   new_repo r9b
-  addc acme/fw fw.bin fw.bin
+  addc fw.bin acme/fw --asset fw.bin
   printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' > .gitattributes && git add .gitattributes
   git add --renormalize . && git commit -qm "to LFS"
   check "moved to LFS afterwards: committed as pointer" "$(git cat-file -p HEAD:fw.bin | head -1)" "version https://git-lfs.github.com/spec/v1"
@@ -651,10 +672,10 @@ else
   head -c 1048576 /dev/zero > "$F/big.bin"
   release acme/big v1 10 "$F/big.bin"
   new_repo r9c
-  check "big binary, no LFS: hint" "$(asd add acme/big big.bin big.bin 2>&1 | grep -c "git lfs track big.bin")" "1"
+  check "big binary, no LFS: hint" "$(asd add big.bin acme/big --asset big.bin 2>&1 | grep -c "git lfs track big.bin")" "1"
   git reset -q --hard
   printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' > .gitattributes && git add .gitattributes && git commit -qm lfs
-  check "big binary in LFS: no hint" "$(asd add --force acme/big big.bin big.bin 2>&1 | grep -c 'git lfs track')" "0"
+  check "big binary in LFS: no hint" "$(asd add --force big.bin acme/big --asset big.bin 2>&1 | grep -c 'git lfs track')" "0"
 fi
 
 
@@ -676,23 +697,23 @@ check "unsafe paths: pull --all writes nothing" "$(git assetsync pull --all --no
 rm .git-assetsync
 git config -f .git-assetsync file.x.txt.source nothing
 check "incomplete entry" "$(git assetsync status 2>&1 | head -1)" \
-  "error: x.txt: incomplete entry in .git-assetsync (needs a source with url, and asset)"
+  "error: x.txt: incomplete entry in .git-assetsync (needs a source with url)"
 printf '[file "x\n' > .git-assetsync
 check "unparsable registry" "$(git assetsync status 2>&1 | grep -c '^error: .git-assetsync: cannot parse')" "1"
 rm .git-assetsync
 check "not a repository" "$(cd "$T" && git assetsync status 2>&1)" "error: not inside a Git working tree"
-check "gh missing" "$(ASSETSYNC_GH=/nonexistent/gh asd add acme/rb r.txt r.txt 2>&1 | sed 's/ (.*) / /')" \
+check "gh missing" "$(ASSETSYNC_GH=/nonexistent/gh asd add r.txt acme/rb --asset r.txt 2>&1 | sed 's/ (.*) / /')" \
   "error: cannot run the GitHub CLI '/nonexistent/gh' - install it from https://cli.github.com and log in with 'gh auth login'"
-check "gh fails" "$(ASSETSYNC_GH="\"$PYTHON\" -c 'import sys; sys.stderr.write(\"gh: Bad credentials (HTTP 401)\\n\"); sys.exit(1)'" asd add acme/rb r.txt r.txt 2>&1)" \
+check "gh fails" "$(ASSETSYNC_GH="\"$PYTHON\" -c 'import sys; sys.stderr.write(\"gh: Bad credentials (HTTP 401)\\n\"); sys.exit(1)'" asd add r.txt acme/rb --asset r.txt 2>&1)" \
   "error: acme/rb: 'gh api repos/acme/rb/releases/latest' failed: gh: Bad credentials (HTTP 401)"
-check "add: path outside the repository" "$(asd add acme/rb r.txt ../r.txt 2>&1)" \
+check "add: path outside the repository" "$(asd add ../r.txt acme/rb --asset r.txt 2>&1)" \
   "error: cannot add '../r.txt': not a path inside the working tree"
-check "add: the registry itself" "$(asd add acme/rb r.txt .git-assetsync 2>&1)" \
+check "add: the registry itself" "$(asd add .git-assetsync acme/rb --asset r.txt 2>&1)" \
   "error: cannot add '.git-assetsync': .git-assetsync itself"
-check "add: bad URL" "$(asd add ftp://x/y r.txt r.txt 2>&1)" \
+check "add: bad URL" "$(asd add r.txt ftp://x/y --asset r.txt 2>&1)" \
   "error: 'ftp://x/y' is not a URL like https://github.com/owner/repo"
 # special characters in file names
-quiet asd add acme/rb r.txt 'we[i]rd *.txt'
+quiet asd add 'we[i]rd *.txt' acme/rb --asset r.txt
 check "wildcard characters in a file name" "$(cat 'we[i]rd *.txt') $(git status --porcelain | oneline)" \
   "r A  .git-assetsync A  \"we[i]rd *.txt\" "
 git commit -q --no-edit
@@ -706,15 +727,15 @@ cd "$T"
 asset e.txt enterprise
 release --host ghe.example.com acme/ent v1 10 "$F/e.txt"
 new_repo r11
-check "unknown host without type" "$(asd add https://ghe.example.com/acme/ent e.txt e.txt 2>&1)" \
+check "unknown host without type" "$(asd add e.txt https://ghe.example.com/acme/ent --asset e.txt 2>&1)" \
   "error: https://ghe.example.com/acme/ent: platform of ghe.example.com unknown - give its type (add --type github, or 'type = github' in its [source])"
 reset_calls
-addc https://ghe.example.com/acme/ent e.txt e.txt --type github
+addc e.txt https://ghe.example.com/acme/ent --asset e.txt --type github
 check "GitHub Enterprise: fetched" "$(cat e.txt)" "enterprise"
 check "GitHub Enterprise: --hostname" "$(grep -c '^api --hostname ghe.example.com ' "$GH/calls.log")" "2"
 check "GitHub Enterprise: type recorded" "$(reg source.acme/ent.type)" "github"
 check "GitHub Enterprise: status" "$(st)" ""
-check "GitLab: not yet" "$(asd add https://gitlab.com/group/proj x x 2>&1)" \
+check "GitLab: not yet" "$(asd add x https://gitlab.com/group/proj --asset x 2>&1)" \
   "error: https://gitlab.com/group/proj: GitLab is not supported yet"
 
 
@@ -726,10 +747,10 @@ asset dr.txt "dr 1"
 release acme/dr v1 10 "$F/dr.txt"
 new_repo r12
 reset_calls
-check "add -n: output" "$(asd add -n acme/dr dr.txt dr.txt 2>&1)" \
+check "add -n: output" "$(asd add -n dr.txt acme/dr --asset dr.txt 2>&1)" \
   "would add dr.txt from acme/dr v1 (dr.txt, latest release)"
 check "add -n: nothing changed, no download" "$(git status --porcelain; ls; calls)" "1"
-addc acme/dr dr.txt dr.txt
+addc dr.txt acme/dr --asset dr.txt
 asset dr.txt "dr 2"
 release acme/dr v2 11 "$F/dr.txt"
 check "pull -n: output" "$(git assetsync pull -n dr.txt 2>&1)" \

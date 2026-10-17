@@ -55,6 +55,7 @@ Git-config format:
 [file "bin/tool"]
 	source = acme/tool
 	asset = tool-*-linux-x64     # asset of the release: glob, exactly one match
+	                             # (optional: without, the release's only asset)
 	synced = v1.1                # tag of the release the file comes from
 	digest = sha256:5b2c…        # SHA-256 of that asset
 	blob = 8d01b7aa…             # the file as committed (git's blob id)
@@ -81,7 +82,8 @@ Git-config format:
   taken (`acme/tool-2`: same project, other release selection).
 - **`[file "PATH"]`** – a file of the repository (path relative to the
   root) and the asset it comes from: `source` (name of its `[source]`) and
-  `asset` (glob pattern) say what to take. `synced`, `digest` and `blob`
+  `asset` (glob pattern; without it, the release's only asset) say what
+  to take. `synced`, `digest` and `blob`
   are written by git-assetsync and record what the committed file is
   based on: the release tag, the asset's SHA-256 and the id of the file
   as `git add` stores it (after line-ending conversion and Git LFS). With
@@ -121,7 +123,7 @@ line endings normalized) is still unmodified.
 |---|---|
 | `status [PATH…]` | state of the files, like `git status` |
 | `pull PATH…`, `pull --all` | update files to the selected release and commit |
-| `add SOURCE ASSET PATH` | take a file from a release asset |
+| `add PATH SOURCE` | take a file from a release asset |
 | `unlink PATH…` | remove entries (the files are kept) |
 | `mv OLD NEW` | move a file, keeping its entry |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
@@ -222,31 +224,36 @@ how to commit them with the proposed message; the exit code is then 1.
 ### `add`
 
 ```
-git assetsync add SOURCE ASSET PATH [--release TAG|PATTERN] [--prerelease] [--type github] [--force] [-n]
+git assetsync add PATH SOURCE [--asset PATTERN] [--release TAG|PATTERN] [--prerelease] [--type github] [--force] [-n]
 ```
 
-Takes the file `PATH` from the asset `ASSET` of the release `SOURCE`
-selects: downloads it, writes it to `PATH`, records the entry in
+The arguments are in the same order as for `git filesync add`. Takes the
+file `PATH` from an asset of the release `SOURCE` selects: downloads it, writes it to `PATH`, records the entry in
 `.git-assetsync` and stages both – like `git add`, without committing. A
 plain `git commit` then offers the proposed message (`git commit --no-edit`
 takes it as it is).
 
+- **`PATH`** is the file in your repository, relative to the current
+  directory. Its name doesn't have to be the asset's, and stays the same
+  when later assets are named differently.
 - **`SOURCE`** is the name of a `[source]` in `.git-assetsync`, or a URL
   (`https://github.com/owner/repo`); `owner/repo` is short for a
   repository on github.com. A URL takes the source with that URL and the
   same release selection, or creates one. A source name takes that source
   with its release selection – unless `--release`/`--prerelease` ask for
   another one, then its URL with that selection.
-- **`ASSET`** is a glob pattern (`*`, `?`, `[…]`) that must match exactly
-  one asset of the release, e.g. `'tool-*-linux-x64.tar.gz'`. Quote it, so
-  the shell doesn't expand it. The pattern is recorded and used for later
-  releases, too.
-- **`PATH`** is the file in your repository, relative to the current
-  directory. Its name doesn't have to be the asset's, and stays the same
-  when later assets are named differently.
+- **`--asset PATTERN`** selects the asset: a glob pattern (`*`, `?`,
+  `[…]`) that must match exactly one asset of the release, e.g.
+  `--asset 'tool-*-linux-x64.tar.gz'`. Quote it, so the shell doesn't
+  expand it. The pattern is recorded and used for later releases, too.
+  Without `--asset`, the release must have exactly one asset, which is
+  taken; no pattern is recorded, and a later release with more than one
+  asset is an error until you add one
+  (`git config -f .git-assetsync file.PATH.asset 'PATTERN'`).
 
 | Option | Meaning |
 |---|---|
+| `--asset PATTERN` | the asset to take (glob, must match exactly one; default: the release's only asset) |
 | `--release TAG\|PATTERN` | release to take: a tag pins the source to that release, a pattern takes the newest release whose tag matches (default: the latest release) |
 | `--prerelease` | prereleases count too (with a pattern, or instead of the latest release) |
 | `--type github` | platform of the URL's host; needed for GitHub Enterprise |
@@ -457,10 +464,10 @@ the Microsoft Store); set the alias with `py` or `python`, see the
 Git for Windows runs the alias through its own (MSYS) shell, also when you
 call `git assetsync` from cmd or PowerShell. That shell expands **wildcard
 characters** in arguments if a file in the current directory matches:
-`git assetsync add acme/tool 'tool-*.zip' …` turns into `tool-1.0.zip` when
+`git assetsync add lib/tool.zip acme/tool --asset 'tool-*.zip'` turns into `tool-1.0.zip` when
 that file is there, quoted or not. For such arguments, run the script directly instead of
-through the alias, e.g. `py C:/tools/git-assetsync.py add acme/tool
-tool-*.zip lib/tool.zip` in cmd or PowerShell – or run the command where
+through the alias, e.g. `py C:/tools/git-assetsync.py add lib/tool.zip
+acme/tool --asset tool-*.zip` in cmd or PowerShell – or run the command where
 no file matches. Don't set `MSYS=noglob` for git itself: it breaks how git
 passes the arguments to the alias.
 
@@ -470,7 +477,7 @@ git-assetsync can keep a copy of itself in your repository – once there are
 releases – so everyone has the same version without installing it:
 
 ```sh
-git assetsync add stsichler/git-assetsync git-assetsync.py tools/git-assetsync.py
+git assetsync add tools/git-assetsync.py stsichler/git-assetsync --asset git-assetsync.py
 git commit
 git config alias.assetsync '!python3 tools/git-assetsync.py'     # each clone, once (Windows: !py …)
 ```
