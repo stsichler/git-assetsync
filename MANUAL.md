@@ -479,13 +479,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: curl -fsSLo /tmp/git-assetsync.py https://raw.githubusercontent.com/stsichler/git-assetsync/main/git-assetsync.py
+      - run: curl -fsSLo /tmp/git-assetsync.py https://github.com/stsichler/git-assetsync/releases/latest/download/git-assetsync.py
       - run: python3 /tmp/git-assetsync.py status --exit-code
         env:
           GH_TOKEN: ${{ github.token }}
 ```
 
-`gh` is preinstalled on GitHub's runners; `GH_TOKEN` logs it in. For
+This uses the latest release. To pin a version, download
+`https://github.com/stsichler/git-assetsync/releases/download/v0.1.0/git-assetsync.py`
+instead. `gh` is preinstalled on GitHub's runners; `GH_TOKEN` logs it in. For
 sources in other private repositories, use a token with read access to
 them. For GitLab sources, install `glab` in the job (and give
 `GITLAB_TOKEN` for private projects).
@@ -518,8 +520,8 @@ passes the arguments to the alias.
 
 ### Shipping git-assetsync with your repository
 
-git-assetsync can keep a copy of itself in your repository – once there are
-releases – so everyone has the same version without installing it:
+git-assetsync can keep a copy of itself in your repository, so everyone
+has the same version without installing it:
 
 ```sh
 git assetsync add tools/git-assetsync.py stsichler/git-assetsync --asset git-assetsync.py

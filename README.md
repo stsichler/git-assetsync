@@ -73,16 +73,17 @@ Requirements: Python ≥ 3.8, Git ≥ 2.28; for GitHub sources the
 [GitHub CLI](https://cli.github.com) `gh`, for GitLab sources the
 [GitLab CLI](https://gitlab.com/gitlab-org/cli) `glab` (logged in with
 `gh auth login` / `glab auth login`, or a token in `GH_TOKEN` /
-`GITLAB_TOKEN`); `git-lfs` for files stored in Git LFS. Linux, macOS and Windows (Git for
-Windows).
+`GITLAB_TOKEN`); `git-lfs` for files stored in Git LFS. Linux, macOS and
+Windows (Git for Windows).
 
-There is no release yet. Until then, take `git-assetsync.py` from `main`
+Download `git-assetsync.py` from the
+[latest release](https://github.com/stsichler/git-assetsync/releases/latest)
 and register a global Git alias:
 
 ```sh
 # Linux / macOS
 mkdir -p ~/tools
-curl -fsSLo ~/tools/git-assetsync.py https://raw.githubusercontent.com/stsichler/git-assetsync/main/git-assetsync.py
+curl -fsSLo ~/tools/git-assetsync.py https://github.com/stsichler/git-assetsync/releases/latest/download/git-assetsync.py
 git config --global alias.assetsync '!python3 ~/tools/git-assetsync.py'
 
 # Windows (download in the browser or with curl.exe; use forward slashes;
@@ -92,7 +93,15 @@ git config --global alias.assetsync "!py C:/tools/git-assetsync.py"
 
 Alternatively (Linux/macOS) put an executable copy named `git-assetsync` on
 your `PATH`. Either way the tool is invoked as `git assetsync …`; check
-with `git assetsync --version`.
+with `git assetsync --version`. To update, download the script again; the
+[releases](https://github.com/stsichler/git-assetsync/releases) list the
+changes of each version.
+
+You can also clone the repository and point the alias at the script in
+it: `main` is the current development state, a tag like `v0.1.0` a
+release. Or let git-assetsync keep a copy of itself in your project, so
+everyone has the same version – see
+[Shipping git-assetsync with your repository](MANUAL.md#shipping-git-assetsync-with-your-repository).
 
 ## Quick start
 
