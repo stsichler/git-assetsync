@@ -42,6 +42,7 @@
 #   18. Directories and filters
 #   19. Archives: formats, executables, unsafe members
 #   20. Download cache
+#   21. 7z archives (an external 7-Zip)
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -266,6 +267,10 @@ else:
                 t.addfile(info, io.BytesIO(b"evil\n"))
 EOF
 }
+
+# mkfake7z OUT JSON - an "archive" for test/fake_7z.py: the 7z signature
+# followed by the JSON list of its members (see there)
+mkfake7z() { printf '7z\274\257\047\034' > "$1" && printf '%s' "$2" >> "$1"; }
 
 # downloads - number of asset downloads since the last reset_calls
 downloads() { if [ -f "$GH/calls.log" ]; then grep -c -E 'releases/assets/|packages/generic/' "$GH/calls.log"; else echo 0; fi; }
@@ -1438,6 +1443,78 @@ rm -rf "$ASSETSYNC_CACHE"
 check "cache: deleted cache is filled again" "$(asd add e.txt acme/cache >/dev/null 2>&1; ls "$ASSETSYNC_CACHE/sha256" | lines)" "1"
 check "cache: unusable" "$(ASSETSYNC_CACHE=$T/r20/a.txt/x asd add f.txt acme/cache 2>&1 | sed 's/ (.*) / /' | tr '\\' /)" \
   "error: cannot create the download cache $T/r20/a.txt/x - set ASSETSYNC_CACHE to another directory"
+
+
+# =============================================================================
+section "21. 7z archives (an external 7-Zip)"
+# =============================================================================
+cd "$T"
+FAKE7Z="\"$PYTHON\" \"$TD/fake_7z.py\""
+new_repo r21
+# x7 NAME JSON - release acme/7z-NAME with the fake archive NAME.7z
+x7() { mkfake7z "$F/$1.7z" "$2" && release acme/7z-$1 v1 10 "$F/$1.7z"; }
+x7 ok '[{"path": "a.txt", "content": "a"}, {"path": "sub", "attrs": "D drwxr-xr-x"},
+        {"path": "sub/run.sh", "content": "run", "attrs": "A -rwxr-xr-x"},
+        {"path": "win.txt", "content": "w", "attrs": "A"}]'
+ASSETSYNC_7Z=$FAKE7Z quiet asd add ok/ acme/7z-ok --extract
+check "7z: unpacked" "$(git ls-files -s ok | awk '{print $1, $4}' | oneline)" \
+  "100644 ok/a.txt 100755 ok/sub/run.sh 100644 ok/win.txt "
+check "7z: listing checked first" "$(head -1 "$GH/7z.log" | cut -d' ' -f1-3)" "l -sccUTF-8 -slt"
+rm -f "$GH/7z.log"
+check "7z: older 7-Zip without -scc" "$(git reset -q --hard; FAKE_7Z_OLD=1 ASSETSYNC_7Z=$FAKE7Z asd add ok2/ acme/7z-ok --extract >/dev/null 2>&1; git ls-files ok2 | lines) $(grep -c -- '-scc' "$GH/7z.log") $(lines < "$GH/7z.log")" "3 2 4"
+git reset -q --hard; rm -rf ok2
+for bad in 'unsafe|[{"path": "../evil.txt", "content": "e"}]|unsafe path' \
+           'abs|[{"path": "/tmp/evil.txt", "content": "e"}]|unsafe path' \
+           'enc|[{"path": "a.txt", "encrypted": true}]|is encrypted' \
+           'link|[{"path": "link", "attrs": "A lrwxrwxrwx"}]|is a symbolic link' \
+           'fifo|[{"path": "pipe", "attrs": "A prw-r--r--"}]|is no regular file' \
+           'win|[{"path": "con.txt", "content": "c"}]|not a valid file name' \
+           'fail|[{"path": "a.txt", "fail": true}]|7-Zip failed: ERROR: Data Error'; do
+  name=${bad%%|*}; rest=${bad#*|}; json=${rest%|*}; msg=${rest##*|}
+  x7 "$name" "$json"
+  OUT=$(ASSETSYNC_7Z=$FAKE7Z asd add e/ acme/7z-$name --extract 2>&1)
+  check "7z: $name refused" "$(echo "$OUT" | grep -c "^error: e/: $name.7z.*$msg")" "1"
+  check "7z: $name: nothing written" "$(ls -A e 2>/dev/null; git status --porcelain; ls ../evil.txt 2>/dev/null)" ""
+done
+if ! command -v cygpath >/dev/null; then    # symbolic links: not on Windows
+  x7 sneaky '[{"path": "a.txt", "content": "a"}, {"path": "x", "sneaky_link": "/etc"}]'
+  check "7z: link unpacked although listed as a file: refused" \
+    "$(ASSETSYNC_7Z=$FAKE7Z asd add e/ acme/7z-sneaky --extract 2>&1 | grep '^error')" \
+    "error: e/: sneaky.7z: 'x' is no regular file"
+fi
+check "7z: 7-Zip not runnable" "$(ASSETSYNC_7Z=/nonexistent/7z asd add e/ acme/7z-ok --extract 2>&1 | grep '^error' | sed 's/ (.*) / /')" \
+  "error: cannot run 7-Zip '/nonexistent/7z' - install it or set ASSETSYNC_7Z"
+check "7z without --extract: kept as it is" "$(ASSETSYNC_7Z=/nonexistent/7z asd add -n raw/ acme/7z-ok)" \
+  "would add raw/ from acme/7z-ok v1 (ok.7z, latest release)"
+if ! command -v cygpath >/dev/null; then
+  # no 7-Zip at all: a PATH with only git and Python
+  mkdir -p "$T/only" && ln -sf "$(command -v git)" "$T/only/git" && ln -sf "$(command -v "$PYTHON")" "$T/only/$PYTHON"
+  check "7z: no 7-Zip" "$(PATH=$T/only "$PYTHON" "$S" add e/ acme/7z-ok --extract 2>&1 | grep '^error')" \
+    "error: e/: ok.7z is a 7z archive: unpacking it needs 7-Zip - install it (https://www.7-zip.org; 7zz or 7z) or set ASSETSYNC_7Z"
+fi
+
+# with the real 7-Zip, if there is one (the CI installs it)
+SZ=$(command -v 7zz || command -v 7z || command -v 7za || true)
+[ -z "$SZ" ] && [ -f "/c/Program Files/7-Zip/7z.exe" ] && SZ="/c/Program Files/7-Zip/7z.exe"
+if [ -z "$SZ" ]; then
+  echo "skipped: no 7-Zip installed"
+else
+  echo "(7-Zip: $SZ)"
+  mkdir -p "$T/s7/inc" && echo h > "$T/s7/inc/x.h" && echo t > "$T/s7/doc.txt" && printf '#!/bin/sh\n' > "$T/s7/run.sh"
+  chmod +x "$T/s7/run.sh"
+  (cd "$T/s7" && "$SZ" a -bd "$F/real.7z" inc doc.txt run.sh >/dev/null)
+  release acme/real7z v1 10 "$F/real.7z"
+  quiet asd add real/ acme/real7z --extract --exclude doc.txt
+  check "real 7-Zip: unpacked" "$(git ls-files real | oneline)" "real/inc/x.h real/run.sh "
+  if ! command -v cygpath >/dev/null; then   # no executable bit in archives made on Windows
+    check "real 7-Zip: executable" "$(git ls-files -s real/run.sh | cut -c1-6)" "100755"
+    ln -s doc.txt "$T/s7/link"
+    (cd "$T/s7" && "$SZ" a -bd -snl "$F/reallink.7z" doc.txt link >/dev/null)
+    release acme/real7zlink v1 10 "$F/reallink.7z"
+    check "real 7-Zip: symbolic link refused" "$(asd add rl/ acme/real7zlink --extract 2>&1 | grep '^error')" \
+      "error: rl/: reallink.7z: 'link' is a symbolic link"
+  fi
+fi
 
 
 # =============================================================================

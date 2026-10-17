@@ -49,8 +49,8 @@ built the same way.
   alike – also GitHub Enterprise and self-managed GitLab, and private
   projects; all entries of a repository are listed in one file,
   `.git-assetsync`, at its root (git-config format, like `.gitmodules`)
-- Built-in filters, without running any code: unpack ZIP and tar archives
-  safely, take a subdirectory, strip leading directories, include or
+- Built-in filters, without running any code: unpack ZIP, tar and – with
+  7-Zip installed – 7z archives safely, take a subdirectory, strip leading directories, include or
   exclude files by pattern; a directory belongs to its entry and is
   replaced as a whole on update
 - Follows the latest release, the newest release whose tag matches a
@@ -80,7 +80,8 @@ Requirements: Python ≥ 3.8, Git ≥ 2.28; for GitHub sources the
 [GitHub CLI](https://cli.github.com) `gh`, for GitLab sources the
 [GitLab CLI](https://gitlab.com/gitlab-org/cli) `glab` (logged in with
 `gh auth login` / `glab auth login`, or a token in `GH_TOKEN` /
-`GITLAB_TOKEN`); `git-lfs` for files stored in Git LFS. Linux, macOS and
+`GITLAB_TOKEN`); `git-lfs` for files stored in Git LFS; 7-Zip to unpack
+7z archives. Linux, macOS and
 Windows (Git for Windows).
 
 Download `git-assetsync.py` from the
@@ -190,7 +191,7 @@ answer `gh api` / `glab api` calls from fixture files – no network or
 account needed. It checks adding, status, pull, release selection
 (latest, patterns, pinned, prereleases, drafts, paging), asset selection
 and digests, local modifications, directories and filters, archive formats
-and unsafe archive members, the download cache, the `.git-assetsync` file
+(7z with a real 7-Zip where installed) and unsafe archive members, the download cache, the `.git-assetsync` file
 (sources, set, unlink, mv, commit consistency), commit proposals, offline
 status, line endings, Git LFS, unsafe registry entries, GitHub Enterprise,
 GitLab (also self-managed, subgroups, the kinds of asset links), dry runs,

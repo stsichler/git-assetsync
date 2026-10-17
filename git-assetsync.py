@@ -45,7 +45,8 @@ modifications (in a directory: also untracked files; ignored ones don't
 count), --force discards them.
 
 Filter steps (no code is run): extract (unpack zip, tar, tar.gz/bz2/xz,
-.gz/.bz2/.xz; unsafe members - paths outside, links, names invalid on
+.gz/.bz2/.xz, and 7z with an external 7-Zip - 7zz/7z on the PATH or
+ASSETSYNC_7Z; unsafe members - paths outside, links, names invalid on
 Windows - are refused), subdir PATH (only that directory, as the root),
 strip N (N leading directories off), keep / drop PATTERN... (gitignore-
 like). Downloads are kept in a cache (ASSETSYNC_CACHE; default
@@ -167,7 +168,7 @@ auth login` or GH_TOKEN), GitLab through the GitLab CLI (`glab api`,
 other commands for them.
 
 Requires Python >= 3.8, Git >= 2.28, and gh or glab (git-lfs for LFS
-files).
+files, 7-Zip for 7z archives).
 Works on Linux, macOS and Windows.
 Manual: https://github.com/stsichler/git-assetsync/blob/main/MANUAL.md
 """
@@ -830,11 +831,13 @@ def add_member(files, rel, value, what):
 
 
 def archive_kind(path):
-    """'zip', 'tar', 'gz', 'bz2', 'xz' by the content, or None."""
+    """'zip', 'tar', '7z', 'gz', 'bz2', 'xz' by the content, or None."""
     with open(path, "rb") as f:
         head = f.read(265)
     if head[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
         return "zip"
+    if head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return "7z"
     if head[257:262] == b"ustar":
         return "tar"
     for magic, kind in ((b"\x1f\x8b", "gz"), (b"BZh", "bz2"), (b"\xfd7zXZ\x00", "xz")):
@@ -885,6 +888,103 @@ def extract_tar(path, name, files, work):
         raise FsError(f"{what}: cannot unpack: {e}")
 
 
+def sevenzip_command():
+    """7-Zip: ASSETSYNC_7Z (split like a shell would), else 7zz, 7z, 7za or
+    7zr on the PATH, on Windows also in Program Files; None if not found."""
+    cmd = os.environ.get("ASSETSYNC_7Z", "").strip()
+    if cmd:
+        return shlex.split(cmd)
+    for name in ("7zz", "7z", "7za", "7zr"):
+        found = shutil.which(name)
+        if found:
+            return [found]
+    if os.name == "nt":
+        for var in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+            exe = Path(os.environ.get(var) or "/nonexistent") / "7-Zip" / "7z.exe"
+            if exe.is_file():
+                return [str(exe)]
+    return None
+
+
+def run_7z(what, command, args, optional):
+    """Run a 7-Zip command; the optional switches are left out for older
+    versions that don't know them (exit code 7: command line error)."""
+    cmd = sevenzip_command()
+    if not cmd:
+        raise FsError(f"{what} is a 7z archive: unpacking it needs 7-Zip - install it "
+                      "(https://www.7-zip.org; 7zz or 7z) or set ASSETSYNC_7Z")
+    for opts in (optional, []):
+        try:
+            p = subprocess.run(cmd + [command] + opts + args, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=clean_env())
+        except OSError as e:
+            raise FsError(f"cannot run 7-Zip '{cmd[0]}' ({e.strerror}) - install it or set "
+                          "ASSETSYNC_7Z")
+        if p.returncode != 7 or not opts:
+            break
+    if p.returncode:        # 1 = warnings (e.g. files not extracted): not accepted
+        msg = (p.stderr.strip() or p.stdout.strip()).decode("utf-8", "replace").splitlines()
+        raise FsError(f"{what}: 7-Zip failed: {msg[-1] if msg else f'exit code {p.returncode}'}")
+    return p.stdout
+
+
+def extract_7z(path, name, files, work):
+    """A 7z archive, with an external 7-Zip: its listing is checked first
+    (links, special and encrypted files, unsafe paths, sizes), then it is
+    unpacked into an empty directory, which is checked again (no links,
+    valid names). The executable bit comes from the listing, so all
+    platforms get the same."""
+    what = f"{work.what}: {name}"
+    text = run_7z(what, "l", ["-slt", "--", str(path)], ["-sccUTF-8"])
+    text = text.decode("utf-8", "replace").replace("\r\n", "\n")
+    if "\n----------\n" not in text:
+        raise FsError(f"{what}: unexpected listing from 7-Zip")
+    executable, size, count = {}, 0, 0
+    for block in text.split("\n----------\n", 1)[1].split("\n\n"):
+        info = dict(line.partition(" = ")[::2] for line in block.splitlines() if " = " in line)
+        member = info.get("Path")
+        if member is None:
+            continue
+        win, _, unix = info.get("Attributes", "").partition(" ")
+        if "D" in win or unix.startswith("d") or info.get("Folder") == "+":
+            continue
+        if info.get("Encrypted") == "+":
+            raise FsError(f"{what}: '{member}' is encrypted")
+        if unix[:1] == "l":
+            raise FsError(f"{what}: '{member}' is a symbolic link")
+        if unix[:1] not in ("", "-"):
+            raise FsError(f"{what}: '{member}' is no regular file")
+        parts = member.replace("\\", "/").split("/")
+        if member.startswith(("/", "\\")) or re.match(r"[A-Za-z]:", member) or ".." in parts:
+            raise FsError(f"{what}: unsafe path '{member}'")
+        size += int(info.get("Size") or 0)
+        count += 1
+        if size > MAX_EXTRACT_SIZE or work.size + size > MAX_EXTRACT_SIZE:
+            raise FsError(f"{what}: more than {MAX_EXTRACT_SIZE >> 30} GiB unpacked")
+        if work.count + count > MAX_EXTRACT_FILES:
+            raise FsError(f"{what}: more than {MAX_EXTRACT_FILES} files")
+        executable["/".join(p for p in parts if p not in ("", "."))] = unix[3:4] == "x"
+    work.n += 1
+    target = work.dir / f"7z-{work.n}"
+    target.mkdir()
+    run_7z(what, "x", ["-y", f"-o{target}", "--", str(path)],
+           ["-sccUTF-8", "-bd", "-bso0", "-bsp0"])
+    for root, dirs, names in os.walk(target):
+        for n in dirs + names:
+            p = Path(root) / n
+            if p.is_symlink() or not (p.is_dir() or p.is_file()):
+                raise FsError(f"{what}: '{p.relative_to(target).as_posix()}' is no regular file")
+        for n in names:
+            p = Path(root) / n
+            rel = safe_path(p.relative_to(target).as_posix(), what)
+            work.size += p.stat().st_size
+            work.count += 1
+            if work.size > MAX_EXTRACT_SIZE or work.count > MAX_EXTRACT_FILES:
+                raise FsError(f"{what}: more than {MAX_EXTRACT_SIZE >> 30} GiB or "
+                              f"{MAX_EXTRACT_FILES} files unpacked")
+            add_member(files, rel, (p, executable.get(rel, False)), what)
+
+
 def extract_single(path, name, kind, files, work):
     """A compressed single file (.gz, .bz2, .xz): named without the suffix."""
     what = f"{work.what}: {name}"
@@ -909,6 +1009,8 @@ def extract_all(files, work):
         found = True
         if kind == "zip":
             extract_zip(path, rel, result, work)
+        elif kind == "7z":
+            extract_7z(path, rel, result, work)
         elif kind == "tar":
             extract_tar(path, rel, result, work)
         else:
@@ -2736,7 +2838,7 @@ def main(argv=None):
     g = filterp.add_argument_group("filter (applied in this order)")
     g.add_argument("--extract", action="store_true",
                    help="unpack the archives among the assets (zip, tar, tar.gz/bz2/xz; "
-                        ".gz/.bz2/.xz files)")
+                        ".gz/.bz2/.xz files; 7z with 7-Zip)")
     g.add_argument("--subdir", metavar="PATH", help="only the files below PATH, as the root")
     g.add_argument("--strip", type=int, metavar="N",
                    help="remove N leading directories from the paths")

@@ -539,7 +539,7 @@ running any code. It is a list of steps, applied in order; `add` and
 
 | Option | Step | Effect |
 |---|---|---|
-| `--extract` | `extract` | unpack the archives among the files: ZIP, tar, tar.gz/.tgz, tar.bz2, tar.xz, and single `.gz`/`.bz2`/`.xz` files (named without the suffix). The type is recognized by the content, not the name. All archives go into one root; files that are no archives stay as they are |
+| `--extract` | `extract` | unpack the archives among the files: ZIP, tar, tar.gz/.tgz, tar.bz2, tar.xz, single `.gz`/`.bz2`/`.xz` files (named without the suffix), and 7z with an external 7-Zip (see below). The type is recognized by the content, not the name. All archives go into one root; files that are no archives stay as they are |
 | `--subdir PATH` | `subdir PATH` | only the files below `PATH`, which becomes the root |
 | `--strip N` | `strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive) |
 | `--include PATTERN` | `keep PATTERN…` | only the files matching one of the patterns |
@@ -563,6 +563,16 @@ blanks), two members with the same path, and paths that differ only in
 case. At most 2 GiB and 100 000 files are unpacked per entry. The
 executable bit of archive members is kept (git knows only executable or
 not).
+
+**7z archives** are unpacked with 7-Zip, which is only needed for them:
+`7zz` (7-Zip for Linux and macOS), `7z` (7-Zip for Windows, or p7zip),
+`7za` or `7zr` on the `PATH`, on Windows also in `Program Files\7-Zip`;
+`ASSETSYNC_7Z` sets another command. Without it, `extract` on a 7z
+archive is an error that says so; taking a `.7z` asset as it is needs no
+7-Zip. The same safety rules apply: git-assetsync checks the archive's
+listing first (encrypted members are refused, too), lets 7-Zip unpack it
+into an empty temporary directory and checks the result again before
+using it. All methods 7-Zip knows work (LZMA, LZMA2, PPMd, BCJ2, …).
 
 ### Proposed commit messages
 

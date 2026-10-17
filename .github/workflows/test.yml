@@ -6,19 +6,21 @@ on:
   workflow_dispatch:
 
 # The tests need no network, gh or glab: test/fake_gh.py and test/fake_glab.py
-# play GitHub and GitLab, test/http_server.py other servers.
+# play GitHub and GitLab, test/http_server.py other servers. 7-Zip (for 7z
+# archives) is installed where it is missing; Windows runners have it.
 jobs:
   regress:
     name: Linux, current versions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Prepare git
+      - name: Prepare git and 7-Zip
         run: |
           git lfs install --skip-repo
+          command -v 7zz || command -v 7z || sudo apt-get install -y -qq p7zip-full
           git --version; git lfs version; python3 --version
       - name: Lint
-        run: python3 -m py_compile git-assetsync.py test/fake_gh.py test/fake_glab.py test/http_server.py
+        run: python3 -m py_compile git-assetsync.py test/fake_gh.py test/fake_glab.py test/fake_7z.py test/http_server.py
       - name: Regression tests
         run: |
           test/regress.sh </dev/null | tee regress.log
@@ -46,9 +48,10 @@ jobs:
       PYTHON: python
     steps:
       - uses: actions/checkout@v7
-      - name: Prepare git
+      - name: Prepare git and 7-Zip
         run: |
           git lfs install --skip-repo
+          [ -f "/c/Program Files/7-Zip/7z.exe" ] || choco install -y --no-progress 7zip
           git --version; git lfs version; python --version
       - name: Regression tests
         run: |
@@ -60,9 +63,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Prepare git
+      - name: Prepare git and 7-Zip
         run: |
           command -v git-lfs >/dev/null || brew install git-lfs
+          command -v 7zz || command -v 7z || brew install sevenzip
           git lfs install --skip-repo
           git --version; git lfs version; python3 --version; bash --version | head -1
       - name: Regression tests
