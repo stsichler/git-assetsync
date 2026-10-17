@@ -754,8 +754,9 @@ check "add: bad URL" "$(asd add r.txt ftp://x/y --asset r.txt 2>&1)" \
 # must not stage 'weird f.txt' (no '*' or '?': not allowed on Windows)
 echo other > 'weird f.txt'
 quiet asd add 'we[i]rd f.txt' acme/rb --asset r.txt
-check "wildcard characters in a file name" "$(cat 'we[i]rd f.txt') $(git status --porcelain | oneline)" \
-  "r A  .git-assetsync A  \"we[i]rd f.txt\" ?? \"weird f.txt\" "
+# (names via -z: git's quoting of blanks in porcelain output differs by version)
+check "wildcard characters in a file name" "$(cat 'we[i]rd f.txt') $(git diff --cached --name-only -z | tr '\0' '|')" \
+  "r .git-assetsync|we[i]rd f.txt|"
 git commit -q --no-edit
 check "... clean" "$(asd status -s)" ""
 
