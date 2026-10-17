@@ -1436,7 +1436,7 @@ reset_calls
 check "cache: pull --force from the cache" "$(echo x > a.txt; git commit -qam x; git assetsync pull --force --no-edit a.txt >/dev/null 2>&1; cat a.txt) $(downloads)" "cached 0"
 rm -rf "$ASSETSYNC_CACHE"
 check "cache: deleted cache is filled again" "$(asd add e.txt acme/cache >/dev/null 2>&1; ls "$ASSETSYNC_CACHE/sha256" | lines)" "1"
-check "cache: unusable" "$(ASSETSYNC_CACHE=$T/r20/a.txt/x asd add f.txt acme/cache 2>&1 | sed 's/ (.*) / /')" \
+check "cache: unusable" "$(ASSETSYNC_CACHE=$T/r20/a.txt/x asd add f.txt acme/cache 2>&1 | sed 's/ (.*) / /' | tr '\\' /)" \
   "error: cannot create the download cache $T/r20/a.txt/x - set ASSETSYNC_CACHE to another directory"
 
 
