@@ -6,10 +6,10 @@
 ![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)
 
 **Keep files in your repository in sync with release assets of other
-projects.** Check in a binary, firmware image or generated file that another
-project publishes as a release asset on GitHub or GitLab, see when a new
-release is out,
-and update it with one command, in a commit that says where it came from.
+projects.** Check in a binary, a firmware image, or headers and libraries
+unpacked from a ZIP that another project publishes as release assets on
+GitHub or GitLab, see when a new release is out, and update with one
+command, in a commit that says where it came from.
 
 > git-assetsync is developed together with [Claude](https://claude.ai) by
 > Anthropic: design, code, tests and documentation.
@@ -25,10 +25,10 @@ $ git assetsync pull bin/tool.bin
  2 files changed, 2 insertions(+), 2 deletions(-)
 ```
 
-**Status: early development.** The first version covers single files from
-releases on GitHub and GitLab. Unpacking archives (all or some of their
-files) and converting assets with filters (e.g. binary → C source) are
-planned next.
+**Status: early development.** Files and whole directories from releases
+on GitHub and GitLab, with archives unpacked and files selected by built-in
+filters. Converting assets with tools of your own (e.g. binary → C source)
+is planned next.
 
 ## Why?
 
@@ -45,25 +45,32 @@ built the same way.
 
 ## Features
 
-- Takes a file from a release asset on GitHub or GitLab, alike – also
-  GitHub Enterprise and self-managed GitLab, and private projects; all files of a repository are listed in one file, `.git-assetsync`, at
-  its root (git-config format, like `.gitmodules`)
+- Takes files and directories from release assets on GitHub or GitLab,
+  alike – also GitHub Enterprise and self-managed GitLab, and private
+  projects; all entries of a repository are listed in one file,
+  `.git-assetsync`, at its root (git-config format, like `.gitmodules`)
+- Built-in filters, without running any code: unpack ZIP and tar archives
+  safely, take a subdirectory, strip leading directories, include or
+  exclude files by pattern; a directory belongs to its entry and is
+  replaced as a whole on update
 - Follows the latest release, the newest release whose tag matches a
   pattern (e.g. `tool-*` for one of several tools released from one
   repository), or is pinned to one release; tags are taken as they are,
   without assuming a versioning scheme
-- Proposed commit message names the release (and the one before), its page
-  and the asset, and includes the release notes, shortened
+- Proposed commit message names the release (and the one before), its page,
+  the assets and the filter, and includes the release notes, shortened
 - `status` works offline for local changes; only the check for new releases
   asks the platform
-- Files must stay exact copies of the asset: local modifications are
-  reported, `pull` refuses them, `--force` restores the asset
+- Files must stay exactly what the release gives: local modifications are
+  reported, `pull` refuses them, `--force` restores them
 - Checks the download against the digest GitHub reports (GitLab reports
   none)
 - Commands named like Git commands behave like them (`status`, `pull`,
   `mv`); dry runs for `pull`, `add`, `unlink`, `mv`
 - Git LFS and line-ending conversions: files are recorded as `git add`
   stores them; a hint for big binaries not in LFS
+- A download cache, so another filter or a second repository needs no new
+  download
 - Colored output, reminder hooks, CI-friendly exit codes
 - One self-contained Python script, standard library only
 
@@ -142,14 +149,22 @@ Each commit contains the file and its updated entry in `.git-assetsync`.
 newest release whose tag matches, `--release v1.0` pins the file to that
 release. `git assetsync source set-release` changes that later.
 
+A directory, unpacked from an archive – with a trailing `/`, it belongs to
+the entry completely:
+
+```sh
+git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' \
+    --extract --strip 1 --include '/*.h' --include LICENSE
+```
+
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `status [PATH…]` | state of the files, like `git status`: new releases, local modifications |
-| `pull PATH…`, `pull --all` | update files to the selected release and commit |
-| `add PATH SOURCE` | take a file from a release asset |
-| `set PATH… OPTIONS` | change entries: source, release selection, asset |
+| `status [PATH…]` | state of the entries, like `git status`: new releases, local modifications |
+| `pull PATH…`, `pull --all` | update files and directories to the selected release and commit |
+| `add PATH SOURCE` | take a file or directory from release assets |
+| `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
@@ -157,7 +172,8 @@ release. `git assetsync source set-release` changes that later.
 
 `git assetsync <command> -h` lists the options of a command. The
 **[manual](MANUAL.md)** describes all commands and options in detail,
-along with the `.git-assetsync` file, release selection, GitHub and GitLab access,
+along with the `.git-assetsync` file, files and directories, filters,
+release selection, GitHub and GitLab access, the download cache,
 Git LFS, line endings and CI.
 
 ## Development
@@ -171,13 +187,14 @@ test/regress.sh            # Linux/macOS (bash); needs git, python3, git-lfs for
 The script builds throwaway repositories in a temp directory and plays
 GitHub and GitLab with `test/fake_gh.py` and `test/fake_glab.py`, which
 answer `gh api` / `glab api` calls from fixture files – no network or
-account needed. It checks adding, status,
-pull, release selection (latest, patterns, pinned, prereleases, drafts,
-paging), asset selection and digests, local modifications, the
-`.git-assetsync` file (sources, unlink, mv, commit consistency), commit
-proposals, offline status, line endings, Git LFS, unsafe registry entries,
-GitHub Enterprise, GitLab (also self-managed, subgroups, the kinds of asset
-links), dry runs, hooks and colors. It runs on every push via
+account needed. It checks adding, status, pull, release selection
+(latest, patterns, pinned, prereleases, drafts, paging), asset selection
+and digests, local modifications, directories and filters, archive formats
+and unsafe archive members, the download cache, the `.git-assetsync` file
+(sources, set, unlink, mv, commit consistency), commit proposals, offline
+status, line endings, Git LFS, unsafe registry entries, GitHub Enterprise,
+GitLab (also self-managed, subgroups, the kinds of asset links), dry runs,
+hooks and colors. It runs on every push via
 GitHub Actions, on Linux (also with the oldest supported Python and Git),
 macOS and Windows.
 
