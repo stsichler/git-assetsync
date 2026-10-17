@@ -550,14 +550,21 @@ the Microsoft Store); set the alias with `py` or `python`, see the
 [README](README.md). Output has LF line ends, like git's.
 
 Git for Windows runs the alias through its own (MSYS) shell, also when you
-call `git assetsync` from cmd or PowerShell. That shell expands **wildcard
-characters** in arguments if a file in the current directory matches:
-`git assetsync add lib/tool.zip acme/tool --asset 'tool-*.zip'` turns into `tool-1.0.zip` when
-that file is there, quoted or not. For such arguments, run the script directly instead of
-through the alias, e.g. `py C:/tools/git-assetsync.py add lib/tool.zip
-acme/tool --asset tool-*.zip` in cmd or PowerShell – or run the command where
-no file matches. Don't set `MSYS=noglob` for git itself: it breaks how git
-passes the arguments to the alias.
+call `git assetsync` from cmd or PowerShell. That shell changes two kinds of
+arguments before git-assetsync sees them:
+
+- **Wildcard characters** (`*`, `?`, `[…]`) are expanded if a file in the
+  current directory matches, quoted or not:
+  `git assetsync add lib/tool.zip acme/tool --asset 'tool-*.zip'` turns
+  into `tool-1.0.zip` when that file is there.
+- **Arguments starting with `/`** become Windows paths: `unlink /tmp/x` (of
+  a broken entry) turns into `C:/Users/…/Temp/x`.
+
+For such arguments, run the script directly instead of through the alias,
+e.g. `py C:/tools/git-assetsync.py add lib/tool.zip acme/tool --asset
+tool-*.zip` in cmd or PowerShell; in Git Bash, put `MSYS_NO_PATHCONV=1` in
+front of it. Don't set `MSYS_NO_PATHCONV` (or `MSYS=noglob`) for git
+itself: it breaks how git passes the arguments to the alias.
 
 ### Shipping git-assetsync with your repository
 

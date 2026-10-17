@@ -747,7 +747,7 @@ check "unsafe paths: all errors" "$(git assetsync status -s 2>/dev/null | cut -c
 check "unsafe paths: error count" "$(git assetsync status 2>&1 | grep -c '^error: ')" "5"
 check "unsafe paths: pull --all writes nothing" "$(git assetsync pull --all --no-edit >/dev/null 2>&1; ls -a .git/hooks | grep -c '^post-merge$'; ls ../evil.txt 2>/dev/null)" "0"
 check "unsafe paths: hint" "$(git assetsync status 2>&1 | grep -c "remove it with 'git assetsync unlink /tmp/evil.txt'")" "1"
-quiet git assetsync unlink ../evil.txt /tmp/evil.txt .git/hooks/post-merge sub/.GIT/x a//b
+quiet asd unlink ../evil.txt /tmp/evil.txt .git/hooks/post-merge sub/.GIT/x a//b    # asd: '/tmp' unconverted on Windows
 check "unsafe paths: unlink by name" "$(git config -f .git-assetsync --get-regexp '^file\.' | lines)" "0"
 rm .git-assetsync
 git config -f .git-assetsync file.x.txt.source nothing
