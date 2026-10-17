@@ -750,12 +750,14 @@ check "add: the registry itself" "$(asd add .git-assetsync acme/rb --asset r.txt
   "error: cannot add '.git-assetsync': .git-assetsync itself"
 check "add: bad URL" "$(asd add r.txt ftp://x/y --asset r.txt 2>&1)" \
   "error: 'ftp://x/y' is not a URL like https://github.com/owner/repo"
-# special characters in file names
-quiet asd add 'we[i]rd *.txt' acme/rb --asset r.txt
-check "wildcard characters in a file name" "$(cat 'we[i]rd *.txt') $(git status --porcelain | oneline)" \
-  "r A  .git-assetsync A  \"we[i]rd *.txt\" "
+# wildcard characters in a file name are taken literally: 'we[i]rd f.txt'
+# must not stage 'weird f.txt' (no '*' or '?': not allowed on Windows)
+echo other > 'weird f.txt'
+quiet asd add 'we[i]rd f.txt' acme/rb --asset r.txt
+check "wildcard characters in a file name" "$(cat 'we[i]rd f.txt') $(git status --porcelain | oneline)" \
+  "r A  .git-assetsync A  \"we[i]rd f.txt\" ?? \"weird f.txt\" "
 git commit -q --no-edit
-check "... clean" "$(st)" ""
+check "... clean" "$(asd status -s)" ""
 
 
 # =============================================================================
