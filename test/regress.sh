@@ -37,6 +37,7 @@
 #   13. Hooks and colors
 #   14. GitLab
 #   15. source: list, rename and change sources
+#   16. set: change entries
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -436,7 +437,7 @@ asset single.bin "single 3"
 asset extra.txt extra
 release acme/single v3 12 "$F/single.bin" "$F/extra.txt"
 check "no --asset, more assets later: error" "$(git assetsync status 2>&1 | head -1)" \
-  "error: single.bin: release v3 of acme/single has 2 assets: extra.txt, single.bin - choose one with 'git assetsync add --force single.bin acme/single --asset PATTERN'"
+  "error: single.bin: release v3 of acme/single has 2 assets: extra.txt, single.bin - choose one with 'git assetsync set single.bin --asset PATTERN'"
 cd "$T"
 
 # a re-uploaded asset (same tag, other content) is an upstream change
@@ -990,7 +991,7 @@ check "set-release --unset: latest again" "$(git assetsync source set-release ac
 pullc a.txt
 check "... pulled back to the latest" "$(cat a.txt)" "s1 v1"
 check "set-release: same selection as another source" "$(git assetsync source set-release acme/src-2 --unset 2>&1)" \
-  "error: source 'acme/src' already has this URL and selection - move the files to it with 'git assetsync add --force <file> acme/src'"
+  "error: source 'acme/src' already has this URL and selection - move the files to it with 'git assetsync set <file>... --source acme/src'"
 check "set-release: nothing given" "$(git assetsync source set-release acme/src 2>&1)" \
   "error: give either TAG|PATTERN or --unset (or only --prerelease / --no-prerelease)"
 check "unknown source" "$(git assetsync source set-release nope v1 2>&1)" \
@@ -1016,11 +1017,80 @@ git reset -q --hard
 # the asset of a file: changed with add --force
 asset other.txt other
 release acme/src v3 12 "$F/s1.txt" "$F/other.txt"
-check "two assets now: hint at add --force" "$(git assetsync status a.txt 2>&1 | head -1)" \
-  "error: a.txt: release v3 of acme/src has 2 assets: other.txt, s1.txt - choose one with 'git assetsync add --force a.txt acme/src --asset PATTERN'"
+check "two assets now: hint at set" "$(git assetsync status a.txt 2>&1 | head -1)" \
+  "error: a.txt: release v3 of acme/src has 2 assets: other.txt, s1.txt - choose one with 'git assetsync set a.txt --asset PATTERN'"
 quiet asd add --force a.txt acme/src --asset 's1*'
 git commit -q --no-edit
 check "add --force: asset chosen" "$(reg file.a.txt.asset) $(st a.txt)" "s1* "
+
+
+# =============================================================================
+section "16. set: change entries"
+# =============================================================================
+cd "$T"
+asset x.bin "x v1"
+asset y.bin "y v1"
+release acme/set v1 10 "$F/x.bin" "$F/y.bin"
+asset x.bin "x v2"
+asset y.bin "y v2"
+release acme/set v2 11 "$F/x.bin" "$F/y.bin"
+asset x.bin "fork x v2"
+asset y.bin "fork y v2"
+release me/set-fork v2 12 "$F/x.bin" "$F/y.bin"
+new_repo r16
+addc x.bin acme/set --asset x.bin --release v1
+addc y.bin acme/set --asset y.bin --release v1
+check "nothing to change" "$(git assetsync set x.bin 2>&1)" \
+  "error: nothing to change: give --source, --release/--latest/--prerelease/--type or --asset/--no-asset"
+check "same selection: nothing to change" "$(git assetsync set x.bin --release v1)" "nothing to change"
+
+# another release selection for one file of two: the source is split
+OUT=$(git assetsync set x.bin --latest)
+check "set --latest: split" "$(echo "$OUT" | head -1)" \
+  "x.bin: acme/set -> acme/set-2 (latest release); acme/set keeps 1 other file"
+check "set: staged only" "$(git status --porcelain | oneline)" "M  .git-assetsync "
+check "set: base kept" "$(reg file.x.bin.synced)" "v1"
+check "set: pending" "$(st x.bin)" "P"
+check "set: other file unchanged" "$(st y.bin)" ""
+pullc x.bin
+check "set + pull" "$(cat x.bin) $(git log -1 --format=%s)" "x v2 Update x.bin to acme/set-2 v2 (was v1)"
+# all files of a source: the source itself changes
+check "set: whole source" "$(git assetsync set y.bin --latest | head -1)" \
+  "y.bin: acme/set -> acme/set-2 (latest release)"
+check "... moved to the matching source, old one removed" "$(reg file.y.bin.source) $(reg source.acme/set.url)" "acme/set-2 "
+git reset -q --hard
+check "set -n: nothing changed" "$(git assetsync set -n y.bin --latest | head -1; git status --porcelain)" \
+  "would: y.bin: acme/set -> acme/set-2 (latest release)"
+
+# another project (a fork): base kept, the asset counts as unknown
+OUT=$(git assetsync set x.bin --source me/set-fork)
+# (x.bin is the only file of its source: the source itself changes)
+check "set --source: output" "$(echo "$OUT" | head -1)" \
+  "acme/set-2: https://github.com/acme/set (latest release) -> https://github.com/me/set-fork (latest release)"
+check "set --source: synced removed, base kept" "$(reg file.x.bin.synced)|$(reg file.x.bin.blob)" "|$(git rev-parse HEAD:x.bin)"
+check "set --source: still unmodified" "$(git assetsync status x.bin | grep -c 'pending:    x.bin  (entry changed, release v2)')" "1"
+pullc x.bin
+check "set --source + pull" "$(cat x.bin) $(git log -1 --format=%s)" "fork x v2 Update x.bin to acme/set-2 v2"
+# local modifications stay modifications
+echo mine > x.bin && git commit -qam mine
+quiet git assetsync set x.bin --source https://github.com/acme/set
+check "set: modified stays modified" "$(st x.bin)" "PA"
+git reset -q --hard HEAD~1
+
+# another asset of the same release; the same content: only the entry
+quiet git assetsync set y.bin --asset 'y*'
+pullc y.bin
+check "set --asset, same file: recorded" "$(git log -1 --format=%s) $(reg file.y.bin.asset)" \
+  "Record y.bin as acme/set v1 (file unchanged) y*"
+quiet git assetsync set y.bin --asset x.bin
+check "set --asset: pending" "$(st y.bin)" "P"
+pullc y.bin
+check "set --asset + pull" "$(cat y.bin) $(git log -1 --format=%s)" "x v1 Update y.bin to acme/set v1"
+check "set --no-asset" "$(git assetsync set y.bin --no-asset >/dev/null; reg file.y.bin.asset)" ""
+git reset -q --hard
+check "set --release and --latest" "$(git assetsync set y.bin --release v1 --latest 2>&1)" \
+  "error: --release and --latest exclude each other"
+check "set --source: unknown host" "$(git assetsync set y.bin --source https://code.example.org/a/b 2>&1 | grep -c '^error: .*platform of code.example.org unknown')" "1"
 
 
 # =============================================================================

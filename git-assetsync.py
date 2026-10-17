@@ -79,6 +79,18 @@ command.
         --force                 replace an existing entry or file
         -n, --dry-run           only show what would be done
 
+    set PATH... OPTIONS         change entries, like source does for sources:
+                                only .git-assetsync is staged, pull updates
+        --source URL|SOURCE     take the files from another source (as for
+                                add, with --release/--prerelease/--type); if
+                                they are all files of their source, the
+                                source itself is changed
+        --release TAG|PATTERN, --latest, --prerelease, --no-prerelease,
+        --type github|gitlab    (without --source) another release
+                                selection or platform for these files only
+        --asset PATTERN, --no-asset  another asset (--no-asset: the only one)
+        -n, --dry-run           only show what would change
+
     unlink PATH...              remove entries (the files are kept); also
                                 broken ones, by their name
     mv OLD NEW                  move a file (git mv), keeping its entry
@@ -825,13 +837,20 @@ class Registry:
         git(["config", "-f", self.path] + list(args))
 
     def set_file(self, rel, name, value):
-        self._cfg(f"file.{rel}.{name}", value)
-        self.files.setdefault(rel, {})[name] = value
+        """Set (value None: remove) a key of a [file]."""
+        if value is None:
+            if name in self.files.get(rel, {}):
+                self._cfg("--unset-all", f"file.{rel}.{name}")
+                del self.files[rel][name]
+        else:
+            self._cfg(f"file.{rel}.{name}", value)
+            self.files.setdefault(rel, {})[name] = value
 
-    def find_source(self, url, spec):
+    def find_source(self, url, spec, exclude=None):
         """Key of a [source] with url and exactly the selection keys of spec."""
         for name, s in self.sources.items():
-            if norm_url(s.get("url", "")) == norm_url(url) and source_spec(s) == spec:
+            if name != exclude and norm_url(s.get("url", "")) == norm_url(url) and \
+                    source_spec(s) == spec:
                 return name
         return None
 
@@ -871,6 +890,15 @@ class Registry:
         else:
             self._cfg(f"source.{name}.{key}", value)
             self.sources[name][key] = value
+
+    def set_spec(self, name, spec):
+        """Set the release selection keys of a [source] to spec."""
+        for key in SPEC_KEYS:
+            self.set_source(name, key, spec.get(key))
+
+    def remove_source(self, name):
+        self._cfg("--remove-section", f"source.{name}")
+        del self.sources[name]
 
     def rename_source(self, old, new):
         self._cfg("--rename-section", f"source.{old}", f"source.{new}")
@@ -1082,8 +1110,7 @@ def evaluate(ctx, repo, entry):
         try:
             st.origin, st.release = ctx.release(entry.url, entry.spec)
             st.asset = match_asset(st.release, entry.asset, st.origin.label,
-                                   f"'git assetsync add --force {cmd_arg(entry.rel)} "
-                                   f"{shlex.quote(entry.name)} --asset PATTERN'")
+                                   f"'git assetsync set {cmd_arg(entry.rel)} --asset PATTERN'")
         except FsError as e:
             st.error = str(e)
             return st
@@ -1097,6 +1124,8 @@ def evaluate(ctx, repo, entry):
 def upstream_state(st):
     """(label, note) of a pending upstream change, None if there is none."""
     e = st.entry
+    if st.changed and not e.synced and e.blob:
+        return "pending", f"entry changed, release {st.release.tag}"
     if st.changed and not e.synced:
         return "new", f"release {st.release.tag}"
     if st.changed and st.release.tag != e.synced:
@@ -1289,10 +1318,14 @@ def notes_lines(notes):
     return [f"  {line}" if line else "" for line in lines]
 
 
-def build_message(entry, release, asset, discarded):
-    """Commit message for pull: what the file is updated to (or restored)."""
+def build_message(entry, release, asset, discarded, unchanged=False):
+    """Commit message for pull: what the file is updated to (or restored).
+    unchanged: the file stays the same (only its entry changes)."""
     rel, name, tag, old = entry.rel, entry.name, release.tag, entry.synced
-    if not old:
+    if not old and entry.blob:      # source or asset changed with set
+        subject = (f"Record {rel} as {name} {tag} (file unchanged)" if unchanged else
+                   f"Update {rel} to {name} {tag}")
+    elif not old:
         subject = f"Add {rel} from {name} {tag}"
     elif tag != old:
         subject = f"Update {rel} to {name} {tag} (was {old})"
@@ -1433,7 +1466,7 @@ def pull_one(repo, reg, st, args):
     # only replaced if it is the same, or with --force
     digest, blob = install_asset(repo, st.origin, release, asset, rel, entry.target,
                                  force=args.force or bool(entry.blob))
-    msg = build_message(entry, release, asset, discard)
+    msg = build_message(entry, release, asset, discard, unchanged=blob == entry.blob)
     entry.set("synced", release.tag)
     entry.set("digest", digest)
     entry.set("blob", blob)
@@ -1547,6 +1580,106 @@ def cmd_add(ctx, repo, args):
     msg = "\n".join([f"Add {rel} from {name} {release.tag}", ""]
                     + release_lines(release, asset)) + "\n"
     report_staged(repo, rel, msg, paint("staged", "green"))
+    return EXIT_OK
+
+
+def move_to_source(reg, name, entries, url, spec, named=None):
+    """Point entries of [source] name at the source with url and spec - or
+    exactly at [source] named. If they are all files of the source and no
+    such source exists, the source itself is changed; otherwise they move
+    to it (found or created) and the source is split, or removed when left
+    without files. Returns a description of the change."""
+    source = reg.sources[name]
+    old_url, old = source.get("url", ""), source_spec(source)
+    new_url = norm_url(url) != norm_url(old_url)
+
+    def text(u, sp):
+        return f"{u} ({spec_text(sp)})" if new_url else spec_text(sp)
+    target = named or reg.find_source(url, spec, exclude=name)
+    if not target and set(reg.source_files(name)) == {e.rel for e in entries}:
+        if new_url:
+            reg.set_source(name, "url", url)
+        reg.set_spec(name, spec)
+        return f"{name}: {text(old_url, old)} -> {text(url, spec)}"
+    target = target or reg.add_source(url, spec)
+    for e in entries:
+        reg.set_file(e.rel, "source", target)
+    rest = len(reg.source_files(name))
+    if not rest:
+        reg.remove_source(name)
+    desc = f"{', '.join(e.rel for e in entries)}: {name} -> {target} ({text(url, spec)})"
+    return desc + (f"; {name} keeps {plural(rest, 'other file')}" if rest else "")
+
+
+def cmd_set(ctx, repo, args):
+    """Change entries - their source, release selection or asset - where
+    add would need --force, like 'source' does for sources. Only
+    .git-assetsync is changed (and staged); pull then updates the files.
+    The base (blob, digest) is kept, so local modifications stay
+    recognized; with another URL or asset, which release asset the file
+    comes from is unknown until the next pull (synced removed)."""
+    select = args.release is not None or args.latest or args.prerelease is not None or \
+        args.type is not None
+    if not (args.source or select or args.asset is not None or args.no_asset):
+        raise FsError("nothing to change: give --source, --release/--latest/--prerelease/"
+                      "--type or --asset/--no-asset")
+    if args.release is not None and args.latest:
+        raise FsError("--release and --latest exclude each other")
+    reg = Registry(repo)
+    reg.dry_run = args.dry_run
+    entries = select_entries(repo, reg, args.paths)
+    would = "would: " if args.dry_run else ""
+    changed = False
+    given = add_source(reg, args) if args.source else None      # (url, spec, named)
+    groups = {}
+    for e in entries:
+        groups.setdefault(e.name, []).append(e)
+    for name, ents in groups.items():
+        source = reg.sources.get(name)
+        if not source or not source.get("url"):
+            raise FsError(f"{ents[0].rel}: its [source \"{name}\"] in {REGISTRY} has no url")
+        if given:
+            url, spec, named = given
+        elif select:
+            url, spec, named = source["url"], source_spec(source), None
+            if args.release is not None:
+                spec["release"] = args.release
+            if args.latest:
+                spec.pop("release", None)
+            if args.prerelease is not None:
+                if args.prerelease:
+                    spec["prerelease"] = "true"
+                else:
+                    spec.pop("prerelease", None)
+            if args.type is not None:
+                spec["type"] = args.type
+        else:
+            continue
+        if named == name or not named and norm_url(url) == norm_url(source["url"]) \
+                and spec == source_spec(source):
+            continue
+        platform_of(url, spec.get("type"))       # a usable URL and type
+        new_url = norm_url(url) != norm_url(source["url"])
+        print(would + move_to_source(reg, name, ents, url, spec, named))
+        changed = True
+        if new_url:      # another project: which of its assets is not known yet
+            for e in ents:
+                e.set("synced", None)
+    if args.asset is not None or args.no_asset:
+        new = None if args.no_asset else args.asset
+        for e in entries:
+            if (e.asset or None) != new:
+                print(f"{would}{e.rel}: asset {e.asset or '(the only one)'} -> "
+                      f"{new or '(the only one)'}")
+                e.set("asset", new)
+                e.set("synced", None)
+                changed = True
+    if not changed:
+        print("nothing to change")
+    elif not args.dry_run:
+        reg.finish()
+        print(f'{REGISTRY} staged (use "git assetsync status" to see what changes, '
+              '"git assetsync pull <file>..." to update)')
     return EXIT_OK
 
 
@@ -1664,7 +1797,7 @@ def cmd_source(ctx, repo, args):
                      None)
         if other:
             raise FsError(f"source '{other}' already has this URL and selection - move the files "
-                          f"to it with 'git assetsync add --force <file> {other}'")
+                          f"to it with 'git assetsync set <file>... --source {other}'")
         if action == "set-url":
             reg.set_source(args.name, "url", url)
             done = f"{args.name}: url {url}"
@@ -1812,6 +1945,26 @@ def main(argv=None):
     p.add_argument("--force", action="store_true", help="replace an existing entry or file")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
+    p = sub.add_parser("set", parents=[colorp],
+                       help="change entries: source, release selection or asset")
+    p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
+    p.add_argument("--source", metavar="URL|SOURCE",
+                   help="take the files from another source (URL or name, as for add)")
+    p.add_argument("--release", metavar="TAG|PATTERN",
+                   help="release to take: a tag pins, a pattern takes the newest matching")
+    p.add_argument("--latest", action="store_true", help="follow the latest release")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--prerelease", dest="prerelease", action="store_true", default=None,
+                   help="prereleases count too")
+    g.add_argument("--no-prerelease", dest="prerelease", action="store_false",
+                   help="prereleases don't count")
+    p.add_argument("--type", choices=sorted(PLATFORMS), help="platform of the source's host")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--asset", metavar="PATTERN", help="another asset (glob, exactly one match)")
+    g.add_argument("--no-asset", action="store_true",
+                   help="no pattern: the release's only asset")
+    p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
+
     p = sub.add_parser("unlink", parents=[colorp], help="remove entries (the files are kept)")
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
@@ -1875,7 +2028,8 @@ def main(argv=None):
             return cmd_uninstall_hooks(repo, args)
         ctx = Context(args)
         return {"status": cmd_status, "pull": cmd_pull, "add": cmd_add,
-                "unlink": cmd_unlink, "mv": cmd_mv, "source": cmd_source}[args.cmd](ctx, repo, args)
+                "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv,
+                "source": cmd_source}[args.cmd](ctx, repo, args)
     except FsError as e:
         error(str(e))
         return EXIT_ERROR

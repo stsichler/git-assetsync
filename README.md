@@ -149,6 +149,7 @@ release. `git assetsync source set-release` changes that later.
 | `status [PATH…]` | state of the files, like `git status`: new releases, local modifications |
 | `pull PATH…`, `pull --all` | update files to the selected release and commit |
 | `add PATH SOURCE` | take a file from a release asset |
+| `set PATH… OPTIONS` | change entries: source, release selection, asset |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
