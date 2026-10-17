@@ -1511,8 +1511,13 @@ else
     ln -s doc.txt "$T/s7/link"
     (cd "$T/s7" && "$SZ" a -bd -snl "$F/reallink.7z" doc.txt link >/dev/null)
     release acme/real7zlink v1 10 "$F/reallink.7z"
-    check "real 7-Zip: symbolic link refused" "$(asd add rl/ acme/real7zlink --extract 2>&1 | grep '^error')" \
-      "error: rl/: reallink.7z: 'link' is a symbolic link"
+    # only if this 7-Zip stored the link as one (p7zip on macOS follows it)
+    if "$SZ" l -slt "$F/reallink.7z" | grep -q '^Attributes = .* l'; then
+      check "real 7-Zip: symbolic link refused" "$(asd add rl/ acme/real7zlink --extract 2>&1 | grep '^error')" \
+        "error: rl/: reallink.7z: 'link' is a symbolic link"
+    else
+      check "real 7-Zip: link stored as a file: a file" "$(asd add rl/ acme/real7zlink --extract >/dev/null 2>&1; git ls-files rl | oneline)" "rl/doc.txt rl/link "
+    fi
   fi
 fi
 
