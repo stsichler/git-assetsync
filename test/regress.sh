@@ -39,6 +39,9 @@
 #   15. source: list, rename and change sources
 #   16. set: change entries
 #   17. releases: list releases and assets
+#   18. Directories and filters
+#   19. Archives: formats, executables, unsafe members
+#   20. Download cache
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -64,10 +67,10 @@ cd "$T" || exit 2
 
 PYTHON=${PYTHON:-python3}
 
-# Isolate from the user's setup: own HOME (global git config); the fake
-# GitHub instead of gh, with its fixture directory $GH; asset files to
-# publish are made in $F.
-export HOME=$T/home GH=$T/gh F=$T/files
+# Isolate from the user's setup: own HOME (global git config) and download
+# cache; the fake GitHub instead of gh, with its fixture directory $GH;
+# asset files to publish are made in $F.
+export HOME=$T/home GH=$T/gh F=$T/files ASSETSYNC_CACHE=$T/cache
 mkdir -p "$HOME" "$GH" "$F"
 export FAKE_GH_DIR=$GH
 export ASSETSYNC_GH="\"$PYTHON\" \"$TD/fake_gh.py\""
@@ -200,6 +203,72 @@ reupload() {
     grep -q "\"tag_name\": \"$2\"" "$d/release.json" && cp "$3" "$d/assets/"
   done
 }
+
+# mkarchive OUT DIR - archive of the files below DIR (paths relative to
+# it): .zip, .tar, .tar.gz/.tgz, .tar.bz2, .tar.xz; files named *.sh are
+# marked executable (independent of the file system)
+mkarchive() {
+  "$PYTHON" - "$1" "$2" <<'EOF'
+import io, os, sys, tarfile, zipfile
+out, src = sys.argv[1], sys.argv[2]
+files = sorted(os.path.relpath(os.path.join(d, f), src).replace(os.sep, "/")
+               for d, _, fs in os.walk(src) for f in fs)
+def mode(f): return 0o755 if f.endswith(".sh") else 0o644
+if out.endswith(".zip"):
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in files:
+            info = zipfile.ZipInfo(f)
+            info.create_system, info.external_attr = 3, (0o100000 | mode(f)) << 16
+            z.writestr(info, open(os.path.join(src, f), "rb").read())
+else:
+    kind = next((k for e, k in ((".gz", "gz"), (".tgz", "gz"), (".bz2", "bz2"), (".xz", "xz"))
+                 if out.endswith(e)), "")
+    with tarfile.open(out, "w:" + kind) as t:
+        for f in files:
+            data = open(os.path.join(src, f), "rb").read()
+            info = tarfile.TarInfo(f)
+            info.size, info.mode = len(data), mode(f)
+            t.addfile(info, io.BytesIO(data))
+EOF
+}
+
+# mkevil OUT KIND - an archive with one bad member: slip (../x), abs
+# (/x), symlink, hardlink (tar), git (.git/config), case (A.txt and
+# a.txt), winname (con.txt), dup (x.txt twice)
+mkevil() {
+  "$PYTHON" - "$1" "$2" <<'EOF'
+import io, sys, tarfile, zipfile, warnings
+out, kind = sys.argv[1], sys.argv[2]
+warnings.simplefilter("ignore")
+members = {"slip": [("../evil.txt", "f")], "abs": [("/tmp/evil.txt", "f")],
+           "symlink": [("link", "l")], "hardlink": [("ok.txt", "f"), ("hard", "h")],
+           "git": [(".git/config", "f")], "case": [("A.txt", "f"), ("a.txt", "f")],
+           "winname": [("con.txt", "f")], "dup": [("x.txt", "f"), ("x.txt", "f")]}[kind]
+if out.endswith(".zip"):
+    with zipfile.ZipFile(out, "w") as z:
+        for name, t in members:
+            info = zipfile.ZipInfo(name)
+            info.create_system = 3
+            info.external_attr = (0o120777 if t == "l" else 0o100644) << 16
+            z.writestr(info, "/etc/passwd" if t == "l" else "evil\n")
+else:
+    with tarfile.open(out, "w") as t:
+        for name, k in members:
+            info = tarfile.TarInfo(name)
+            if k == "l":
+                info.type, info.linkname = tarfile.SYMTYPE, "/etc/passwd"
+                t.addfile(info)
+            elif k == "h":
+                info.type, info.linkname = tarfile.LNKTYPE, "ok.txt"
+                t.addfile(info)
+            else:
+                info.size = 5
+                t.addfile(info, io.BytesIO(b"evil\n"))
+EOF
+}
+
+# downloads - number of asset downloads since the last reset_calls
+downloads() { if [ -f "$GH/calls.log" ]; then grep -c -E 'releases/assets/|packages/generic/' "$GH/calls.log"; else echo 0; fi; }
 
 # calls - number of 'gh api' calls since the last reset_calls
 calls() { if [ -f "$GH/calls.log" ]; then lines < "$GH/calls.log"; else echo 0; fi; }
@@ -569,8 +638,9 @@ check "... file kept" "$(cat mine.bin)" "mine"
 cp "$F/one.bin" same.bin
 check "existing identical file: fine" "$(rc asd add same.bin acme/pair --asset one.bin)" "0"
 git reset -q --hard; rm -f mine.bin same.bin
-check "a directory: refused" "$(mkdir -p dir && asd add dir acme/pair --asset one.bin 2>&1)" \
-  "error: cannot add 'dir': is a directory"
+check "an existing directory: a directory entry" "$(mkdir -p dir && asd add dir acme/pair --asset one.bin 2>/dev/null | head -1)" \
+  "added dir/ <- acme/pair v1 (one.bin)"
+git reset -q --hard; rm -rf dir
 
 # unlink: entry (and unused source) removed, file kept, staged
 OUT=$(git assetsync unlink one.bin)
@@ -1042,7 +1112,7 @@ new_repo r16
 addc x.bin acme/set --asset x.bin --release v1
 addc y.bin acme/set --asset y.bin --release v1
 check "nothing to change" "$(git assetsync set x.bin 2>&1)" \
-  "error: nothing to change: give --source, --release/--latest/--prerelease/--type or --asset/--no-asset"
+  "error: nothing to change: give --source, --release/--latest/--prerelease/--type, --asset/--no-asset or filter options"
 check "same selection: nothing to change" "$(git assetsync set x.bin --release v1)" "nothing to change"
 
 # another release selection for one file of two: the source is split
@@ -1123,6 +1193,251 @@ check "releases: GitLab, upcoming" "$(asd releases https://gitlab.com/grp/proj -
   "v3  2026-10-30  (upcoming) v2  2026-10-11  (latest) "
 check "releases: none" "$(asd releases https://gitlab.com/grp/empty)" "no releases in grp/empty"
 check "releases: unknown project" "$(asd releases acme/nothing 2>&1)" "error: repository acme/nothing not found (or no access)"
+
+
+# =============================================================================
+section "18. Directories and filters"
+# =============================================================================
+cd "$T"
+# zlib-1.3/: the layout of a typical archive
+mkdir -p z/zlib-1.3/include z/zlib-1.3/lib/x64
+echo "zlib 1.3" > z/zlib-1.3/include/zlib.h
+echo "zconf 1.3" > z/zlib-1.3/include/zconf.h
+echo "lib 1.3" > z/zlib-1.3/lib/x64/zlib.lib
+echo "pdb" > z/zlib-1.3/lib/x64/zlib.pdb
+echo "readme" > z/zlib-1.3/README
+mkarchive "$F/zlib-1.3-win64.zip" z
+echo sums > "$F/checksums.txt"
+release madler/zlib v1.3 10 "$F/zlib-1.3-win64.zip" "$F/checksums.txt"
+
+new_repo r18
+printf '*.lib\n*.log\n' > .gitignore && git add .gitignore && git commit -qm ignore
+OUT=$(asd add lib/zlib/ madler/zlib --asset 'zlib-*-win64.zip' --extract --strip 1 \
+  --include 'include/*.h' --include 'lib/x64/*.lib' --exclude '*.pdb' 2>&1)
+check "dir: added" "$(echo "$OUT" | grep '^added')" "added lib/zlib/ <- madler/zlib v1.3 (zlib-1.3-win64.zip)"
+check "dir: files (ignored *.lib included)" "$(git ls-files lib | oneline)" \
+  "lib/zlib/include/zconf.h lib/zlib/include/zlib.h lib/zlib/lib/x64/zlib.lib "
+check "dir: [dir] entry" "$(git config -f .git-assetsync --get-all dir.lib/zlib.step | oneline)" \
+  "extract strip 1 keep 'include/*.h' 'lib/x64/*.lib' drop '*.pdb' "
+check "dir: tree as staged" "$(reg dir.lib/zlib.tree)" "$(git write-tree --prefix=lib/zlib/)"
+check "dir: filterhash" "$(reg dir.lib/zlib.filterhash | wc -c | tr -d ' ')" "17"
+git commit -q --no-edit
+check "dir: message" "$(git log -1 --format=%B | grep -E '^(Add|Filter|Files)' | oneline)" \
+  "Add lib/zlib/ from madler/zlib v1.3 Filter:  extract, strip 1, keep 'include/*.h' 'lib/x64/*.lib', drop '*.pdb' Files:   3 added, 0 removed, 0 changed (3 in total) "
+check "dir: clean" "$(st) $(git status --porcelain)" " "
+check "dir: nothing to pull" "$(git assetsync status | tail -1)" "nothing to pull, 1 directory unmodified"
+check "dir: status -v" "$(git assetsync status -v | grep -c "unmodified: lib/zlib/  (zlib-\*-win64.zip from madler/zlib, latest release, filter: extract")" "1"
+check "dir: shown with /" "$(cd lib && git assetsync status -v | grep -c 'unmodified: zlib/ ')" "1"
+
+# a new release: files changed, removed, added
+echo "zlib 1.3.1" > "$T/z/zlib-1.3/include/zlib.h"
+rm "$T/z/zlib-1.3/include/zconf.h"
+echo "new" > "$T/z/zlib-1.3/include/new.h"
+mkarchive "$F/zlib-1.3.1-win64.zip" "$T/z"
+release madler/zlib v1.3.1 11 "$F/zlib-1.3.1-win64.zip" "$F/checksums.txt"
+check "dir: pending" "$(st)" "P"
+pullc lib/zlib
+check "dir: pulled" "$(git ls-files lib | oneline)$(cat lib/zlib/include/zlib.h)" \
+  "lib/zlib/include/new.h lib/zlib/include/zlib.h lib/zlib/lib/x64/zlib.lib zlib 1.3.1"
+check "dir: removed file gone" "$(ls lib/zlib/include | oneline)" "new.h zlib.h "
+check "dir: message" "$(git log -1 --format=%B | grep -E '^(Update|Files)' | oneline)" \
+  "Update lib/zlib/ to madler/zlib v1.3.1 (was v1.3) Files:   1 added, 1 removed, 1 changed (3 in total) "
+check "dir: clean after pull" "$(st) $(git status --porcelain)" " "
+
+# local modifications: changed, untracked; ignored files don't count
+echo build > lib/zlib/build.log
+check "dir: ignored file: no modification" "$(st)" ""
+echo mine > lib/zlib/mine.h
+check "dir: untracked file: modified" "$(st)" "  M"
+check "dir: NOT ALLOWED" "$(git assetsync status | grep -cE "^${TAB}modified:[[:space:]]+lib/zlib/  \(NOT ALLOWED\)")" "1"
+rm lib/zlib/mine.h
+echo changed >> lib/zlib/include/zlib.h
+check "dir: changed file: modified" "$(st)" "  M"
+check "dir: pull refused" "$(rc git assetsync pull --no-edit lib/zlib)" "2"
+git commit -qam "local change"
+check "dir: committed modification" "$(st)" " A"
+echo mine > lib/zlib/mine.h
+pullc --force lib/zlib
+check "dir: --force restores" "$(cat lib/zlib/include/zlib.h) $(git log -1 --format=%s)" "zlib 1.3.1 Restore lib/zlib/ from madler/zlib v1.3.1"
+check "dir: --force: untracked deleted, ignored kept" "$(ls lib/zlib | oneline)" "build.log include lib "
+check "dir: clean after restore" "$(st) $(git status --porcelain)" " "
+
+# another filter (set): pending, pulled from the cache
+quiet git assetsync set lib/zlib --extract --strip 1 --include 'include/*.h'
+check "set filter: staged" "$(git config -f .git-assetsync --get-all dir.lib/zlib.step | oneline)" \
+  "extract strip 1 keep 'include/*.h' "
+check "set filter: pending" "$(git assetsync status | grep -c 'pending:    lib/zlib/  (filter changed)')" "1"
+reset_calls
+pullc lib/zlib
+check "filter changed: pulled" "$(git ls-files lib | oneline)" "lib/zlib/include/new.h lib/zlib/include/zlib.h "
+check "filter changed: message" "$(git log -1 --format=%s)" "Update lib/zlib/ from madler/zlib v1.3.1 (filter changed)"
+check "filter changed: no download (cache)" "$(downloads)" "0"
+check "set --no-filter" "$(git assetsync set lib/zlib --no-filter; git config -f .git-assetsync --get-all dir.lib/zlib.step)" \
+  "lib/zlib/: filter extract, strip 1, keep 'include/*.h' -> (none)
+.git-assetsync staged (use \"git assetsync status\" to see what changes, \"git assetsync pull <file>...\" to update)"
+git reset -q --hard
+
+# entries must not overlap
+check "overlap: file in a dir" "$(asd add lib/zlib/x.txt madler/zlib --asset checksums.txt 2>&1)" \
+  "error: cannot add 'lib/zlib/x.txt': overlaps with the entry for lib/zlib - entries must not overlap"
+check "overlap: dir around a dir" "$(asd add lib/ madler/zlib --asset checksums.txt 2>&1)" \
+  "error: cannot add 'lib/': overlaps with the entry for lib/zlib - entries must not overlap"
+git config -f .git-assetsync file.lib/zlib/y.txt.source madler/zlib
+check "overlap in the registry: error" "$(git assetsync status 2>&1 | grep -c 'overlaps with the entry for')" "2"
+git checkout -q .git-assetsync
+
+# a file from an archive; a filter giving several files for a file
+mkdir -p "$T/b/firmware" && echo fw > "$T/b/firmware/fw.bin" && echo doc > "$T/b/firmware/doc.txt"
+mkarchive "$F/bundle.zip" "$T/b"
+release acme/bundle v1 10 "$F/bundle.zip"
+quiet asd add fw.bin acme/bundle --extract --include fw.bin
+check "file from an archive" "$(cat fw.bin) $(git config -f .git-assetsync --get-all file.fw.bin.step | oneline)" "fw extract keep fw.bin "
+check "file: several files" "$(asd add two.bin acme/bundle --extract 2>&1)" \
+  "error: two.bin: the filter gives 2 files, a file needs exactly one - narrow it with --include, or add 'two.bin/' as a directory"
+check "dir from the same archive" "$(asd add -n fwdir/ acme/bundle --extract --subdir firmware)" \
+  "would add fwdir/ from acme/bundle v1 (bundle.zip, latest release, filter: extract, subdir firmware)"
+git reset -q --hard; rm -f fw.bin
+
+# a directory of all assets (no --asset); a guard against many or big ones
+asset a1.txt a1; asset a2.txt a2
+release acme/many-assets v1 10 "$F/a1.txt" "$F/a2.txt"
+OUT=$(asd add all/ acme/many-assets 2>/dev/null)
+check "all assets: listed" "$(echo "$OUT" | head -1)" "all/: all 2 assets of acme/many-assets v1: a1.txt (3 bytes), a2.txt (3 bytes)"
+check "all assets: taken" "$(git ls-files all | oneline)" "all/a1.txt all/a2.txt "
+check "all assets: message" "$(sed -n 1,5p .git/SQUASH_MSG | grep Assets)" "Assets:  a1.txt, a2.txt"
+git reset -q --hard; rm -rf all
+i=1; set --
+while [ $i -le 11 ]; do asset "m$i.txt" "m$i"; set -- "$@" "$F/m$i.txt"; i=$((i + 1)); done
+release acme/eleven v1 10 "$@"
+check "more than 10 assets: refused" "$(asd add many/ acme/eleven 2>&1 >/dev/null)" \
+  "error: that is more than 10 assets or 100 MiB - choose some with --asset PATTERN, or take all with --force"
+check "more than 10 assets: --force" "$(asd add --force many/ acme/eleven >/dev/null 2>&1; git ls-files many | lines)" "11"
+check "dir --asset with several matches" "$(asd add -n m1/ acme/eleven --asset 'm1*' | sed 's/(.*,/(...,/')" \
+  "would add m1/ from acme/eleven v1 (..., latest release)"
+git reset -q --hard; rm -rf many
+
+# an existing directory with files becomes the entry's only with --force
+mkdir -p own && echo mine > own/mine.txt && echo old > own/a1.txt
+check "non-empty dir: refused" "$(asd add own/ acme/many-assets 2>&1 >/dev/null)" \
+  "error: 'own/' is not empty - with --force it becomes the entry's (files there the release doesn't give are deleted; ignored ones stay)"
+quiet asd add --force own/ acme/many-assets
+check "non-empty dir with --force" "$(ls own | oneline)$(cat own/a1.txt)" "a1.txt a2.txt a1"
+git reset -q --hard; rm -rf own
+
+# a hand-written [dir] entry: pull fetches it
+printf '[source "h"]\n\turl = https://github.com/acme/many-assets\n[dir "hand"]\n\tsource = h\n' > .git-assetsync
+git add .git-assetsync && git commit -qm "hand-written dir"
+check "hand-written dir: new" "$(st hand)" "N"
+pullc hand
+check "hand-written dir: pulled" "$(git ls-files hand | oneline) $(git log -1 --format=%s)" "hand/a1.txt hand/a2.txt  Add hand/ from h v1"
+
+# mv and unlink of a directory entry
+quiet git assetsync mv hand moved
+check "mv dir" "$(git status --porcelain | sed 's/ -> .*//' | oneline) $(reg dir.moved.source)" "M  .git-assetsync R  hand/a1.txt R  hand/a2.txt  h"
+git commit -qm mv
+check "mv dir: clean" "$(st moved)" ""
+check "unlink dir" "$(git assetsync unlink moved)" "unlinked moved/ (files kept)"
+git reset -q --hard
+
+# line endings and LFS in a directory
+printf 'a\r\nb\r\n' > z2.txt; mkdir -p eol && mv z2.txt eol/crlf.txt
+printf 'bin\000ary\n' > eol/data.bin
+mkarchive "$F/eol.tar.gz" eol
+release acme/eol-dir v1 10 "$F/eol.tar.gz"
+new_repo r18b
+printf '* text=auto\n' > .gitattributes
+if git lfs version >/dev/null 2>&1; then printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >> .gitattributes; fi
+git add .gitattributes && git commit -qm attrs
+addc d/ acme/eol-dir --extract
+check "dir: text=auto: normalized" "$(git cat-file -p HEAD:d/crlf.txt | od -c | grep -c '\\r')" "0"
+if git lfs version >/dev/null 2>&1; then
+  check "dir: LFS: pointer" "$(git cat-file -p HEAD:d/data.bin | head -1)" "version https://git-lfs.github.com/spec/v1"
+fi
+check "dir: eol/LFS: clean" "$(st) $(git status --porcelain)" " "
+
+# GitLab: a directory of several assets (no digests)
+asset g1.txt g1; asset g2.txt g2
+release --host gitlab.com grp/dir v1 10 "$F/g1.txt" "$F/g2.txt"
+addc gl/ https://gitlab.com/grp/dir
+check "GitLab dir" "$(git ls-files gl | oneline) $(st gl)" "gl/g1.txt gl/g2.txt  "
+asset g1.txt "g1 v2"
+release --host gitlab.com grp/dir v2 11 "$F/g1.txt" "$F/g2.txt"
+pullc gl
+check "GitLab dir: pulled" "$(cat gl/g1.txt) $(git log -1 --format=%B | grep Files)" "g1 v2 Files:   0 added, 0 removed, 1 changed (2 in total)"
+addc t.bin acme/tool --asset 'tool-*.bin'
+check "files and directories unmodified" "$(git assetsync status | tail -1)" "nothing to pull, all 1 file and 2 directories unmodified"
+
+
+# =============================================================================
+section "19. Archives: formats, executables, unsafe members"
+# =============================================================================
+cd "$T"
+mkdir -p fmt/sub && echo one > fmt/one.txt && echo two > fmt/sub/two.txt && printf '#!/bin/sh\n' > fmt/run.sh
+new_repo r19
+for ext in zip tar tar.gz tgz tar.bz2 tar.xz; do
+  mkarchive "$F/fmt.$ext" "$T/fmt"
+  release acme/fmt-$ext v1 10 "$F/fmt.$ext"
+  quiet asd add "x-$ext/" acme/fmt-$ext --extract
+  check "extract $ext" "$(git ls-files -s "x-$ext" | awk '{print $1, $4}' | oneline)" \
+    "100644 x-$ext/one.txt 100755 x-$ext/run.sh 100644 x-$ext/sub/two.txt "
+done
+printf 'plain\n' | gzip > "$F/plain.txt.gz"
+release acme/gz v1 10 "$F/plain.txt.gz"
+quiet asd add plain.txt acme/gz --extract
+check "extract a .gz file" "$(cat plain.txt)" "plain"
+check "extract without an archive" "$(asd add x/ acme/many-assets --extract 2>&1 >/dev/null)" \
+  "error: x/: 'extract': no archive among a1.txt, a2.txt"
+check "strip too deep" "$(asd add x/ acme/fmt-zip --extract --strip 1 2>&1)" \
+  "error: x/: 'strip 1': 'one.txt' has fewer than 1 directory to strip"
+check "subdir missing" "$(asd add x/ acme/fmt-zip --extract --subdir nope 2>&1)" \
+  "error: x/: 'subdir nope': no files there"
+check "nothing left" "$(asd add x/ acme/fmt-zip --extract --include '*.c' 2>&1)" \
+  "error: x/: the filter leaves no files"
+git reset -q --hard; git clean -qfd
+
+for kind in slip abs symlink git case winname dup; do
+  for ext in zip tar; do
+    mkevil "$F/evil-$kind.$ext" $kind
+    release acme/evil-$kind-$ext v1 10 "$F/evil-$kind.$ext"
+    OUT=$(asd add "e/" acme/evil-$kind-$ext --extract 2>&1)
+    check "unsafe $kind ($ext): refused" "$(echo "$OUT" | grep -c '^error: e/: ')" "1"
+    check "unsafe $kind ($ext): nothing written" "$(ls -A e 2>/dev/null; git status --porcelain; ls ../evil.txt 2>/dev/null)" ""
+  done
+done
+mkevil "$F/evil-hardlink.tar" hardlink
+release acme/evil-hardlink v1 10 "$F/evil-hardlink.tar"
+check "unsafe hardlink (tar): refused" "$(asd add e/ acme/evil-hardlink --extract 2>&1 | grep '^error')" \
+  "error: e/: evil-hardlink.tar: 'hard' is a hard link"
+printf 'PK\003\004broken' > "$F/broken.zip"
+release acme/broken v1 10 "$F/broken.zip"
+check "broken archive" "$(asd add e/ acme/broken --extract 2>&1 | grep -c '^error: e/: broken.zip: cannot unpack')" "1"
+
+
+# =============================================================================
+section "20. Download cache"
+# =============================================================================
+cd "$T"
+asset c.txt cached
+release acme/cache v1 10 "$F/c.txt"
+release --host gitlab.com grp/cache v1 10 "$F/c.txt"
+new_repo r20
+reset_calls
+quiet asd add a.txt acme/cache
+quiet asd add b.txt acme/cache
+check "cache: downloaded once (GitHub, by digest)" "$(downloads)" "1"
+check "cache: stored by SHA-256" "$(ls "$ASSETSYNC_CACHE/sha256" | grep -c "^$(sha "$F/c.txt")\$")" "1"
+N=$(ls "$ASSETSYNC_CACHE/sha256" | lines)
+reset_calls
+quiet asd add c.txt https://gitlab.com/grp/cache
+quiet asd add d.txt https://gitlab.com/grp/cache
+check "cache: downloaded once (GitLab, by the index)" "$(downloads)" "1"
+check "cache: same content once" "$(ls "$ASSETSYNC_CACHE/sha256" | lines)" "$N"
+reset_calls
+check "cache: pull --force from the cache" "$(echo x > a.txt; git commit -qam x; git assetsync pull --force --no-edit a.txt >/dev/null 2>&1; cat a.txt) $(downloads)" "cached 0"
+rm -rf "$ASSETSYNC_CACHE"
+check "cache: deleted cache is filled again" "$(asd add e.txt acme/cache >/dev/null 2>&1; ls "$ASSETSYNC_CACHE/sha256" | lines)" "1"
+check "cache: unusable" "$(ASSETSYNC_CACHE=$T/r20/a.txt/x asd add f.txt acme/cache 2>&1 | sed 's/ (.*) / /')" \
+  "error: cannot create the download cache $T/r20/a.txt/x - set ASSETSYNC_CACHE to another directory"
 
 
 # =============================================================================

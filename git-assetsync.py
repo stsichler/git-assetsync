@@ -9,9 +9,9 @@
 """
 git-assetsync - keep files in sync with release assets of other projects.
 
-A repository lists its synced files in .git-assetsync at its root
-(git-config format, like .gitmodules), each taken from a release asset of
-a project on GitHub or GitLab:
+A repository lists its synced files and directories in .git-assetsync at
+its root (git-config format, like .gitmodules), each taken from release
+assets of a project on GitHub or GitLab:
 
     [source "owner/tool"]
         url = https://github.com/owner/tool
@@ -29,18 +29,35 @@ a project on GitHub or GitLab:
         synced = <tag of the release the file comes from>
         digest = sha256:<hash of that asset>
         blob = <id of the file as committed>
+    [dir "third_party/zlib"]       ; the directory belongs to the entry
+        source = madler/zlib
+        asset = zlib-*.tar.gz      ; optional: the assets (glob); without: all
+        step = extract             ; optional filter, in this order
+        step = strip 1
+        step = keep '*.h' LICENSE
+        synced = ...; digest = ...; filterhash = <of the steps>
+        tree = <id of the directory as committed>
 
-An entry records the release asset the committed file comes from, so the
+An entry records what the committed file (directory) comes from, so the
 local state is known offline; only the check for new releases asks the
-platform. The file must stay an exact copy of the asset: pull refuses
-local modifications, --force discards them.
+platform. It must stay exactly what its release gives: pull refuses local
+modifications (in a directory: also untracked files; ignored ones don't
+count), --force discards them.
+
+Filter steps (no code is run): extract (unpack zip, tar, tar.gz/bz2/xz,
+.gz/.bz2/.xz; unsafe members - paths outside, links, names invalid on
+Windows - are refused), subdir PATH (only that directory, as the root),
+strip N (N leading directories off), keep / drop PATTERN... (gitignore-
+like). Downloads are kept in a cache (ASSETSYNC_CACHE; default
+~/.cache/git-assetsync, %LOCALAPPDATA%\\git-assetsync).
 
 Commands (run inside the repository; without a command: status). PATH may
 be a file or a directory (= all entries below it); options follow the
 command.
 
-    status [PATH...]            state of the files like `git status`: new
-                                releases to pull, local modifications
+    status [PATH...]            state of the entries like `git status`: new
+                                releases (or another filter) to pull, local
+                                modifications
         -s, --short             short format: upstream/committed/worktree
                                 columns (upstream: P pending, N new; E error)
         -v, --verbose           also list all files with their sources
@@ -49,10 +66,11 @@ command.
         --hook                  terse output on stderr (for git hooks)
         --no-fetch              don't ask the platform for new releases
 
-    pull PATH... | --all        update the files to the selected release and
-                                commit with a message naming it (with its
-                                release notes, shortened); refused if a file
-                                is modified (committed or not)
+    pull PATH... | --all        update the files (directories) to the selected
+                                release and commit with a message naming it
+                                (with its release notes, shortened); refused
+                                if modified (committed or not); a directory
+                                is replaced as a whole
         --all                   all files with something to pull
         --force                 discard local modifications
         --no-edit               commit without opening the editor
@@ -61,22 +79,30 @@ command.
         -n, --dry-run           only report what would happen
 
     add PATH SOURCE             take the file PATH from an asset of the
-                                release SOURCE selects; SOURCE: the name of a
-                                [source], or a URL (owner/repo: github.com) -
-                                the source with that URL and release
-                                selection, else a new one named 'owner/repo'
-                                (a number appended if taken); PATH and
-                                .git-assetsync are staged like `git add` - a
-                                plain `git commit` offers the proposed message
-        --asset PATTERN         the asset (glob, must match exactly one;
-                                default: the release's only asset)
+                                release SOURCE selects - or with PATH/ (or
+                                an existing directory) the directory, which
+                                then belongs to the entry; SOURCE: the name
+                                of a [source], or a URL (owner/repo:
+                                github.com) - the source with that URL and
+                                release selection, else a new one named
+                                'owner/repo' (a number appended if taken);
+                                PATH and .git-assetsync are staged like `git
+                                add` - a plain `git commit` offers the
+                                proposed message
+        --asset PATTERN         the asset (glob; a file: exactly one match,
+                                default the release's only asset; a
+                                directory: all matching, default all - more
+                                than 10 or 100 MiB only with --force)
+        --extract, --subdir PATH, --strip N, --include PATTERN...,
+        --exclude PATTERN...    the filter (steps in this order)
         --release TAG|PATTERN   release to take (exact tag: pinned) or the
                                 newest one matching (default: the latest)
         --prerelease            prereleases count too (with a pattern, or
                                 instead of the latest)
         --type github|gitlab    platform of the URL's host (default: derived
                                 from it: github.com, gitlab.com, gitlab.*)
-        --force                 replace an existing entry or file
+        --force                 replace an existing entry or file; take over a
+                                directory that isn't empty
         -n, --dry-run           only show what would be done
 
     set PATH... OPTIONS         change entries, like source does for sources:
@@ -88,12 +114,16 @@ command.
         --release TAG|PATTERN, --latest, --prerelease, --no-prerelease,
         --type github|gitlab    (without --source) another release
                                 selection or platform for these files only
-        --asset PATTERN, --no-asset  another asset (--no-asset: the only one)
+        --asset PATTERN, --no-asset  another asset (--no-asset: the only one,
+                                for a directory all)
+        --extract, --subdir, --strip, --include, --exclude, --no-filter
+                                another filter (replaces it as a whole)
         -n, --dry-run           only show what would change
 
     unlink PATH...              remove entries (the files are kept); also
                                 broken ones, by their name
-    mv OLD NEW                  move a file (git mv), keeping its entry
+    mv OLD NEW                  move a file or directory (git mv), keeping its
+                                entry
         -n, --dry-run           (both) only show what would be done
 
     source                      list the [source]s (-v: with URL, release
@@ -143,18 +173,26 @@ Manual: https://github.com/stsichler/git-assetsync/blob/main/MANUAL.md
 """
 
 import argparse
+import bz2
 import fnmatch
+import gzip
 import hashlib
 import json
+import lzma
 import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
+import zipfile
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
@@ -167,13 +205,17 @@ HOOKS = {
     "pre-push": "git assetsync status --hook",
     "post-merge": "git assetsync status --hook --no-fetch",
 }
-REGISTRY_HEADER = ("# git-assetsync: files of this repository that are taken from release\n"
-                   "# assets of other projects. Maintained by 'git assetsync'; [file]\n"
-                   "# synced/digest/blob record the asset each file comes from.\n")
+REGISTRY_HEADER = ("# git-assetsync: files and directories of this repository that are taken\n"
+                   "# from release assets of other projects. Maintained by 'git assetsync';\n"
+                   "# synced/digest/blob/tree record what each one comes from.\n")
 # add warns about binary files at least this big that are not stored in LFS
 LFS_HINT_SIZE = 1 << 20
 # release notes in a commit message: at most this many lines of this length
 NOTES_LINES, NOTES_WIDTH = 20, 200
+# unpacking archives: at most this much and this many files (zip bombs)
+MAX_EXTRACT_SIZE, MAX_EXTRACT_FILES = 2 << 30, 100000
+# all assets of a release for a directory (add without --asset): more needs --force
+MAX_ALL_ASSETS, MAX_ALL_SIZE = 10, 100 << 20
 
 
 class FsError(Exception):
@@ -637,25 +679,342 @@ def match_asset(release, pattern, label, choose="--asset PATTERN"):
                   f"{label}: {', '.join(a.name for a in found)} - use a more specific pattern")
 
 
-def fetch_asset(origin, release, asset, dest):
-    """Download asset to dest and check it; returns its digest."""
-    print(paint(f"Downloading {asset.name} ({origin.label} {release.tag}) ...", "dim", "err"),
-          file=sys.stderr)
-    origin.download(asset, dest)
+def select_assets(release, pattern, label, is_dir, choose="--asset PATTERN"):
+    """The assets an entry takes: for a file the one matching pattern (or
+    the release's only one); for a directory all matching (or all)."""
+    if not is_dir:
+        return [match_asset(release, pattern, label, choose)]
+    found = [a for a in release.assets if not pattern or fnmatch.fnmatchcase(a.name, pattern)]
+    if not found and pattern:
+        names = ", ".join(a.name for a in release.assets) or "none"
+        raise FsError(f"release {release.tag} of {label} has no asset matching '{pattern}' "
+                      f"(assets: {names})")
+    if not found:
+        raise FsError(f"release {release.tag} of {label} has no assets")
+    return found
+
+
+def assets_digest(pairs):
+    """The digest recorded for an entry's assets [(name, digest)]: that of
+    the asset if it is one, else one over all names and digests. None if a
+    digest is missing."""
+    if not pairs or any(not d or not d.lower().startswith("sha256:") for _, d in pairs):
+        return None
+    if len(pairs) == 1:
+        return pairs[0][1].lower()
+    text = "".join(f"{n}\t{d.lower()}\n" for n, d in sorted(pairs))
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def cache_root():
+    """The download cache: ASSETSYNC_CACHE, or the platform's cache dir."""
+    if os.environ.get("ASSETSYNC_CACHE"):
+        return Path(os.environ["ASSETSYNC_CACHE"])
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "git-assetsync"
+
+
+def sha256_file(path):
+    """('sha256:<hex>', size) of a file."""
     h, size = hashlib.sha256(), 0
-    with open(dest, "rb") as f:
+    with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
             size += len(chunk)
-    digest = "sha256:" + h.hexdigest()
-    if asset.digest and asset.digest.lower().startswith("sha256:") and \
-            asset.digest.lower() != digest:
-        raise FsError(f"{asset.name} of {origin.label} {release.tag}: downloaded file has "
-                      f"{digest}, but the release lists {asset.digest}")
-    if asset.size is not None and asset.size != size:
-        raise FsError(f"{asset.name} of {origin.label} {release.tag}: downloaded {size} "
-                      f"bytes, but the release lists {asset.size}")
-    return digest
+    return "sha256:" + h.hexdigest(), size
+
+
+def get_asset(origin, release, asset):
+    """(file, digest) of an asset in the download cache, downloaded and
+    checked first if it isn't there. Contents are kept by their SHA-256; an
+    index maps platform, project, tag and asset to it, for platforms that
+    report no digests (GitLab)."""
+    root = cache_root()
+    store, index = root / "sha256", root / "index"
+    key = "\n".join([type(origin).__name__, origin.host, origin.project, release.tag,
+                     asset.id, asset.name])
+    entry = index / hashlib.sha256(key.encode("utf-8")).hexdigest()
+    known = asset.digest.lower() if (asset.digest or "").lower().startswith("sha256:") else None
+    if not known and entry.is_file():
+        known = entry.read_text(encoding="ascii", errors="replace").strip()
+    if known and (store / known[7:]).is_file():
+        return store / known[7:], known
+    try:
+        store.mkdir(parents=True, exist_ok=True)
+        index.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise FsError(f"cannot create the download cache {root} ({e.strerror}) - "
+                      "set ASSETSYNC_CACHE to another directory")
+    what = f"{asset.name} of {origin.label} {release.tag}"
+    print(paint(f"Downloading {asset.name} ({origin.label} {release.tag}) ...", "dim", "err"),
+          file=sys.stderr)
+    tmp = store / f".tmp-{os.getpid()}-{entry.name[:16]}"
+    try:
+        origin.download(asset, tmp)
+        digest, size = sha256_file(tmp)
+        if known and known != digest:
+            raise FsError(f"{what}: downloaded file has {digest}, but the release lists {known}")
+        if asset.size is not None and asset.size != size:
+            raise FsError(f"{what}: downloaded {size} bytes, but the release lists {asset.size}")
+        os.replace(tmp, store / digest[7:])
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    part = entry.with_name(f"{entry.name}.tmp{os.getpid()}")
+    part.write_text(digest + "\n", encoding="ascii")
+    os.replace(part, entry)
+    return store / digest[7:], digest
+
+
+# --------------------------------------------------------------------------
+# filters: unpacking archives and selecting files, without running code
+# --------------------------------------------------------------------------
+
+STEPS = ("extract", "subdir", "strip", "keep", "drop")
+WIN_RESERVED = re.compile(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?")
+
+
+def safe_path(name, what):
+    """Normalized relative path of an archive member (or asset), None for
+    the archive's root; an error for paths that could escape the target or
+    that are no valid file names on every platform (Windows included)."""
+    parts = [p for p in name.replace("\\", "/").split("/") if p not in ("", ".")]
+    if name.startswith(("/", "\\")) or ".." in parts:
+        raise FsError(f"{what}: unsafe path '{name}'")
+    for p in parts:
+        if p.lower().rstrip(". ") == ".git":
+            raise FsError(f"{what}: unsafe path '{name}' (.git)")
+        if re.search(r'[<>:"|?*\x00-\x1f]', p) or p[-1] in ". " or WIN_RESERVED.fullmatch(p):
+            raise FsError(f"{what}: '{name}' is not a valid file name on every platform")
+    return "/".join(parts) or None
+
+
+class Work:
+    """Temporary files of a filter run. The files of a stage are
+    {path: (file, executable)}; files are never changed once written."""
+
+    def __init__(self, what):
+        self.what = what
+        self.dir = Path(tempfile.mkdtemp(prefix="assetsync-"))
+        self.n = self.size = self.count = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def copy(self, src, size_hint=None):
+        """A new file with the content of the stream src, within the limits."""
+        self.count += 1
+        if self.count > MAX_EXTRACT_FILES:
+            raise FsError(f"{self.what}: more than {MAX_EXTRACT_FILES} files")
+        self.n += 1
+        dest = self.dir / str(self.n)
+        with open(dest, "wb") as f:
+            for chunk in iter(lambda: src.read(1 << 20), b""):
+                self.size += len(chunk)
+                if self.size > MAX_EXTRACT_SIZE:
+                    raise FsError(f"{self.what}: more than {MAX_EXTRACT_SIZE >> 30} GiB unpacked")
+                f.write(chunk)
+        return dest
+
+
+def add_member(files, rel, value, what):
+    if rel in files:
+        raise FsError(f"{what}: '{rel}' comes more than once")
+    files[rel] = value
+
+
+def archive_kind(path):
+    """'zip', 'tar', 'gz', 'bz2', 'xz' by the content, or None."""
+    with open(path, "rb") as f:
+        head = f.read(265)
+    if head[:4] in (b"PK\x03\x04", b"PK\x05\x06"):
+        return "zip"
+    if head[257:262] == b"ustar":
+        return "tar"
+    for magic, kind in ((b"\x1f\x8b", "gz"), (b"BZh", "bz2"), (b"\xfd7zXZ\x00", "xz")):
+        if head.startswith(magic):
+            return "tar" if tarfile.is_tarfile(str(path)) else kind
+    return None
+
+
+def extract_zip(path, name, files, work):
+    what = f"{work.what}: {name}"
+    try:
+        with zipfile.ZipFile(path) as z:
+            for info in z.infolist():
+                mode = info.external_attr >> 16 if info.create_system == 3 else 0
+                if info.filename.endswith("/") or stat.S_ISDIR(mode):
+                    continue
+                if stat.S_ISLNK(mode):
+                    raise FsError(f"{what}: '{info.filename}' is a symbolic link")
+                if mode and not stat.S_ISREG(mode):
+                    raise FsError(f"{what}: '{info.filename}' is no regular file")
+                if info.flag_bits & 1:
+                    raise FsError(f"{what}: '{info.filename}' is encrypted")
+                rel = safe_path(info.filename, what)
+                if rel:
+                    with z.open(info) as src:
+                        add_member(files, rel, (work.copy(src), bool(mode & 0o111)), what)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, OSError) as e:
+        raise FsError(f"{what}: cannot unpack: {e}")
+
+
+def extract_tar(path, name, files, work):
+    what = f"{work.what}: {name}"
+    try:
+        with tarfile.open(str(path), "r:*") as t:
+            for m in t:
+                if m.isdir():
+                    continue
+                if m.issym() or m.islnk():
+                    raise FsError(f"{what}: '{m.name}' is a {'symbolic' if m.issym() else 'hard'}"
+                                  " link")
+                if not m.isfile():
+                    raise FsError(f"{what}: '{m.name}' is no regular file")
+                rel = safe_path(m.name, what)
+                if rel:
+                    add_member(files, rel, (work.copy(t.extractfile(m)), bool(m.mode & 0o111)),
+                               what)
+    except (tarfile.TarError, EOFError, OSError, zlib.error) as e:
+        raise FsError(f"{what}: cannot unpack: {e}")
+
+
+def extract_single(path, name, kind, files, work):
+    """A compressed single file (.gz, .bz2, .xz): named without the suffix."""
+    what = f"{work.what}: {name}"
+    opener = {"gz": gzip.open, "bz2": bz2.open, "xz": lzma.open}[kind]
+    base = re.sub(r"(?i)\.(gz|bz2|xz)$", "", name)
+    try:
+        with opener(path) as src:
+            add_member(files, base, (work.copy(src), False), what)
+    except (OSError, EOFError, lzma.LZMAError, zlib.error) as e:
+        raise FsError(f"{what}: cannot unpack: {e}")
+
+
+def extract_all(files, work):
+    """Unpack every archive among files into one root, keep the others;
+    a path coming from two of them is an error."""
+    result, found = {}, False
+    for rel, (path, executable) in sorted(files.items()):
+        kind = archive_kind(path)
+        if not kind:
+            add_member(result, rel, (path, executable), work.what)
+            continue
+        found = True
+        if kind == "zip":
+            extract_zip(path, rel, result, work)
+        elif kind == "tar":
+            extract_tar(path, rel, result, work)
+        else:
+            extract_single(path, rel, kind, result, work)
+    if not found:
+        raise FsError(f"{work.what}: 'extract': no archive among {', '.join(sorted(files))}")
+    return result
+
+
+def glob_regex(pattern):
+    """Regex for a gitignore-like pattern, matched against a path relative to
+    the filter's root: without a '/' it matches a name at any depth, a
+    leading or inner '/' anchors it, a trailing '/' matches directories only;
+    '*' and '?' don't match '/', '**/' matches any number of directories. A
+    matching directory stands for everything below it."""
+    dir_only = pattern.endswith("/")
+    pat = pattern.strip("/")
+    anchored = "/" in pattern.rstrip("/")
+    rx, i = "", 0
+    while i < len(pat):
+        if pat.startswith("**/", i):
+            rx, i = rx + "(?:[^/]*/)*", i + 3
+        elif pat.startswith("**", i):
+            rx, i = rx + ".*", i + 2
+        elif pat[i] == "*":
+            rx, i = rx + "[^/]*", i + 1
+        elif pat[i] == "?":
+            rx, i = rx + "[^/]", i + 1
+        elif pat[i] == "[" and "]" in pat[i + 2:]:
+            j = pat.index("]", i + 2)
+            cls = pat[i + 1:j]
+            rx += "[" + ("^" + cls[1:] if cls.startswith("!") else cls).replace("\\", "\\\\") + "]"
+            i = j + 1
+        else:
+            rx, i = rx + re.escape(pat[i]), i + 1
+    return re.compile(("" if anchored else "(?:.*/)?") + rx
+                      + ("/.*" if dir_only else "(?:/.*)?") + r"\Z", re.S)
+
+
+def parse_step(step):
+    """(name, args) of a filter step; an error for an unknown or malformed one."""
+    try:
+        words = shlex.split(step)
+    except ValueError as e:
+        raise FsError(f"filter step '{step}': {e}")
+    name, args = (words[0], words[1:]) if words else ("", [])
+    ok = {"extract": not args,
+          "subdir": len(args) == 1 and bool(args[0].strip("/")),
+          "strip": len(args) == 1 and args[0].isdigit() and int(args[0]) > 0,
+          "keep": bool(args), "drop": bool(args)}.get(name)
+    if ok is None:
+        raise FsError(f"unknown filter step '{step}' (known: {', '.join(STEPS)})")
+    if not ok:
+        raise FsError(f"malformed filter step '{step}'")
+    return name, args
+
+
+def run_steps(files, steps, work):
+    """Apply the filter steps to {path: (file, executable)}."""
+    for step in steps:
+        name, args = parse_step(step)
+        if name == "extract":
+            files = extract_all(files, work)
+        elif name == "subdir":
+            sub = args[0].strip("/") + "/"
+            files = {r[len(sub):]: v for r, v in files.items() if r.startswith(sub)}
+            if not files:
+                raise FsError(f"{work.what}: 'subdir {args[0]}': no files there")
+        elif name == "strip":
+            n, new = int(args[0]), {}
+            for r, v in files.items():
+                parts = r.split("/")
+                if len(parts) <= n:
+                    raise FsError(f"{work.what}: 'strip {n}': '{r}' has fewer than {n} "
+                                  f"director{'y' if n == 1 else 'ies'} to strip")
+                add_member(new, "/".join(parts[n:]), v, work.what)
+            files = new
+        else:
+            rxs = [glob_regex(a) for a in args]
+            files = {r: v for r, v in files.items()
+                     if any(x.match(r) for x in rxs) == (name == "keep")}
+    if not files:
+        raise FsError(f"{work.what}: the filter leaves no files")
+    seen = {}
+    for r in files:
+        other = seen.setdefault(r.lower(), r)
+        if other != r:
+            raise FsError(f"{work.what}: '{other}' and '{r}' differ only in case")
+    return files
+
+
+def filter_hash(steps):
+    """Recorded with an entry, to notice a changed filter (None: no filter)."""
+    return hashlib.sha256("\n".join(steps).encode("utf-8")).hexdigest()[:16] if steps else None
+
+
+def entry_files(origin, release, assets, steps, work):
+    """The files an entry gets: {path: (file, executable)} after the filter,
+    and the digest of its assets."""
+    files, pairs = {}, []
+    for a in assets:
+        rel = safe_path(a.name, f"{work.what}: asset")
+        path, digest = get_asset(origin, release, a)
+        add_member(files, rel, (path, False), work.what)
+        pairs.append((a.name, digest))
+    return run_steps(files, steps, work), assets_digest(pairs)
 
 
 class Context:
@@ -748,6 +1107,65 @@ class Repo:
         work = self.to_worktree(content, rel)
         return out(self.git(["hash-object", "-w", f"--path={rel}", "--stdin"], data=work))
 
+    def index_path(self):
+        p = Path(out(self.git(["rev-parse", "--git-path", "index"])))
+        return p if p.is_absolute() else self.top / p
+
+    def make_tree(self, entries):
+        """Tree object with the given (mode, id, path) entries, via a
+        temporary index."""
+        with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
+            env = dict(os.environ, GIT_INDEX_FILE=str(Path(td) / "index"))
+            if entries:
+                data = "".join(f"{m} {o}\t{p}\0" for m, o, p in entries)
+                self.git(["update-index", "-z", "--add", "--index-info"],
+                         data=data.encode("utf-8"), env=env)
+            return out(self.git(["write-tree"], env=env))
+
+    def tree_entries(self, tree):
+        """[(mode, type, id, path)] of all entries below a tree."""
+        p = self.git(["ls-tree", "-r", "-z", tree])
+        result = []
+        for item in p.stdout.decode("utf-8", "replace").split("\0"):
+            if item:
+                info, _, path = item.partition("\t")
+                mode, kind, oid = info.split(" ")
+                result.append((mode, kind, oid, path))
+        return result
+
+    def head_object(self, rel):
+        """(type, id) of what HEAD has at rel: ('blob' | 'tree', id), or None."""
+        p = self.git(["rev-parse", "--verify", "-q", f"HEAD:{rel}"], check=False)
+        if p.returncode:
+            return None
+        oid = out(p)
+        return out(self.git(["cat-file", "-t", oid])), oid
+
+    def tree_names(self, tree):
+        """Paths of the files below a tree."""
+        return [path for _, kind, _, path in self.tree_entries(tree) if kind == "blob"]
+
+    def worktree_tree(self, rel):
+        """Tree the directory rel would get by `git add -A` (untracked files
+        included, ignored ones not); None if there are no files. Computed
+        with a copy of the index, which stays as it is."""
+        with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
+            index = Path(td) / "index"
+            if self.index_path().exists():
+                shutil.copyfile(self.index_path(), index)
+            env = dict(os.environ, GIT_INDEX_FILE=str(index))
+            self.git(["add", "-A", "--", lit(rel)], env=env, check=False)
+            p = self.git(["write-tree", f"--prefix={rel}/"], env=env, check=False)
+            return out(p) if p.returncode == 0 else None
+
+    def dir_files(self, rel):
+        """Files in the working tree below rel that git sees: tracked and
+        untracked ones, not ignored ones."""
+        p = self.git(["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
+                      lit(rel)])
+        names = dict.fromkeys(n for n in p.stdout.decode("utf-8", "replace").split("\0") if n)
+        return [n for n in names if (self.top / n).is_file()]
+
     def state_file(self, prefix, name):
         """.git/<prefix><name> for state kept between commands (name made
         safe as a file name)."""
@@ -766,7 +1184,9 @@ class Repo:
 # .git-assetsync
 # --------------------------------------------------------------------------
 
-SECTIONS = ("source", "file")
+SECTIONS = ("source", "file", "dir")
+# kinds of entries: their section and the key of their base
+BASE_KEY = {"file": "blob", "dir": "tree"}
 # keys of a [source] that select its release
 SPEC_KEYS = ("release", "prerelease", "type")
 
@@ -784,8 +1204,26 @@ def parse_registry(raw):
         # subsections may contain dots (file paths): the key is after the last
         sub, _, name = rest.rpartition(".")
         if sect in result and sub:
-            result[sect].setdefault(sub, {})[name] = val
+            values = result[sect].setdefault(sub, {})
+            if name == "step":          # the only key with several values, in order
+                values.setdefault("step", []).append(val)
+            else:
+                values[name] = val
     return result
+
+
+def registry_entries(parsed):
+    """({path: values}, {path: kind}) of the [file] and [dir] sections; a
+    path in both is taken as [dir] and reported by its entry."""
+    entries, kinds = {}, {}
+    for kind in ("file", "dir"):
+        for rel, values in parsed[kind].items():
+            if rel in entries:
+                kinds[rel] = "both"
+            else:
+                kinds[rel] = kind
+            entries[rel] = values
+    return entries, kinds
 
 
 def source_spec(source):
@@ -821,12 +1259,13 @@ def path_problem(rel):
 
 
 class Registry:
-    """The repository's .git-assetsync: [source] and [file] sections."""
+    """The repository's .git-assetsync: [source], [file] and [dir] sections.
+    files holds the entries of both kinds, kinds their kind."""
 
     def __init__(self, repo):
         self.repo = repo
         self.path = repo.top / REGISTRY
-        self.sources, self.files = {}, {}
+        self.sources, self.files, self.kinds = {}, {}, {}
         self.dry_run = False      # only change the in-memory state
         if self.path.exists():
             p = git(["config", "-f", self.path, "--list", "-z"], check=False)
@@ -834,7 +1273,20 @@ class Registry:
                 raise FsError(f"{REGISTRY}: cannot parse: "
                               + p.stderr.decode("utf-8", "replace").strip())
             parsed = parse_registry(p.stdout)
-            self.sources, self.files = parsed["source"], parsed["file"]
+            self.sources = parsed["source"]
+            self.files, self.kinds = registry_entries(parsed)
+
+    def section(self, rel):
+        return "dir" if self.kinds.get(rel) in ("dir", "both") else "file"
+
+    def new_entry(self, rel, kind):
+        self.kinds[rel] = kind
+        self.files[rel] = {}
+
+    def overlapping(self, rel, exclude=None):
+        """Entries that overlap rel: the same path, below it or above it."""
+        return sorted(r for r in self.files if r != exclude and
+                      (r == rel or r.startswith(rel + "/") or rel.startswith(r + "/")))
 
     def entries(self):
         return [Entry(self, rel) for rel in sorted(self.files)]
@@ -847,14 +1299,23 @@ class Registry:
         git(["config", "-f", self.path] + list(args))
 
     def set_file(self, rel, name, value):
-        """Set (value None: remove) a key of a [file]."""
+        """Set (value None: remove) a key of a [file] or [dir]."""
+        key = f"{self.section(rel)}.{rel}.{name}"
         if value is None:
             if name in self.files.get(rel, {}):
-                self._cfg("--unset-all", f"file.{rel}.{name}")
+                self._cfg("--unset-all", key)
                 del self.files[rel][name]
         else:
-            self._cfg(f"file.{rel}.{name}", value)
+            self._cfg(key, value)
             self.files.setdefault(rel, {})[name] = value
+
+    def set_steps(self, rel, steps):
+        """Set the filter steps of an entry (a key with several values)."""
+        self.set_file(rel, "step", None)
+        for step in steps:
+            self._cfg("--add", f"{self.section(rel)}.{rel}.step", step)
+        if steps:
+            self.files[rel]["step"] = list(steps)
 
     def find_source(self, url, spec, exclude=None):
         """Key of a [source] with url and exactly the selection keys of spec."""
@@ -921,18 +1382,22 @@ class Registry:
         return sorted(rel for rel, f in self.files.items() if f.get("source") == name)
 
     def remove_file(self, rel, keep_source=None):
-        """Remove a [file]; its [source] too when no other file uses it
-        (unless it is keep_source)."""
+        """Remove a [file] or [dir]; its [source] too when no other entry
+        uses it (unless it is keep_source)."""
+        section = self.section(rel)
         src = self.files.pop(rel, {}).get("source")
-        self._cfg("--remove-section", f"file.{rel}")
+        self._cfg("--remove-section", f"{section}.{rel}")
+        self.kinds.pop(rel, None)
         if src and src != keep_source and src in self.sources and \
                 not any(f.get("source") == src for f in self.files.values()):
             self._cfg("--remove-section", f"source.{src}")
             del self.sources[src]
 
     def rename_file(self, old, new):
-        self._cfg("--rename-section", f"file.{old}", f"file.{new}")
+        section = self.section(old)
+        self._cfg("--rename-section", f"{section}.{old}", f"{section}.{new}")
         self.files[new] = self.files.pop(old)
+        self.kinds[new] = self.kinds.pop(old)
 
     def finish(self):
         """Fix line endings and stage the registry (or its removal when empty)."""
@@ -946,23 +1411,33 @@ class Registry:
         self.repo.git(["add", "-A", "--", REGISTRY])
 
     def uncommitted(self):
-        """[file] entries that differ from the committed .git-assetsync in what
-        they record about the file. Which [source] they belong to doesn't
-        count: a changed source may go into any commit."""
+        """Entries that differ from the committed .git-assetsync in what they
+        record about the file. Which [source] they belong to doesn't count: a
+        changed source may go into any commit."""
         p = self.repo.git(["config", "--blob", f"HEAD:{REGISTRY}", "--list", "-z"], check=False)
-        head = parse_registry(p.stdout)["file"] if p.returncode == 0 else {}
+        head, kinds = registry_entries(parse_registry(p.stdout)) if p.returncode == 0 else ({}, {})
 
-        def base(entry):
-            return None if entry is None else {k: v for k, v in entry.items() if k != "source"}
+        def base(entry, kind):
+            return None if entry is None else \
+                (kind, {k: v for k, v in entry.items() if k != "source"})
         return {rel for rel in set(head) | set(self.files)
-                if base(head.get(rel)) != base(self.files.get(rel))}
+                if base(head.get(rel), kinds.get(rel)) !=
+                base(self.files.get(rel), self.kinds.get(rel))}
 
 
 class Entry:
-    """One [file] entry: a file of this repository taken from a release asset."""
+    """One [file] or [dir] entry: a file of this repository taken from a
+    release asset, or a directory taken from release assets (it belongs to
+    the entry completely)."""
 
     def __init__(self, reg, rel):
         self.reg, self.rel = reg, rel
+
+    kind = property(lambda self: self.reg.section(self.rel))
+    is_dir = property(lambda self: self.kind == "dir")
+    # how the entry is shown: a directory with a trailing '/'
+    shown = property(lambda self: self.rel + ("/" if self.is_dir else ""))
+    steps = property(lambda self: list(self.v.get("step") or []))
 
     @property
     def v(self):
@@ -985,7 +1460,9 @@ class Entry:
     asset = property(lambda self: self.v.get("asset", ""))
     synced = property(lambda self: self.v.get("synced", ""))
     digest = property(lambda self: self.v.get("digest", ""))
-    blob = property(lambda self: self.v.get("blob", ""))
+    # the base: blob of a file, tree of a directory, as committed
+    blob = property(lambda self: self.v.get(BASE_KEY[self.kind], ""))
+    filterhash = property(lambda self: self.v.get("filterhash") or None)
 
     def set(self, name, value):
         self.reg.set_file(self.rel, name, value)
@@ -1030,15 +1507,26 @@ class State:
     fetched: bool = False     # upstream checked
     origin: object = None
     release: object = None    # the release the source selects now
-    asset: object = None      # its asset matching the entry
+    assets: list = None       # its assets the entry takes
+    asset: object = None      # the first of them (the one of a file)
     committed: str = None     # see evaluate()
     worktree: str = "clean"
     local: str = "clean"
-    head_blob: str = None
-    changed: bool = False     # selected asset differs from the synced one
+    head_blob: str = None     # committed blob of a file, tree of a directory
+    changed: bool = False     # what pull would take differs from the base:
+    tag_changed: bool = False     # another release,
+    digest_changed: bool = False  # other assets in the same release,
+    filter_changed: bool = False  # or another filter
     pending: bool = False     # something for pull to do
     modified: bool = False    # local modifications (not allowed)
-    base_now: str = None      # base blob as it would be stored now
+    base_now: str = None      # base as it would be stored now
+
+
+def base_unavailable(st, e):
+    msg = (f"synced version {st.entry.blob[:12]} not available, counts as modified ({e})")
+    if msg not in st.warnings:
+        st.warnings.append(msg)
+    return False
 
 
 def matches_base(repo, st, oid):
@@ -1054,79 +1542,146 @@ def matches_base(repo, st, oid):
         data = repo.git(["cat-file", "blob", oid], check=False).stdout
         ptr = lfs_pointer(data)
         # in LFS now: the pointer names the content's hash, no download needed
-        if ptr and entry.digest == f"sha256:{ptr[0]}":
+        if ptr and not entry.steps and entry.digest == f"sha256:{ptr[0]}":
             return True
         if st.base_now is None:
             st.base_now = repo.as_local(repo.read_content(entry.blob, st.rel), st.rel)
         return oid == st.base_now
     except FsError as e:
-        msg = (f"synced version {entry.blob[:12]} not available, file counts as "
-               f"modified ({e})")
-        if msg not in st.warnings:
-            st.warnings.append(msg)
+        return base_unavailable(st, e)
+
+
+def tree_matches_base(repo, st, tree):
+    """matches_base() for the tree of a directory entry: the base tree
+    re-stored file by file with the current .gitattributes if it differs."""
+    entry = st.entry
+    if not entry.blob:
         return False
+    if tree == entry.blob:
+        return True
+    try:
+        if st.base_now is None:
+            items = []
+            for mode, kind, oid, path in repo.tree_entries(entry.blob):
+                full = f"{st.rel}/{path}"
+                if kind == "blob":
+                    oid = repo.as_local(repo.read_content(oid, full), full)
+                items.append((mode, oid, path))
+            st.base_now = repo.make_tree(items)
+        return tree == st.base_now
+    except FsError as e:
+        return base_unavailable(st, e)
+
+
+def local_state_file(repo, st):
+    entry = st.entry
+    known = bool(entry.blob)
+    cur = repo.worktree_blob(entry.target)
+    p = repo.git(["rev-parse", "--verify", "-q", f"HEAD:{entry.rel}"], check=False)
+    head = st.head_blob = out(p) if p.returncode == 0 else None
+    if head and known:
+        st.committed = "unmodified" if matches_base(repo, st, head) else "adapted"
+    if cur is None:
+        st.worktree = "deleted" if head else "missing"
+    elif not head:
+        st.worktree = "added"
+    elif repo.git(["diff", "--quiet", "HEAD", "--", lit(entry.rel)],
+                  check=False).returncode == 1:
+        st.worktree = "modified"
+    if cur is None:
+        st.local = "missing"
+    elif not known:
+        st.local = "clean"
+    elif st.worktree == "clean":
+        st.local = "clean" if st.committed == "unmodified" else "modified"
+    else:
+        st.local = "clean" if matches_base(repo, st, cur) else "modified"
+
+
+def local_state_dir(repo, st):
+    """As local_state_file(), for a directory: all files git sees there
+    count - untracked ones too, not ignored ones."""
+    entry = st.entry
+    known = bool(entry.blob)
+    obj = repo.head_object(entry.rel)
+    head = st.head_blob = obj[1] if obj and obj[0] == "tree" else None
+    if obj and not head:
+        st.committed = "adapted"             # committed as a file
+    elif head and known:
+        st.committed = "unmodified" if tree_matches_base(repo, st, head) else "adapted"
+    files = repo.dir_files(entry.rel)
+    dirty = repo.git(["status", "--porcelain", "-z", "--untracked-files=all", "--",
+                      lit(entry.rel)]).stdout.strip(b"\0")
+    if not files:
+        st.worktree = "deleted" if head else "missing"
+    elif not head:
+        st.worktree = "added"
+    elif dirty:
+        st.worktree = "modified"
+    if not files:
+        st.local = "missing"
+    elif not known:
+        st.local = "clean"
+    elif st.worktree == "clean":
+        st.local = "clean" if st.committed == "unmodified" else "modified"
+    else:
+        st.local = "clean" if tree_matches_base(repo, st, repo.worktree_tree(entry.rel)) \
+            else "modified"
 
 
 def evaluate(ctx, repo, entry):
     """State of an entry in three independent respects:
-    upstream  - synced asset vs. the asset of the release the source selects
-                now (changed; only checked when fetching)
-    committed - committed file vs. synced asset ('unmodified' | 'adapted' |
-                None if not committed)
-    worktree  - working file vs. committed version
+    upstream  - synced assets and filter vs. those of the release the source
+                selects now (changed; only checked when fetching)
+    committed - committed file (directory) vs. the base: the synced assets
+                after the filter ('unmodified' | 'adapted' | None if not
+                committed)
+    worktree  - working file (directory) vs. committed version
                 ('clean' | 'modified' | 'deleted' | 'added' | 'missing')
-    local     - working file vs. synced asset ('clean' | 'modified' |
-                'missing')"""
+    local     - working file (directory) vs. the base ('clean' | 'modified'
+                | 'missing')"""
     st = State(entry=entry, rel=entry.rel)
     problem = path_problem(entry.rel)
     if problem:
         st.error = (f"{problem} - entry ignored; remove it with "
                     f"'git assetsync unlink {shlex.quote(entry.rel)}'")
         return st
+    if entry.reg.kinds.get(entry.rel) == "both":
+        st.error = (f"both a [file] and a [dir] entry in {REGISTRY} - remove it with "
+                    f"'git assetsync unlink {shlex.quote(entry.rel)}' and add it again")
+        return st
+    others = entry.reg.overlapping(entry.rel, exclude=entry.rel)
+    if others:
+        st.error = f"overlaps with the entry for {', '.join(others)} - entries must not overlap"
+        return st
     if not entry.url:
         st.error = f"incomplete entry in {REGISTRY} (needs a source with url)"
         return st
     try:
-        cur = repo.worktree_blob(entry.target)
-        p = repo.git(["rev-parse", "--verify", "-q", f"HEAD:{entry.rel}"], check=False)
-        head = st.head_blob = out(p) if p.returncode == 0 else None
-        # without a recorded base (entry written by hand) nothing counts as
-        # modified; pull then only replaces a file that is the same
-        known = bool(entry.blob)
-        if head and known:
-            st.committed = "unmodified" if matches_base(repo, st, head) else "adapted"
-        if cur is None:
-            st.worktree = "deleted" if head else "missing"
-        elif not head:
-            st.worktree = "added"
-        elif repo.git(["diff", "--quiet", "HEAD", "--", lit(entry.rel)],
-                      check=False).returncode == 1:
-            st.worktree = "modified"
-        if cur is None:
-            st.local = "missing"
-        elif not known:
-            st.local = "clean"
-        elif st.worktree == "clean":
-            st.local = "clean" if st.committed == "unmodified" else "modified"
-        else:
-            st.local = "clean" if matches_base(repo, st, cur) else "modified"
+        for step in entry.steps:
+            parse_step(step)
+        (local_state_dir if entry.is_dir else local_state_file)(repo, st)
     except FsError as e:
         st.error = str(e)
         return st
-    # a deleted committed file counts as modified; one never committed is new
-    st.modified = known and (st.committed == "adapted" or st.local == "modified"
-                             or st.worktree == "deleted")
+    # deleted committed files count as modified; never committed ones are new
+    st.modified = bool(entry.blob) and (st.committed == "adapted" or st.local == "modified"
+                                        or st.worktree == "deleted")
     if ctx.fetch:
         try:
             st.origin, st.release = ctx.release(entry.url, entry.spec)
-            st.asset = match_asset(st.release, entry.asset, st.origin.label,
-                                   f"'git assetsync set {cmd_arg(entry.rel)} --asset PATTERN'")
+            st.assets = select_assets(st.release, entry.asset, st.origin.label, entry.is_dir,
+                                      f"'git assetsync set {cmd_arg(entry.rel)} --asset PATTERN'")
         except FsError as e:
             st.error = str(e)
             return st
+        st.asset = st.assets[0]
         st.fetched = True
-        st.changed = st.release.tag != entry.synced or bool(
-            st.asset.digest and entry.digest and st.asset.digest.lower() != entry.digest.lower())
+        now = assets_digest([(a.name, a.digest) for a in st.assets])
+        st.tag_changed = st.release.tag != entry.synced
+        st.digest_changed = bool(now and entry.digest and now != entry.digest.lower())
+        st.filter_changed = filter_hash(entry.steps) != entry.filterhash
+        st.changed = st.tag_changed or st.digest_changed or st.filter_changed
     st.pending = st.changed or st.worktree == "missing"
     return st
 
@@ -1138,10 +1693,12 @@ def upstream_state(st):
         return "pending", f"entry changed, release {st.release.tag}"
     if st.changed and not e.synced:
         return "new", f"release {st.release.tag}"
-    if st.changed and st.release.tag != e.synced:
+    if st.tag_changed:
         return "pending", f"{e.synced} -> {st.release.tag}"
-    if st.changed:
-        return "pending", f"asset replaced in release {e.synced}"
+    if st.digest_changed:
+        return "pending", f"asset{'s' if len(st.assets) > 1 else ''} replaced in release {e.synced}"
+    if st.filter_changed:
+        return "pending", "filter changed"
     if st.worktree == "missing":
         return "new", "not in the working tree yet"
     return None
@@ -1162,7 +1719,7 @@ def describe(st):
 
 def report_error(st):
     """An entry that couldn't be evaluated (status, pull)."""
-    error(f"{st.rel}: {st.error}")
+    error(f"{st.entry.shown}: {st.error}")
 
 
 def render(parts, stream="out"):
@@ -1181,8 +1738,10 @@ def short_code(st):
 
 
 def shown(repo, rel):
-    """Path relative to the current directory, like git status shows it."""
-    return Path(os.path.relpath(repo.top / rel, repo.base)).as_posix()
+    """Path relative to the current directory, like git status shows it (a
+    trailing '/' of a directory kept)."""
+    path = Path(os.path.relpath(repo.top / rel, repo.base)).as_posix()
+    return path + "/" if rel.endswith("/") and path != "." else path
 
 
 def print_short(repo, sts):
@@ -1192,7 +1751,7 @@ def print_short(repo, sts):
             line = paint(code[0], "yellow") + paint(code[1], "cyan") + paint(code[2], "red")
             if code[0] == "E":
                 line = paint(code, "boldred")
-            print(f"{line} {shown(repo, st.rel)}")
+            print(f"{line} {shown(repo, st.entry.shown)}")
 
 
 def print_long(ctx, repo, sts, verbose):
@@ -1218,16 +1777,17 @@ def print_long(ctx, repo, sts, verbose):
             e = st.entry
             synced = f"synced {e.synced}" if e.synced else "not synced yet"
             label = st.committed or ("uncommitted" if e.blob else "not synced")
-            rows.append((label, st.rel,
-                         f"{e.asset or 'only asset'} from {e.name}, {spec_text(e.spec)}; "
-                         f"{synced}", "dim"))
+            what = e.asset or ("all assets" if e.is_dir else "only asset")
+            steps = f", filter: {', '.join(e.steps)}" if e.steps else ""
+            rows.append((label, e.shown,
+                         f"{what} from {e.name}, {spec_text(e.spec)}{steps}; {synced}", "dim"))
         section("Files:", [], rows, None)
 
     up_rows = []
     for st in ok:
         up = upstream_state(st)
         if up:
-            up_rows.append((up[0], st.rel, up[1], "dim"))
+            up_rows.append((up[0], st.entry.shown, up[1], "dim"))
     section("Upstream changes to pull:", ['use "git assetsync pull <file>..." to update'],
             up_rows, "yellow")
 
@@ -1235,16 +1795,16 @@ def print_long(ctx, repo, sts, verbose):
     adapted = [st for st in ok if st.committed == "adapted"]
     section("Locally modified files:",
             ['use "git assetsync pull --force <file>..." to restore the release asset'],
-            [("modified", st.rel) + not_allowed for st in adapted], "cyan")
+            [("modified", st.entry.shown) + not_allowed for st in adapted], "cyan")
 
     labels = {"modified": "modified", "deleted": "deleted", "added": "new file"}
     dirty = [st for st in ok if st.worktree in labels]
     section("Uncommitted changes:",
             ['use "git restore <file>..." to discard uncommitted changes'],
-            [(labels[st.worktree], st.rel) +
+            [(labels[st.worktree], st.entry.shown) +
              (not_allowed if st.local != "clean" else (None, None)) for st in dirty], "red")
 
-    warnings = [(st.rel, w) for st in ok for w in st.warnings]
+    warnings = [(st.entry.shown, w) for st in ok for w in st.warnings]
     if warnings:
         print("Warnings:")
         for rel, w in warnings:
@@ -1254,9 +1814,13 @@ def print_long(ctx, repo, sts, verbose):
     if not ctx.fetch:
         print("new releases not checked (--no-fetch)")
     elif not up_rows and len(ok) == len(sts):
-        n = len(sts)
+        dirs = sum(1 for st in sts if st.entry.is_dir)
+        files = len(sts) - dirs
+        what = and_list(([plural(files, "file")] if files else [])
+                        + ([plural(dirs, "directory").replace("directorys", "directories")]
+                           if dirs else []))
         print("nothing to pull" + ("" if adapted or dirty else
-                                   f", {'all ' if n > 1 else ''}{plural(n, 'file')} unmodified"))
+                                   f", {'all ' if len(sts) > 1 else ''}{what} unmodified"))
 
 
 # --------------------------------------------------------------------------
@@ -1278,8 +1842,8 @@ def cmd_status(ctx, repo, args):
         EXIT_PENDING if args.exit_code and attention else EXIT_OK
     if args.hook:
         for st in attention:
-            print(f"assetsync: {paint(st.rel, 'yellow', 'err')}: {render(describe(st), 'err')}",
-                  file=sys.stderr)
+            print(f"assetsync: {paint(st.entry.shown, 'yellow', 'err')}: "
+                  f"{render(describe(st), 'err')}", file=sys.stderr)
         if any(st.pending for st in attention):
             print("assetsync: run 'git assetsync pull <file>' to update", file=sys.stderr)
         if any(st.modified for st in attention):
@@ -1296,12 +1860,25 @@ def cmd_status(ctx, repo, args):
     return rc
 
 
-def release_lines(release, asset):
-    """Body lines of a commit message naming the release and asset."""
+def release_lines(release, assets, steps=(), stats=None):
+    """Body lines of a commit message naming the release, assets and filter,
+    and for a directory what changes in it."""
     lines = [f"Release: {release.url or release.tag}"]
     if release.title and release.title != release.tag:
         lines.append(f"Title:   {release.title}")
-    return lines + [f"Asset:   {asset.name}"]
+    names = [a.name for a in assets]
+    if len(names) == 1:
+        lines.append(f"Asset:   {names[0]}")
+    else:
+        lines.append(f"Assets:  {', '.join(names[:5])}"
+                     + (f" and {len(names) - 5} more" if len(names) > 5 else ""))
+    if steps:
+        lines.append(f"Filter:  {', '.join(steps)}")
+    if stats:
+        added, removed, changed, total = stats
+        lines.append(f"Files:   {added} added, {removed} removed, {changed} changed "
+                     f"({total} in total)")
+    return lines
 
 
 def notes_lines(notes):
@@ -1328,22 +1905,27 @@ def notes_lines(notes):
     return [f"  {line}" if line else "" for line in lines]
 
 
-def build_message(entry, release, asset, discarded, unchanged=False):
-    """Commit message for pull: what the file is updated to (or restored).
-    unchanged: the file stays the same (only its entry changes)."""
-    rel, name, tag, old = entry.rel, entry.name, release.tag, entry.synced
+def build_message(st, discarded, unchanged=False, stats=None):
+    """Commit message for pull: what the file (directory) is updated to, or
+    restored. unchanged: it stays the same (only its entry changes)."""
+    entry, release = st.entry, st.release
+    rel, name, tag, old = entry.shown, entry.name, release.tag, entry.synced
+    what = "directory" if entry.is_dir else "file"
     if not old and entry.blob:      # source or asset changed with set
-        subject = (f"Record {rel} as {name} {tag} (file unchanged)" if unchanged else
+        subject = (f"Record {rel} as {name} {tag} ({what} unchanged)" if unchanged else
                    f"Update {rel} to {name} {tag}")
     elif not old:
         subject = f"Add {rel} from {name} {tag}"
     elif tag != old:
         subject = f"Update {rel} to {name} {tag} (was {old})"
-    elif asset.digest and entry.digest and asset.digest.lower() != entry.digest.lower():
-        subject = f"Update {rel} from {name} {tag} (asset replaced)"
+    elif st.digest_changed:
+        subject = f"Update {rel} from {name} {tag} (asset{'s' if len(st.assets) > 1 else ''} " \
+                  "replaced)"
+    elif st.filter_changed:
+        subject = f"Update {rel} from {name} {tag} (filter changed)"
     else:
         subject = f"Restore {rel} from {name} {tag}"
-    lines = [subject, ""] + release_lines(release, asset)
+    lines = [subject, ""] + release_lines(release, st.assets, entry.steps, stats)
     notes = notes_lines(release.notes) if old and tag != old else []
     if notes:
         lines += ["", "Release notes:"] + notes
@@ -1428,28 +2010,102 @@ def commit_staged(repo, name, msg, args, done, rels=None):
     return EXIT_OK
 
 
-def install_asset(repo, origin, release, asset, rel, target, force=False):
-    """Download asset, store it as `git add` would at rel and write it to
-    the working tree as `git checkout` would. A file already there that
-    differs is only overwritten with force. Returns (digest, blob)."""
-    with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
-        f = Path(td) / "asset"
-        digest = fetch_asset(origin, release, asset, f)
-        blob = repo.add_file(f, rel)
+def install_file(repo, rel, target, files, force=False):
+    """Store the one file of files as `git add` would at rel, write it to
+    the working tree as `git checkout` would and stage it. A file already
+    there that differs is only overwritten with force. Returns its blob."""
+    (name, (src, executable)), = files.items()
+    blob = repo.add_file(src, rel)
     cur = repo.worktree_blob(target)
     if cur and cur != blob and not force:
-        raise FsError(f"'{rel}' exists and differs from {asset.name} - "
-                      "use --force to overwrite it")
+        raise FsError(f"'{rel}' exists and differs from {name} - use --force to overwrite it")
     if target.is_dir():
         raise FsError(f"'{rel}' is a directory")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(repo.checkout_form(blob, rel))
-    return digest, blob
+    set_executable(target, executable)
+    repo.git(["add", "--", lit(rel)])
+    if executable:
+        repo.git(["update-index", "--chmod=+x", "--", rel])
+    return blob
+
+
+def set_executable(path, executable):
+    mode = path.stat().st_mode
+    os.chmod(path, mode | 0o111 if executable else mode & ~0o111)
+
+
+def install_dir(repo, rel, target, files):
+    """Make the directory rel exactly files: other files git sees there
+    (tracked or untracked) are deleted, ignored ones stay. Stages it and
+    returns its tree."""
+    if target.exists() and not target.is_dir():
+        raise FsError(f"'{rel}' is a file")
+    for path in repo.dir_files(rel):
+        if path[len(rel) + 1:] not in files:
+            (repo.top / path).unlink()
+    if target.is_dir():
+        for d in sorted((d for d in target.rglob("*") if d.is_dir()), reverse=True):
+            try:
+                d.rmdir()               # only empty ones
+            except OSError:
+                pass
+    for name, (src, executable) in sorted(files.items()):
+        dest = target / name
+        try:
+            if dest.is_dir():
+                raise FsError(f"'{rel}/{name}' is a directory in the working tree")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+            set_executable(dest, executable)
+        except OSError as e:
+            raise FsError(f"cannot write '{rel}/{name}': {e.strerror}")
+    repo.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", lit(rel)])
+    paths = [f"{rel}/{name}" for name in sorted(files)]
+    # -f: also files the repository ignores (e.g. *.lib) - the entry has them
+    repo.git(["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
+             data="\0".join(lit(p) for p in paths).encode("utf-8"))
+    executables = [p for p, name in zip(paths, sorted(files)) if files[name][1]]
+    if executables:
+        repo.git(["update-index", "--chmod=+x", "-z", "--stdin"],
+                 data="\0".join(executables).encode("utf-8"))
+    return out(repo.git(["write-tree", f"--prefix={rel}/"]))
+
+
+def tree_stats(repo, old, new):
+    """(added, removed, changed, total) files from tree old (None: none) to new."""
+    total = len(repo.tree_entries(new))
+    if not old:
+        return total, 0, 0, total
+    p = repo.git(["diff-tree", "-r", "-z", "--no-renames", "--name-status", old, new])
+    status = [s for s in p.stdout.decode("utf-8", "replace").split("\0")[0::2] if s]
+    return status.count("A"), status.count("D"), \
+        len(status) - status.count("A") - status.count("D"), total
+
+
+def one_file(files, entry_shown, rel):
+    """The files of a [file] entry: exactly one."""
+    if len(files) != 1:
+        raise FsError(f"{entry_shown}: the filter gives {len(files)} files, a file needs exactly "
+                      f"one - narrow it with --include, or add '{rel}/' as a directory")
+    return files
+
+
+def install(repo, st, origin, release, assets, steps, force):
+    """Fetch, filter and install what an entry gets; staged. Returns
+    (digest, base, stats)."""
+    entry = st.entry
+    with Work(entry.shown) as work:
+        files, digest = entry_files(origin, release, assets, steps, work)
+        if entry.is_dir:
+            tree = install_dir(repo, entry.rel, entry.target, files)
+            return digest, tree, tree_stats(repo, st.head_blob, tree)
+        one_file(files, entry.shown, entry.rel)
+        return digest, install_file(repo, entry.rel, entry.target, files, force), None
 
 
 def pull_one(repo, reg, st, args):
-    entry, rel = st.entry, st.rel
-    release, asset = st.release, st.asset
+    entry, rel = st.entry, st.entry.shown
     if not st.pending and not st.modified:
         print(f"{rel}: {paint('up to date', 'green')}")
         return EXIT_OK
@@ -1458,31 +2114,34 @@ def pull_one(repo, reg, st, args):
     if st.modified and not args.force:
         what = ("committed modifications" if st.committed == "adapted" else
                 "uncommitted changes")
-        raise FsError(f"{rel}: {what} NOT ALLOWED - the file must stay a copy of its "
-                      f"release asset; discard them with 'git assetsync pull --force "
+        raise FsError(f"{rel}: {what} NOT ALLOWED - it must stay what its release "
+                      f"gives; discard them with 'git assetsync pull --force "
                       f"{cmd_arg(rel)}'" + ("" if st.committed == "adapted" else
                                             f" or 'git restore {cmd_arg(rel)}'"))
-    check_other_entries(reg, [rel], args)
+    # an entry without a base (written by hand): a directory with files is
+    # only taken over with --force (a file: only if it is the same)
+    if entry.is_dir and not entry.blob and not args.force and repo.dir_files(entry.rel):
+        raise FsError(f"'{rel}' is not empty - with --force it becomes the entry's (files there "
+                      "the release doesn't give are deleted)")
+    check_other_entries(reg, [entry.rel], args)
     for w in st.warnings:
         warn(f"{rel}: {w}")
     discard = st.modified
     if args.dry_run:
-        msg = build_message(entry, release, asset, discard).splitlines()[0]
+        msg = build_message(st, discard).splitlines()[0]
         print(f"would: {msg}" + (" - discarding local modifications" if discard else ""))
         return EXIT_OK
     if discard:
         warn(f"{rel}: discarding local modifications")
-    # an entry without a base (written by hand): a file already there is
-    # only replaced if it is the same, or with --force
-    digest, blob = install_asset(repo, st.origin, release, asset, rel, entry.target,
-                                 force=args.force or bool(entry.blob))
-    msg = build_message(entry, release, asset, discard, unchanged=blob == entry.blob)
-    entry.set("synced", release.tag)
+    digest, base, stats = install(repo, st, st.origin, st.release, st.assets, entry.steps,
+                                  force=args.force or bool(entry.blob))
+    msg = build_message(st, discard, unchanged=base == entry.blob, stats=stats)
+    entry.set("synced", st.release.tag)
     entry.set("digest", digest)
-    entry.set("blob", blob)
+    entry.set("filterhash", filter_hash(entry.steps))
+    entry.set(BASE_KEY[entry.kind], base)
     reg.finish()
-    repo.git(["add", "--", lit(rel)])
-    return commit_staged(repo, rel, msg, args, "updated and staged")
+    return commit_staged(repo, rel, msg, args, "updated and staged", rels=[entry.rel])
 
 
 def cmd_pull(ctx, repo, args):
@@ -1535,61 +2194,118 @@ def add_source(reg, args):
     return source_url(args.source), given, None
 
 
-def large_binary_hint(repo, rel, path):
-    """Warn about a big binary file that is not stored in Git LFS: each
-    update adds another copy of it to the history."""
-    size = path.stat().st_size
-    if size < LFS_HINT_SIZE:
-        return
-    with open(path, "rb") as f:
-        if b"\0" not in f.read(8000):
-            return
-    if out(repo.git(["check-attr", "filter", "--", rel])).endswith(": lfs"):
-        return
-    warn(f"{rel} is a binary file of {size // 1024} KiB, not stored in Git LFS - every "
-         f"update adds a copy to the history; consider 'git lfs track {cmd_arg(rel)}' "
-         "(before committing)")
+def large_binary_hint(repo, rels):
+    """Warn about big binary files that are not stored in Git LFS: each
+    update adds another copy of them to the history."""
+    shown = 0
+    for rel in rels:
+        path = repo.top / rel
+        size = path.stat().st_size
+        if size < LFS_HINT_SIZE:
+            continue
+        with open(path, "rb") as f:
+            if b"\0" not in f.read(8000):
+                continue
+        if out(repo.git(["check-attr", "filter", "--", rel])).endswith(": lfs"):
+            continue
+        shown += 1
+        if shown <= 3:
+            warn(f"{rel} is a binary file of {size // 1024} KiB, not stored in Git LFS - every "
+                 f"update adds a copy to the history; consider 'git lfs track {cmd_arg(rel)}' "
+                 "(before committing)")
+    if shown > 3:
+        warn(f"... and {shown - 3} more such files")
+
+
+def filter_steps(args):
+    """Filter steps from the options of add / set, in their fixed order;
+    None if none are given."""
+    steps = []
+    if args.extract:
+        steps.append("extract")
+    if args.subdir:
+        steps.append(shlex.join(["subdir", args.subdir]))
+    if args.strip:
+        if args.strip < 1:
+            raise FsError("--strip needs a number of at least 1")
+        steps.append(f"strip {args.strip}")
+    if args.include:
+        steps.append(shlex.join(["keep"] + args.include))
+    if args.exclude:
+        steps.append(shlex.join(["drop"] + args.exclude))
+    for step in steps:
+        parse_step(step)
+    return steps or None
 
 
 def cmd_add(ctx, repo, args):
     reg = Registry(repo)
     target = repo.user_path(args.path)
     rel = repo.rel(target)
+    is_dir = args.path.endswith(("/", "\\")) or target.is_dir()
+    kind, shown_rel = ("dir", rel + "/") if is_dir else ("file", rel)
     problem = path_problem(rel) if rel != "." else "is the repository itself"
     if problem:
         raise FsError(f"cannot add '{rel}': {problem}")
-    if target.is_dir():
-        raise FsError(f"cannot add '{rel}': is a directory")
+    if is_dir and target.exists() and not target.is_dir():
+        raise FsError(f"cannot add '{shown_rel}': is a file")
     if rel in reg.files and not args.force:
         raise FsError(f"'{rel}' is already synced (use --force to replace its entry)")
+    if rel in reg.files and reg.section(rel) != kind:
+        raise FsError(f"'{rel}' is synced as a {'directory' if reg.section(rel) == 'dir' else 'file'}"
+                      f" - remove its entry with 'git assetsync unlink {cmd_arg(rel)}' first")
+    others = reg.overlapping(rel, exclude=rel)
+    if others:
+        raise FsError(f"cannot add '{shown_rel}': overlaps with the entry for "
+                      f"{', '.join(others)} - entries must not overlap")
+    steps = filter_steps(args) or []
     url, spec, named = add_source(reg, args)
     origin, release = ctx.release(url, spec)
-    asset = match_asset(release, args.asset, origin.label)
+    assets = select_assets(release, args.asset, origin.label, is_dir)
     name = named or reg.source_name(url, spec)
+    if is_dir and not args.asset and len(assets) > 1:
+        total = sum(a.size or 0 for a in assets)
+        print(f"{shown_rel}: all {plural(len(assets), 'asset')} of {name} {release.tag}: "
+              + ", ".join(a.name + (f" ({human_size(a.size)})" if a.size is not None else "")
+                          for a in assets), flush=True)
+        if (len(assets) > MAX_ALL_ASSETS or total > MAX_ALL_SIZE) and not args.force:
+            raise FsError(f"that is more than {MAX_ALL_ASSETS} assets or {MAX_ALL_SIZE >> 20} MiB"
+                          " - choose some with --asset PATTERN, or take all with --force")
+    if is_dir and rel not in reg.files and not args.force and repo.dir_files(rel):
+        raise FsError(f"'{shown_rel}' is not empty - with --force it becomes the entry's (files "
+                      "there the release doesn't give are deleted; ignored ones stay)")
     if args.dry_run:
-        print(f"would add {rel} from {name} {release.tag} ({asset.name}, {spec_text(spec)})")
+        print(f"would add {shown_rel} from {name} {release.tag} "
+              f"({', '.join(a.name for a in assets)}, {spec_text(spec)}"
+              + (f", filter: {', '.join(steps)}" if steps else "") + ")")
         return EXIT_OK
-    digest, blob = install_asset(repo, origin, release, asset, rel, target, args.force)
+    obj = repo.head_object(rel)
+    st = State(entry=SimpleNamespace(shown=shown_rel, rel=rel, target=target, is_dir=is_dir),
+               rel=rel, head_blob=obj[1] if obj and obj[0] == "tree" else None)
+    digest, base, stats = install(repo, st, origin, release, assets, steps, args.force)
     if rel in reg.files:
         reg.remove_file(rel, keep_source=named)
     name = named or reg.add_source(url, spec)
+    reg.new_entry(rel, kind)
     entry = Entry(reg, rel)
     for k, v in (("source", name), ("asset", args.asset), ("synced", release.tag),
-                 ("digest", digest), ("blob", blob)):
+                 ("digest", digest), ("filterhash", filter_hash(steps)), (BASE_KEY[kind], base)):
         if v:
             entry.set(k, v)
+    reg.set_steps(rel, steps)
     reg.finish()
-    large_binary_hint(repo, rel, target)
-    repo.git(["add", "--", lit(rel)])
-    print(f"{paint('added', 'green')} {rel} <- {name} {release.tag} ({asset.name})")
+    large_binary_hint(repo, [f"{rel}/{n}" for n in repo.tree_names(base)] if is_dir else [rel])
+    print(f"{paint('added', 'green')} {shown_rel} <- {name} {release.tag} "
+          f"({', '.join(a.name for a in assets)})")
     if repo.git(["diff", "--cached", "--quiet", "HEAD", "--", lit(rel), REGISTRY],
                 check=False).returncode == 0:
-        print(f"{rel}: entry and file unchanged, nothing to commit")
+        print(f"{shown_rel}: entry and {'directory' if is_dir else 'file'} unchanged, "
+              "nothing to commit")
         return EXIT_OK
     # staged only, like git add; the proposed message is prepared for the commit
-    msg = "\n".join([f"Add {rel} from {name} {release.tag}", ""]
-                    + release_lines(release, asset)) + "\n"
-    report_staged(repo, rel, msg, paint("staged", "green"))
+    msg = "\n".join([f"Add {shown_rel} from {name} {release.tag}", ""]
+                    + release_lines(release, assets, steps, stats)) + "\n"
+    report_staged(repo, shown_rel, msg, paint("staged", "green"), rels=[rel])
     return EXIT_OK
 
 
@@ -1630,9 +2346,15 @@ def cmd_set(ctx, repo, args):
     comes from is unknown until the next pull (synced removed)."""
     select = args.release is not None or args.latest or args.prerelease is not None or \
         args.type is not None
-    if not (args.source or select or args.asset is not None or args.no_asset):
+    steps = filter_steps(args)
+    if args.no_filter and steps:
+        raise FsError("--no-filter excludes the other filter options")
+    if args.no_filter:
+        steps = []
+    if not (args.source or select or args.asset is not None or args.no_asset or
+            steps is not None):
         raise FsError("nothing to change: give --source, --release/--latest/--prerelease/"
-                      "--type or --asset/--no-asset")
+                      "--type, --asset/--no-asset or filter options")
     if args.release is not None and args.latest:
         raise FsError("--release and --latest exclude each other")
     reg = Registry(repo)
@@ -1679,10 +2401,17 @@ def cmd_set(ctx, repo, args):
         new = None if args.no_asset else args.asset
         for e in entries:
             if (e.asset or None) != new:
-                print(f"{would}{e.rel}: asset {e.asset or '(the only one)'} -> "
-                      f"{new or '(the only one)'}")
+                every = "(all)" if e.is_dir else "(the only one)"
+                print(f"{would}{e.shown}: asset {e.asset or every} -> {new or every}")
                 e.set("asset", new)
                 e.set("synced", None)
+                changed = True
+    if steps is not None:
+        for e in entries:
+            if e.steps != steps:
+                print(f"{would}{e.shown}: filter {', '.join(e.steps) or '(none)'} -> "
+                      f"{', '.join(steps) or '(none)'}")
+                reg.set_steps(e.rel, steps)
                 changed = True
     if not changed:
         print("nothing to change")
@@ -1757,10 +2486,11 @@ def cmd_unlink(ctx, repo, args):
     reg = Registry(repo)
     for entry in select_entries(repo, reg, args.paths):
         if args.dry_run:
-            print(f"would unlink {entry.rel}")
+            print(f"would unlink {entry.shown}")
             continue
+        what, shown_rel = ("files" if entry.is_dir else "file"), entry.shown
         reg.remove_file(entry.rel)
-        print(f"{paint('unlinked', 'green')} {entry.rel} (file kept)")
+        print(f"{paint('unlinked', 'green')} {shown_rel} ({what} kept)")
     if not args.dry_run:
         reg.finish()
     return EXIT_OK
@@ -1780,6 +2510,9 @@ def cmd_mv(ctx, repo, args):
         raise FsError(f"cannot move to '{new}': {problem}")
     if new in reg.files or dst.exists():
         raise FsError(f"'{new}' already exists")
+    others = reg.overlapping(new, exclude=old)
+    if others:
+        raise FsError(f"cannot move to '{new}': overlaps with the entry for {', '.join(others)}")
     if args.dry_run:
         print(f"would move {old} -> {new}")
         return EXIT_OK
@@ -1999,13 +2732,30 @@ def main(argv=None):
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="only report what would happen")
 
-    p = sub.add_parser("add", parents=[colorp], help="take a file from a release asset")
-    p.add_argument("path", metavar="PATH", help="file in this repository")
+    filterp = argparse.ArgumentParser(add_help=False)
+    g = filterp.add_argument_group("filter (applied in this order)")
+    g.add_argument("--extract", action="store_true",
+                   help="unpack the archives among the assets (zip, tar, tar.gz/bz2/xz; "
+                        ".gz/.bz2/.xz files)")
+    g.add_argument("--subdir", metavar="PATH", help="only the files below PATH, as the root")
+    g.add_argument("--strip", type=int, metavar="N",
+                   help="remove N leading directories from the paths")
+    g.add_argument("--include", metavar="PATTERN", action="append",
+                   help="only files matching (gitignore-like; repeatable)")
+    g.add_argument("--exclude", metavar="PATTERN", action="append",
+                   help="not the files matching (repeatable)")
+
+    p = sub.add_parser("add", parents=[colorp, filterp],
+                       help="take a file or directory from release assets")
+    p.add_argument("path", metavar="PATH",
+                   help="file in this repository; with a trailing '/' or an existing "
+                        "directory: a directory that belongs to the entry")
     p.add_argument("source", metavar="SOURCE",
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
     p.add_argument("--asset", metavar="PATTERN",
-                   help="asset of the release (glob pattern, must match exactly one; "
-                        "default: the release's only asset)")
+                   help="asset of the release (glob pattern; a file: must match exactly one, "
+                        "default the release's only asset; a directory: all matching, "
+                        "default all)")
     p.add_argument("--release", metavar="TAG|PATTERN",
                    help="release to take: an exact tag (pinned) or the newest matching "
                         "(default: the latest release)")
@@ -2015,8 +2765,8 @@ def main(argv=None):
     p.add_argument("--force", action="store_true", help="replace an existing entry or file")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
-    p = sub.add_parser("set", parents=[colorp],
-                       help="change entries: source, release selection or asset")
+    p = sub.add_parser("set", parents=[colorp, filterp],
+                       help="change entries: source, release selection, asset or filter")
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
     p.add_argument("--source", metavar="URL|SOURCE",
                    help="take the files from another source (URL or name, as for add)")
@@ -2032,7 +2782,9 @@ def main(argv=None):
     g = p.add_mutually_exclusive_group()
     g.add_argument("--asset", metavar="PATTERN", help="another asset (glob, exactly one match)")
     g.add_argument("--no-asset", action="store_true",
-                   help="no pattern: the release's only asset")
+                   help="no pattern: the release's only asset (a directory: all)")
+    p.add_argument("--no-filter", action="store_true",
+                   help="remove the filter (the filter options replace it as a whole)")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
     p = sub.add_parser("releases", parents=[colorp],
