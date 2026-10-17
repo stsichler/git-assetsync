@@ -38,6 +38,7 @@
 #   14. GitLab
 #   15. source: list, rename and change sources
 #   16. set: change entries
+#   17. releases: list releases and assets
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -1091,6 +1092,37 @@ git reset -q --hard
 check "set --release and --latest" "$(git assetsync set y.bin --release v1 --latest 2>&1)" \
   "error: --release and --latest exclude each other"
 check "set --source: unknown host" "$(git assetsync set y.bin --source https://code.example.org/a/b 2>&1 | grep -c '^error: .*platform of code.example.org unknown')" "1"
+
+
+# =============================================================================
+section "17. releases: list releases and assets"
+# =============================================================================
+cd "$T"
+printf 'abc' > "$F/small.bin"
+head -c 3000 /dev/zero > "$F/kib.bin"
+release acme/rl v0 09
+release --title "Rel 1" acme/rl v1 10 "$F/small.bin" "$F/kib.bin"
+release acme/rl v1.1 11 "$F/small.bin"
+release --title "Rel 2 RC" --pre acme/rl v2-rc1 12 "$F/small.bin"
+release --draft acme/rl v3 13 "$F/small.bin"
+check "releases outside a repository" "$(asd releases acme/rl | oneline)" \
+  "v3      2026-10-13  (draft) v2-rc1  2026-10-12  Rel 2 RC  (prerelease) v1.1    2026-10-11  (latest) v1      2026-10-10  Rel 1 v0      2026-10-09 "
+check "releases -n" "$(asd releases acme/rl -n 2 | lines)" "2"
+check "releases --assets" "$(asd releases acme/rl --assets | tail -5 | oneline)" \
+  "v1      2026-10-10  Rel 1     kib.bin    2.9 KiB     small.bin  3 bytes v0      2026-10-09     (no assets) "
+new_repo r17
+addc a.bin acme/rl --asset small.bin
+addc b.bin acme/rl --asset small.bin --release 'v*' --prerelease
+check "releases: selected by sources" "$(git assetsync releases acme/rl | grep '^v2-rc1 ' | oneline)" \
+  "v2-rc1  2026-10-12  Rel 2 RC  (prerelease, selected by acme/rl-2) "
+check "releases: latest selected" "$(git assetsync releases acme/rl | grep '^v1.1 ')" \
+  "v1.1    2026-10-11  (latest, selected by acme/rl)"
+check "releases of a source by name" "$(git assetsync releases acme/rl-2 -n 1)" \
+  "v3  2026-10-13  (draft)"
+check "releases: GitLab, upcoming" "$(asd releases https://gitlab.com/grp/proj -n 2 | oneline)" \
+  "v3  2026-10-30  (upcoming) v2  2026-10-11  (latest) "
+check "releases: none" "$(asd releases https://gitlab.com/grp/empty)" "no releases in grp/empty"
+check "releases: unknown project" "$(asd releases acme/nothing 2>&1)" "error: repository acme/nothing not found (or no access)"
 
 
 # =============================================================================

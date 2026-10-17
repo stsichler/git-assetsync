@@ -11,7 +11,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source)
+  - [`status`](#status) · [`pull`](#pull) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`releases`](#releases)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Proposed commit messages](#proposed-commit-messages)
@@ -132,6 +132,7 @@ line endings normalized) is still unmodified.
 | `unlink PATH…` | remove entries (the files are kept) |
 | `mv OLD NEW` | move a file, keeping its entry |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
+| `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
 Without a command, `status` runs. `PATH` may be a file or a directory (all
@@ -365,6 +366,37 @@ to move the files to the other one (`set <file>... --source <source>`).
 To give only some files of a source another release selection, use
 [`set`](#set), e.g. `git assetsync set lib/x.h --release v2.0` – they get a
 source of their own.
+
+### `releases`
+
+```
+git assetsync releases SOURCE|URL [--assets] [-n N | --all] [--type github|gitlab]
+```
+
+Lists the releases of a project, newest first: tag, date and title (if it
+differs from the tag), marked `latest` (as the platform defines it),
+`prerelease` (GitLab: `upcoming`), `draft`, and `selected by …` with the
+sources of this repository that select it now. A help for choosing
+`--release` and `--asset` for [`add`](#add) and [`set`](#set):
+
+```console
+$ git assetsync releases acme/tool --assets -n 2
+v1.1      2026-10-11  Tool 1.1  (latest, selected by acme/tool)
+    tool-1.1-linux-x64     14.6 MiB
+    tool-1.1-windows.zip   15.2 MiB
+v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
+    tool-1.1-rc1-linux-x64  14.5 MiB
+```
+
+`SOURCE` is the name of a `[source]` or a URL (`owner/repo`: github.com),
+as for `add`; with a URL it also works outside a repository.
+
+| Option | Meaning |
+|---|---|
+| `--assets` | also list the assets of each release, with their sizes (GitLab reports none) |
+| `-n`, `--max-count N` | the newest N releases (default: 10) |
+| `--all` | all releases |
+| `--type github\|gitlab` | platform of the URL's host, as for `add` |
 
 ### `install-hooks`, `uninstall-hooks`
 

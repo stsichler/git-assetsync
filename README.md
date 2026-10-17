@@ -152,6 +152,7 @@ release. `git assetsync source set-release` changes that later.
 | `set PATH… OPTIONS` | change entries: source, release selection, asset |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
+| `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
 `git assetsync <command> -h` lists the options of a command. The

@@ -111,6 +111,14 @@ command.
                                 (all: only .git-assetsync is staged; pull
                                 updates the files and commits the change)
 
+    releases SOURCE|URL         list the releases, newest first, marked:
+                                latest, prerelease (GitLab: upcoming), draft,
+                                selected by which [source]; also outside a
+                                repository (with a URL)
+        --assets                also list the assets, with their sizes
+        -n N, --all             the newest N releases (default 10), or all
+        --type github|gitlab    platform of the URL's host
+
     install-hooks               install pre-push/post-merge reminder hooks
     uninstall-hooks             remove them again
 
@@ -412,8 +420,10 @@ class Platform:
     def by_tag(self, tag):
         return self.get(self.tag_path(quote(tag, safe="")))
 
-    def releases(self):
-        """All releases (page by page, independent of the CLI's paging)."""
+    def releases(self, limit=None):
+        """All releases (page by page, independent of the CLI's paging); with
+        limit, at least that many (if there are) - the platforms list the
+        newest first, by their own order."""
         result, page = [], 1
         while True:
             try:
@@ -423,7 +433,7 @@ class Platform:
             if not isinstance(items, list):
                 raise FsError(f"{self.label}: unexpected answer listing the releases")
             result += [self.release(d) for d in items]
-            if len(items) < self.PER_PAGE:
+            if len(items) < self.PER_PAGE or limit and len(result) >= limit:
                 return result
             page += 1
 
@@ -1683,6 +1693,66 @@ def cmd_set(ctx, repo, args):
     return EXIT_OK
 
 
+def human_size(n):
+    """'512 bytes' / '1.2 KiB' / '3.4 MiB' / '1.1 GiB'."""
+    if n is None:
+        return ""
+    for unit in ("bytes", "KiB", "MiB"):
+        if n < 1024:
+            return f"{n} {unit}" if unit == "bytes" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GiB"
+
+
+def cmd_releases(ctx, repo, args):
+    """List releases newest first, marked: latest (as the platform says),
+    prerelease, draft, and which sources of this repository select them -
+    a help for add and set."""
+    reg = Registry(repo) if repo else None
+    if reg and args.source in reg.sources:
+        url, kind = reg.sources[args.source].get("url", ""), reg.sources[args.source].get("type")
+    else:
+        url, kind = source_url(args.source), args.type
+    origin = platform_of(url, kind)
+    rels = sorted(origin.releases(None if args.all else args.max_count),
+                  key=lambda r: r.date, reverse=True)
+    if not args.all:
+        rels = rels[:args.max_count]
+    if not rels:
+        print(f"no releases in {origin.label}")
+        return EXIT_OK
+    latest = origin.latest()
+    selected = {}
+    for name, s in sorted(reg.sources.items()) if reg else []:
+        if norm_url(s.get("url", "")) == norm_url(url):
+            try:
+                selected.setdefault(ctx.release(url, source_spec(s))[1].tag, []).append(name)
+            except FsError as e:
+                warn(f"{name}: {e}")
+    width = max(len(r.tag) for r in rels)
+    for r in rels:
+        flags = (["latest"] if latest and r.tag == latest.tag else []) + \
+            ([("upcoming" if isinstance(origin, GitLab) else "prerelease")] if r.prerelease
+             else []) + (["draft"] if r.draft else []) + \
+            ([f"selected by {and_list(selected[r.tag])}"] if r.tag in selected else [])
+        title = r.title if r.title and r.title != r.tag else ""
+        line = f"{paint(f'{r.tag:<{width}}', 'yellow')}  {r.date[:10] or '-':<10}  {title}"
+        print(line.rstrip() + (f"  {paint('(' + ', '.join(flags) + ')', 'cyan')}"
+                               if flags else ""))
+        if args.assets:
+            aw = max([len(a.name) for a in r.assets] or [0])
+            for a in r.assets:
+                print(f"    {a.name:<{aw}}  {human_size(a.size)}".rstrip())
+            if not r.assets:
+                print("    (no assets)")
+    return EXIT_OK
+
+
+def and_list(items):
+    items = list(items)
+    return ", ".join(items[:-1]) + " and " + items[-1] if len(items) > 1 else "".join(items)
+
+
 def cmd_unlink(ctx, repo, args):
     reg = Registry(repo)
     for entry in select_entries(repo, reg, args.paths):
@@ -1965,6 +2035,18 @@ def main(argv=None):
                    help="no pattern: the release's only asset")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
+    p = sub.add_parser("releases", parents=[colorp],
+                       help="list the releases of a source (and their assets)")
+    p.add_argument("source", metavar="SOURCE|URL",
+                   help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
+    p.add_argument("--assets", action="store_true", help="also list the assets")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("-n", "--max-count", type=int, default=10, metavar="N",
+                   help="the newest N releases (default: 10)")
+    g.add_argument("--all", action="store_true", help="all releases")
+    p.add_argument("--type", choices=sorted(PLATFORMS),
+                   help="platform of the URL's host (default: derived from it)")
+
     p = sub.add_parser("unlink", parents=[colorp], help="remove entries (the files are kept)")
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
@@ -2020,6 +2102,8 @@ def main(argv=None):
         except FsError:
             repo = None
         setup_colors(args.color, repo.top if repo else None)
+        if args.cmd == "releases":            # also outside a repository
+            return cmd_releases(Context(args), repo, args)
         if repo is None:
             raise FsError("not inside a Git working tree")
         if args.cmd == "install-hooks":
