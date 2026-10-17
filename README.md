@@ -140,7 +140,7 @@ Release notes:
 Each commit contains the file and its updated entry in `.git-assetsync`.
 `--release` selects other releases: `--release 'tool-*'` follows the
 newest release whose tag matches, `--release v1.0` pins the file to that
-release.
+release. `git assetsync source set-release` changes that later.
 
 ## Commands
 
@@ -150,6 +150,7 @@ release.
 | `pull PATH…`, `pull --all` | update files to the selected release and commit |
 | `add PATH SOURCE` | take a file from a release asset |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
+| `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
 `git assetsync <command> -h` lists the options of a command. The

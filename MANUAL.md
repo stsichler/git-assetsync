@@ -11,7 +11,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`add`](#add) · [`unlink`](#unlink) · [`mv`](#mv)
+  - [`status`](#status) · [`pull`](#pull) · [`add`](#add) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Proposed commit messages](#proposed-commit-messages)
@@ -97,9 +97,11 @@ published together. To follow a different release of the same project,
 use a second source with the same URL (`add` does that when `--release`
 differs).
 
-You can edit the file with `git config -f .git-assetsync …` or by hand;
-`synced`/`digest`/`blob` should be left to git-assetsync. An entry written
-by hand without them is fetched by the next `pull` (an existing file at its
+The commands maintain the file: `add`, `unlink` and `mv` for the
+`[file]` entries, [`source`](#source) for the `[source]` sections. It can
+also be edited by hand (or with `git config -f .git-assetsync …`), but that
+is never needed; `synced`/`digest`/`blob` should be left to git-assetsync.
+An entry written by hand without them is fetched by the next `pull` (an existing file at its
 path is only replaced if it is the same, or with `--force`). Changes to
 the file are committed along with the next `pull` – or, if they concern
 other files' entries, that `pull` refuses until they are committed (see
@@ -128,6 +130,7 @@ line endings normalized) is still unmodified.
 | `add PATH SOURCE` | take a file from a release asset |
 | `unlink PATH…` | remove entries (the files are kept) |
 | `mv OLD NEW` | move a file, keeping its entry |
+| `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
 Without a command, `status` runs. `PATH` may be a file or a directory (all
@@ -251,8 +254,8 @@ takes it as it is).
   expand it. The pattern is recorded and used for later releases, too.
   Without `--asset`, the release must have exactly one asset, which is
   taken; no pattern is recorded, and a later release with more than one
-  asset is an error until you add one
-  (`git config -f .git-assetsync file.PATH.asset 'PATTERN'`).
+  asset is an error until you choose one
+  (`git assetsync add --force PATH SOURCE --asset PATTERN`).
 
 | Option | Meaning |
 |---|---|
@@ -276,7 +279,9 @@ git assetsync unlink PATH… [-n]
 
 Removes the entries (and sources no longer used) from `.git-assetsync`
 and stages it; the files themselves are kept as ordinary files. Commit
-when you like.
+when you like. A broken entry that `status` reports as unsafe (e.g. a path
+outside the working tree) is removed by giving its name as it is in the
+file.
 
 ### `mv`
 
@@ -286,6 +291,40 @@ git assetsync mv OLD NEW [-n]
 
 Moves a file (with `git mv`) and its entry, and stages both. `NEW` may be
 an existing directory.
+
+### `source`
+
+```
+git assetsync source [-v [--no-fetch]]
+git assetsync source rename OLD NEW
+git assetsync source set-url NAME URL
+git assetsync source set-release NAME (TAG|PATTERN | --unset) [--prerelease | --no-prerelease]
+git assetsync source set-type NAME (github|gitlab | --unset)
+```
+
+Lists and changes the `[source]` sections, like `git remote` does for
+remotes. The changing actions only change `.git-assetsync` and stage it;
+`status` then shows what changes for the files of the source, and `pull`
+updates them and commits the change of the source along with them.
+
+| Action | Meaning |
+|---|---|
+| (none) | list the sources; `-v`: with URL, release selection, file count and the release the source selects now (asked from the platform; `--no-fetch`: not) |
+| `rename OLD NEW` | rename a source and all references to it |
+| `set-url NAME URL` | change the URL, e.g. after the project moved |
+| `set-release NAME TAG\|PATTERN` | select another release: a tag pins the source to it, a pattern takes the newest matching release (see [Selecting the release](#selecting-the-release)) |
+| `set-release NAME --unset` | follow the latest release again |
+| `--prerelease`, `--no-prerelease` | (with `set-release`, also alone) let prereleases count, or not |
+| `set-type NAME github\|gitlab` | the platform of the host; `--unset`: derived from the host again |
+
+Two sources with the same URL and release selection are not allowed: a
+change that would make one the same as another is refused, with a hint
+to move the files to the other one (`add --force <file> <source>`).
+
+To give only some files of a source another release selection, add them
+again with the URL and the new selection, e.g.
+`git assetsync add --force lib/x.h https://github.com/acme/lib --release v2.0`
+– they get a source of their own.
 
 ### `install-hooks`, `uninstall-hooks`
 
@@ -327,12 +366,14 @@ prereleases; without one, the newest release including prereleases.
 
 If the selected release has no asset matching the entry's pattern, or more
 than one, that is an error – also when an older release would have one, so
-a renamed asset doesn't go unnoticed. Change the pattern
-(`git config -f .git-assetsync file.PATH.asset 'NEW-*'`) and pull.
+a renamed asset doesn't go unnoticed. Change the pattern with
+`git assetsync add --force PATH SOURCE --asset 'NEW-*'`, which fetches the
+file again and stages it with its entry.
 
-To switch a source to another release selection, change its `release` key
-(e.g. `git config -f .git-assetsync source.acme/tool.release v2.0`) and
-pull its files; the change is committed with them.
+To switch a source to another release selection, use
+[`source set-release`](#source) (e.g.
+`git assetsync source set-release acme/tool v2.0`) and pull its files; the
+change is committed with them.
 
 ### Proposed commit messages
 

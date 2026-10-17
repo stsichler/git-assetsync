@@ -36,6 +36,7 @@
 #   12. Dry runs
 #   13. Hooks and colors
 #   14. GitLab
+#   15. source: list, rename and change sources
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -407,7 +408,7 @@ check "nothing written on error" "$(git status --porcelain)" ""
 quiet asd add app.tgz acme/app --asset 'app-linux.*' && git commit -q --no-edit
 check "asset glob with 1 match" "$(cat app.tgz)" "linux"
 check "no --asset, several assets" "$(asd add y.tgz acme/app 2>&1)" \
-  "error: release v3 of acme/app has 3 assets: app-linux.tar.gz, app-macos.tar.gz, app-windows.zip - choose one with --asset (or 'asset = PATTERN' in the entry)"
+  "error: release v3 of acme/app has 3 assets: app-linux.tar.gz, app-macos.tar.gz, app-windows.zip - choose one with --asset PATTERN"
 
 # the newest release lacks the asset: an error, no fallback to older ones
 asset other.txt other
@@ -435,7 +436,7 @@ asset single.bin "single 3"
 asset extra.txt extra
 release acme/single v3 12 "$F/single.bin" "$F/extra.txt"
 check "no --asset, more assets later: error" "$(git assetsync status 2>&1 | head -1)" \
-  "error: single.bin: release v3 of acme/single has 2 assets: extra.txt, single.bin - choose one with --asset (or 'asset = PATTERN' in the entry)"
+  "error: single.bin: release v3 of acme/single has 2 assets: extra.txt, single.bin - choose one with 'git assetsync add --force single.bin acme/single --asset PATTERN'"
 cd "$T"
 
 # a re-uploaded asset (same tag, other content) is an upstream change
@@ -745,6 +746,9 @@ git config -f .git-assetsync source.s.url https://github.com/acme/rb
 check "unsafe paths: all errors" "$(git assetsync status -s 2>/dev/null | cut -c1 | sort -u | oneline)" "E "
 check "unsafe paths: error count" "$(git assetsync status 2>&1 | grep -c '^error: ')" "5"
 check "unsafe paths: pull --all writes nothing" "$(git assetsync pull --all --no-edit >/dev/null 2>&1; ls -a .git/hooks | grep -c '^post-merge$'; ls ../evil.txt 2>/dev/null)" "0"
+check "unsafe paths: hint" "$(git assetsync status 2>&1 | grep -c "remove it with 'git assetsync unlink /tmp/evil.txt'")" "1"
+quiet git assetsync unlink ../evil.txt /tmp/evil.txt .git/hooks/post-merge sub/.GIT/x a//b
+check "unsafe paths: unlink by name" "$(git config -f .git-assetsync --get-regexp '^file\.' | lines)" "0"
 rm .git-assetsync
 git config -f .git-assetsync file.x.txt.source nothing
 check "incomplete entry" "$(git assetsync status 2>&1 | head -1)" \
@@ -782,7 +786,7 @@ asset e.txt enterprise
 release --host ghe.example.com acme/ent v1 10 "$F/e.txt"
 new_repo r11
 check "unknown host without type" "$(asd add e.txt https://ghe.example.com/acme/ent --asset e.txt 2>&1)" \
-  "error: https://ghe.example.com/acme/ent: platform of ghe.example.com unknown - give its type (add --type github|gitlab, or 'type = ...' in its [source])"
+  "error: https://ghe.example.com/acme/ent: platform of ghe.example.com unknown - give its type (add --type github|gitlab, or 'git assetsync source set-type <source> github|gitlab')"
 reset_calls
 addc e.txt https://ghe.example.com/acme/ent --asset e.txt --type github
 check "GitHub Enterprise: fetched" "$(cat e.txt)" "enterprise"
@@ -866,7 +870,7 @@ check "GitLab: URL of a page of the project" "$(rc asd add gl2.txt https://gitla
 check "... same source" "$(reg file.gl2.txt.source)" "grp/proj"
 git reset -q --hard; rm -f gl2.txt
 check "GitLab: several assets need --asset" "$(asd add x.bin https://gitlab.com/grp/proj 2>&1)" \
-  "error: release v1 of grp/proj has 2 assets: gl.bin, gl.txt - choose one with --asset (or 'asset = PATTERN' in the entry)"
+  "error: release v1 of grp/proj has 2 assets: gl.bin, gl.txt - choose one with --asset PATTERN"
 
 # a new release: pending, pull with release notes
 asset gl.bin "gl 2"
@@ -925,7 +929,7 @@ release --host code.example.org grp/sm v1 10 "$F/sm.txt"
 quiet asd add sm1.txt https://gitlab.example.org/grp/sm
 check "self-managed GitLab, 'gitlab' in the host name" "$(cat sm1.txt)" "selfmanaged"
 check "self-managed GitLab, other name: needs type" "$(asd add sm2.txt https://code.example.org/grp/sm 2>&1)" \
-  "error: https://code.example.org/grp/sm: platform of code.example.org unknown - give its type (add --type github|gitlab, or 'type = ...' in its [source])"
+  "error: https://code.example.org/grp/sm: platform of code.example.org unknown - give its type (add --type github|gitlab, or 'git assetsync source set-type <source> github|gitlab')"
 quiet asd add sm2.txt https://code.example.org/grp/sm --type gitlab
 check "... with --type gitlab" "$(cat sm2.txt) $(reg source.grp/sm-2.type)" "selfmanaged gitlab"
 
@@ -950,6 +954,73 @@ check "GitLab: not a project URL" "$(asd add x.bin https://gitlab.com/grp 2>&1)"
   "error: 'https://gitlab.com/grp' is not a GitLab project URL (https://gitlab.com/group/project)"
 check "glab missing" "$(ASSETSYNC_GLAB=/nonexistent/glab asd add x.bin https://gitlab.com/grp/proj 2>&1 | sed 's/ (.*) / /')" \
   "error: cannot run the GitLab CLI '/nonexistent/glab' - install it from https://gitlab.com/gitlab-org/cli and log in with 'glab auth login'"
+
+
+# =============================================================================
+section "15. source: list, rename and change sources"
+# =============================================================================
+cd "$T"
+asset s1.txt "s1 v1"
+release acme/src v1 10 "$F/s1.txt"
+asset s1.txt "s1 v2"
+release --pre acme/src v2-rc 11 "$F/s1.txt"
+asset s1.txt "s1 v0"
+release acme/src v0 09 "$F/s1.txt"
+new_repo r15
+addc a.txt acme/src
+addc b.txt acme/src --release v0
+check "source: list" "$(git assetsync source | oneline)" "acme/src acme/src-2 "
+check "source -v" "$(git assetsync source -v | oneline)" \
+  "acme/src${TAB}https://github.com/acme/src (latest release, 1 file) - now v1 acme/src-2${TAB}https://github.com/acme/src (release v0, 1 file) - now v0 "
+reset_calls
+check "source -v --no-fetch: not asked" "$(git assetsync source -v --no-fetch | head -1) $(calls)" \
+  "acme/src${TAB}https://github.com/acme/src (latest release, 1 file) 0"
+
+# set-release: staged only; pull updates the file and commits both
+OUT=$(git assetsync source set-release acme/src 'v*' --prerelease)
+check "set-release: output" "$(echo "$OUT" | head -1)" \
+  "acme/src: newest release matching v* (prereleases too) (was: latest release); .git-assetsync staged"
+check "set-release: keys" "$(reg source.acme/src.release) $(reg source.acme/src.prerelease)" "v* true"
+check "set-release: staged" "$(git status --porcelain | oneline)" "M  .git-assetsync "
+check "set-release: pending" "$(st a.txt)" "P"
+pullc a.txt
+check "set-release + pull: one commit" "$(cat a.txt) $(git show --name-only --format= HEAD | sort | oneline)" "s1 v2 .git-assetsync a.txt "
+check "set-release --no-prerelease only" "$(git assetsync source set-release acme/src --no-prerelease >/dev/null; reg source.acme/src.release) $(reg source.acme/src.prerelease)" "v* "
+check "set-release --unset: latest again" "$(git assetsync source set-release acme/src --unset >/dev/null; reg source.acme/src.release)" ""
+pullc a.txt
+check "... pulled back to the latest" "$(cat a.txt)" "s1 v1"
+check "set-release: same selection as another source" "$(git assetsync source set-release acme/src-2 --unset 2>&1)" \
+  "error: source 'acme/src' already has this URL and selection - move the files to it with 'git assetsync add --force <file> acme/src'"
+check "set-release: nothing given" "$(git assetsync source set-release acme/src 2>&1)" \
+  "error: give either TAG|PATTERN or --unset (or only --prerelease / --no-prerelease)"
+check "unknown source" "$(git assetsync source set-release nope v1 2>&1)" \
+  "error: no source 'nope' in .git-assetsync (known: acme/src, acme/src-2)"
+
+# rename, set-url, set-type
+quiet git assetsync source rename acme/src-2 pinned
+check "rename: section and references" "$(reg source.pinned.release) $(reg file.b.txt.source)" "v0 pinned"
+check "rename: to an existing name" "$(git assetsync source rename pinned acme/src 2>&1)" "error: source 'acme/src' already exists"
+git commit -q -m "rename source"
+check "rename: still clean" "$(git assetsync status -s)" ""
+asset s1.txt "moved v1"
+release acme/moved v0 10 "$F/s1.txt"
+quiet git assetsync source set-url pinned https://github.com/acme/moved.git
+check "set-url" "$(reg source.pinned.url)" "https://github.com/acme/moved"
+check "set-url: pending (other asset)" "$(st b.txt)" "P"
+git reset -q --hard
+check "set-type" "$(git assetsync source set-type pinned gitlab >/dev/null; reg source.pinned.type)" "gitlab"
+check "set-type --unset" "$(git assetsync source set-type pinned --unset >/dev/null; reg source.pinned.type)" ""
+check "set-type: unknown" "$(git assetsync source set-type pinned svn 2>&1)" "error: unknown type 'svn' (supported: github, gitlab)"
+git reset -q --hard
+
+# the asset of a file: changed with add --force
+asset other.txt other
+release acme/src v3 12 "$F/s1.txt" "$F/other.txt"
+check "two assets now: hint at add --force" "$(git assetsync status a.txt 2>&1 | head -1)" \
+  "error: a.txt: release v3 of acme/src has 2 assets: other.txt, s1.txt - choose one with 'git assetsync add --force a.txt acme/src --asset PATTERN'"
+quiet asd add --force a.txt acme/src --asset 's1*'
+git commit -q --no-edit
+check "add --force: asset chosen" "$(reg file.a.txt.asset) $(st a.txt)" "s1* "
 
 
 # =============================================================================

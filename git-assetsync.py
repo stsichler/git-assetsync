@@ -79,9 +79,25 @@ command.
         --force                 replace an existing entry or file
         -n, --dry-run           only show what would be done
 
-    unlink PATH...              remove entries (the files are kept)
+    unlink PATH...              remove entries (the files are kept); also
+                                broken ones, by their name
     mv OLD NEW                  move a file (git mv), keeping its entry
         -n, --dry-run           (both) only show what would be done
+
+    source                      list the [source]s (-v: with URL, release
+                                selection, the release it selects now
+                                (--no-fetch: not asked), file count)
+    source rename OLD NEW       rename a [source] and all references to it
+    source set-url NAME URL     change the URL of a [source]
+    source set-release NAME TAG|PATTERN | --unset
+                                select another release: a tag pins the
+                                source to it, a pattern takes the newest
+                                matching, --unset the latest again
+        --prerelease, --no-prerelease  prereleases count too, or not
+    source set-type NAME github|gitlab | --unset
+                                platform of the host (--unset: derived)
+                                (all: only .git-assetsync is staged; pull
+                                updates the files and commits the change)
 
     install-hooks               install pre-push/post-merge reminder hooks
     uninstall-hooks             remove them again
@@ -541,7 +557,8 @@ def platform_of(url, kind=None):
             raise FsError(f"{url}: unknown type '{kind}' (supported: "
                           f"{', '.join(sorted(PLATFORMS))})")
         raise FsError(f"{url}: platform of {host} unknown - give its type (add --type "
-                      "github|gitlab, or 'type = ...' in its [source])")
+                      "github|gitlab, or 'git assetsync source set-type <source> "
+                      "github|gitlab')")
     if kind == "github" and path.count("/") != 1:
         raise FsError(f"'{url}' is not a GitHub repository URL (https://{host}/owner/repo)")
     if path.count("/") < 1:
@@ -577,16 +594,16 @@ def select_release(origin, rule, prerelease):
     return max(cands, key=lambda r: r.date)
 
 
-def match_asset(release, pattern, label):
+def match_asset(release, pattern, label, choose="--asset PATTERN"):
     """The one asset of release whose name matches pattern; without
-    pattern, the release's only asset."""
+    pattern, the release's only asset. choose: how to give a pattern."""
     if not pattern:
         if len(release.assets) == 1:
             return release.assets[0]
         names = ", ".join(a.name for a in release.assets)
         raise FsError(f"release {release.tag} of {label} has "
-                      + (f"{len(release.assets)} assets: {names} - choose one with --asset "
-                         "(or 'asset = PATTERN' in the entry)" if names else "no assets"))
+                      + (f"{len(release.assets)} assets: {names} - choose one with {choose}"
+                         if names else "no assets"))
     found = [a for a in release.assets if fnmatch.fnmatchcase(a.name, pattern)]
     if len(found) == 1:
         return found[0]
@@ -845,6 +862,26 @@ class Registry:
             self.sources[name][k] = v
         return name
 
+    def set_source(self, name, key, value):
+        """Set (value None: remove) a key of a [source]."""
+        if value is None:
+            if key in self.sources[name]:
+                self._cfg("--unset-all", f"source.{name}.{key}")
+                del self.sources[name][key]
+        else:
+            self._cfg(f"source.{name}.{key}", value)
+            self.sources[name][key] = value
+
+    def rename_source(self, old, new):
+        self._cfg("--rename-section", f"source.{old}", f"source.{new}")
+        self.sources[new] = self.sources.pop(old)
+        for rel, f in self.files.items():
+            if f.get("source") == old:
+                self.set_file(rel, "source", new)
+
+    def source_files(self, name):
+        return sorted(rel for rel, f in self.files.items() if f.get("source") == name)
+
     def remove_file(self, rel, keep_source=None):
         """Remove a [file]; its [source] too when no other file uses it
         (unless it is keep_source)."""
@@ -922,6 +959,9 @@ def select_entries(repo, reg, paths):
         return reg.entries()
     result = []
     for s in paths:
+        if s in reg.files and path_problem(s):     # a broken entry, by its name
+            result.append(Entry(reg, s))
+            continue
         rel = repo.rel(repo.user_path(s))
         if rel in reg.files:
             result.append(Entry(reg, rel))
@@ -1003,7 +1043,7 @@ def evaluate(ctx, repo, entry):
     problem = path_problem(entry.rel)
     if problem:
         st.error = (f"{problem} - entry ignored; remove it with "
-                    f"'git config -f {REGISTRY} --remove-section \"file.{entry.rel}\"'")
+                    f"'git assetsync unlink {shlex.quote(entry.rel)}'")
         return st
     if not entry.url:
         st.error = f"incomplete entry in {REGISTRY} (needs a source with url)"
@@ -1041,7 +1081,9 @@ def evaluate(ctx, repo, entry):
     if ctx.fetch:
         try:
             st.origin, st.release = ctx.release(entry.url, entry.spec)
-            st.asset = match_asset(st.release, entry.asset, st.origin.label)
+            st.asset = match_asset(st.release, entry.asset, st.origin.label,
+                                   f"'git assetsync add --force {cmd_arg(entry.rel)} "
+                                   f"{shlex.quote(entry.name)} --asset PATTERN'")
         except FsError as e:
             st.error = str(e)
             return st
@@ -1550,6 +1592,97 @@ def cmd_mv(ctx, repo, args):
     return EXIT_OK
 
 
+def source_text(s, name, reg):
+    """'URL (selection, N files)' for source -v."""
+    return (f"{s.get('url', '')} ({spec_text(source_spec(s))}"
+            + (f", type {s['type']}" if s.get("type") else "")
+            + f", {plural(len(reg.source_files(name)), 'file')})")
+
+
+def cmd_source(ctx, repo, args):
+    """Like `git remote`: list, rename and change the [source]s. Only
+    .git-assetsync is changed (and staged); `pull` then updates the files
+    and commits the change with them."""
+    reg = Registry(repo)
+    action = args.action
+    if not action:
+        for name, s in sorted(reg.sources.items()):
+            if not args.verbose:
+                print(name)
+                continue
+            now = ""
+            if ctx.fetch and s.get("url"):
+                try:
+                    now = f" - now {ctx.release(s['url'], source_spec(s))[1].tag}"
+                except FsError as e:
+                    warn(f"{name}: {e}")
+            print(f"{name}\t{source_text(s, name, reg)}{now}")
+        return EXIT_OK
+    if args.name not in reg.sources:
+        raise FsError(f"no source '{args.name}' in {REGISTRY}"
+                      + (f" (known: {', '.join(sorted(reg.sources))})" if reg.sources else ""))
+    s = reg.sources[args.name]
+    old = source_spec(s)
+    if action == "rename":
+        new = args.value
+        if not new or "\n" in new:
+            raise FsError("invalid source name")
+        if new in reg.sources:
+            raise FsError(f"source '{new}' already exists")
+        reg.rename_source(args.name, new)
+        done = f"renamed {args.name} -> {new}"
+    else:
+        url, spec = s.get("url", ""), dict(old)
+        if action == "set-url":
+            url = source_url(args.value)
+        elif action == "set-release":
+            if args.unset and args.value or not (args.unset or args.value or
+                                                 args.prerelease is not None):
+                raise FsError("give either TAG|PATTERN or --unset (or only --prerelease / "
+                              "--no-prerelease)")
+            if args.value:
+                spec["release"] = args.value
+            elif args.unset:
+                spec.pop("release", None)
+            if args.prerelease is not None:
+                if args.prerelease:
+                    spec["prerelease"] = "true"
+                else:
+                    spec.pop("prerelease", None)
+        else:   # set-type
+            if bool(args.unset) == bool(args.value):
+                raise FsError("give either github|gitlab or --unset")
+            if args.value and args.value not in PLATFORMS:
+                raise FsError(f"unknown type '{args.value}' (supported: "
+                              f"{', '.join(sorted(PLATFORMS))})")
+            if args.value:
+                spec["type"] = args.value
+            else:
+                spec.pop("type", None)
+        other = next((n for n, o in reg.sources.items() if n != args.name
+                      and norm_url(o.get("url", "")) == norm_url(url) and source_spec(o) == spec),
+                     None)
+        if other:
+            raise FsError(f"source '{other}' already has this URL and selection - move the files "
+                          f"to it with 'git assetsync add --force <file> {other}'")
+        if action == "set-url":
+            reg.set_source(args.name, "url", url)
+            done = f"{args.name}: url {url}"
+        else:
+            for key in SPEC_KEYS:
+                reg.set_source(args.name, key, spec.get(key))
+            done = f"{args.name}: {spec_text(spec)}" + \
+                (f", type {spec['type']}" if spec.get("type") else "") + \
+                (f" (was: {spec_text(old)})" if action == "set-release" and old != spec else "")
+    reg.finish()
+    print(f"{paint(done, 'green')}; {REGISTRY} staged")
+    files = reg.source_files(args.value if action == "rename" else args.name)
+    if action != "rename" and files:
+        print(f'  (use "git assetsync status" to see what changes for its '
+              f'{plural(len(files), "file")}, "git assetsync pull <file>..." to update them)')
+    return EXIT_OK
+
+
 def hook_dir(repo, action):
     hp = out(repo.git(["config", "core.hooksPath"], check=False))
     if hp:
@@ -1688,6 +1821,38 @@ def main(argv=None):
     p.add_argument("dst", metavar="NEW", help="new path or existing directory")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
+    p = sub.add_parser("source", parents=[colorp],
+                       help="list or change the [source]s (like 'git remote')")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="list with URL, release selection, the release it selects now and "
+                        "file count")
+    p.add_argument("--no-fetch", action="store_true",
+                   help="with -v: don't ask the platform which release is selected now")
+    actions = p.add_subparsers(dest="action", metavar="ACTION")
+    a = actions.add_parser("rename", parents=[colorp],
+                           help="rename a source and all references to it")
+    a.add_argument("name", metavar="OLD", help="key of the [source]")
+    a.add_argument("value", metavar="NEW")
+    a = actions.add_parser("set-url", parents=[colorp], help="change the URL of a source")
+    a.add_argument("name", metavar="NAME", help="key of the [source]")
+    a.add_argument("value", metavar="URL")
+    a = actions.add_parser("set-release", parents=[colorp],
+                           help="select another release: a tag pins the source to it, a "
+                                "pattern takes the newest matching; --unset: the latest")
+    a.add_argument("name", metavar="NAME", help="key of the [source]")
+    a.add_argument("value", metavar="TAG|PATTERN", nargs="?")
+    a.add_argument("--unset", action="store_true", help="follow the latest release again")
+    g = a.add_mutually_exclusive_group()
+    g.add_argument("--prerelease", dest="prerelease", action="store_true", default=None,
+                   help="prereleases count too")
+    g.add_argument("--no-prerelease", dest="prerelease", action="store_false",
+                   help="prereleases don't count (default)")
+    a = actions.add_parser("set-type", parents=[colorp],
+                           help="platform of the source's host (--unset: derived from it)")
+    a.add_argument("name", metavar="NAME", help="key of the [source]")
+    a.add_argument("value", metavar="github|gitlab", nargs="?")
+    a.add_argument("--unset", action="store_true", help="derive the platform from the host")
+
     sub.add_parser("install-hooks", parents=[colorp],
                    help="install pre-push/post-merge reminder hooks")
     sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the reminder hooks again")
@@ -1710,7 +1875,7 @@ def main(argv=None):
             return cmd_uninstall_hooks(repo, args)
         ctx = Context(args)
         return {"status": cmd_status, "pull": cmd_pull, "add": cmd_add,
-                "unlink": cmd_unlink, "mv": cmd_mv}[args.cmd](ctx, repo, args)
+                "unlink": cmd_unlink, "mv": cmd_mv, "source": cmd_source}[args.cmd](ctx, repo, args)
     except FsError as e:
         error(str(e))
         return EXIT_ERROR
