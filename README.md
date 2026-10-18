@@ -50,8 +50,10 @@ built the same way.
   projects; all entries of a repository are listed in one file,
   `.git-assetsync`, at its root (git-config format, like `.gitmodules`)
 - Built-in filters, without running any code: unpack ZIP, tar and – with
-  7-Zip installed – 7z archives safely, take a subdirectory, strip leading directories, include or
-  exclude files by pattern; a directory belongs to its entry and is
+  7-Zip installed – 7z archives safely, take a subdirectory, strip leading
+  directories, include or exclude files by pattern, move and copy files
+  into a new structure; named filters, reusable and applicable to some
+  files only (e.g. per asset); a directory belongs to its entry and is
   replaced as a whole on update
 - Follows the latest release, the newest release whose tag matches a
   pattern (e.g. `tool-*` for one of several tools released from one
@@ -168,6 +170,7 @@ git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' \
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
+| `filter [ACTION …]` | list named filters; show, set, rename or remove them |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
