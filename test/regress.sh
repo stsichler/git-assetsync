@@ -44,6 +44,7 @@
 #   20. Download cache
 #   21. 7z archives (an external 7-Zip)
 #   22. Filter steps in order, move / copy, named filters
+#   23. Commands in filters: convert, run, trust
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -1676,6 +1677,92 @@ git reset -q --hard
 new_repo r22b
 quiet git assetsync filter add only --extract
 check "only a filter: registry kept" "$(git status --porcelain | oneline)" "A  .git-assetsync "
+
+
+# =============================================================================
+section "23. Commands in filters: convert, run, trust"
+# =============================================================================
+cd "$T"
+printf 'hello\n' > "$F/notes.txt"
+printf 'fw\n' > "$F/fw.bin"
+printf 'ab\n' > "$F/data.hex"
+release acme/cmd v1 10 "$F/notes.txt" "$F/fw.bin" "$F/data.hex"
+new_repo r23
+mkdir tools && printf 'import sys\nopen(sys.argv[2], "wb").write(open(sys.argv[1], "rb").read().upper())\n' > tools/upper.py
+git add tools && git commit -qm tools
+filt conv --convert '*.txt' 'gen/{stem}.TXT' "\"$PYTHON\" {root}/tools/upper.py {in} {out}" \
+  --convert '*.bin' 'gen/' 'cp {in} {out}/{stem}.c && cp {in} {out}/{stem}.h' \
+  --convert '*.hex' '{stem}.c' 'tr a-z A-Z < {in} > {out}'
+check "convert: stored" "$(git config -f .git-assetsync --get-all filter.conv.step | head -1)" \
+  "convert '*.txt' 'gen/{stem}.TXT' '\"$PYTHON\" {root}/tools/upper.py {in} {out}'"
+check "not trusted: refused" "$(asd add c/ acme/cmd --filter conv 2>&1 | grep '^error')" \
+  "error: filter conv runs commands and isn't trusted in this repository yet - check with 'git assetsync trust', then trust with 'git assetsync trust conv'"
+check "not trusted: nothing written" "$(ls c 2>/dev/null; git status --porcelain)" ""
+OUT=$(git assetsync trust)
+check "trust: list" "$(echo "$OUT" | head -1)" "filter conv: not trusted"
+check "trust: commands and scripts" "$(echo "$OUT" | grep -c '(runs tools/upper.py of this repository)')" "1"
+check "trust: hint" "$(echo "$OUT" | tail -1)" \
+  '  (use "git assetsync trust <name>..." or "git assetsync trust --all" to trust them in this repository)'
+check "trust NAME" "$(git assetsync trust conv)" "filter conv: trusted"
+check "trust: local config only" "$(git config --local --get-all assetsync.trusted | sed 's/^[0-9a-f]* //') $(git status --porcelain)" "conv "
+quiet asd add c/ acme/cmd --filter conv
+check "convert: result" "$(git ls-files c | oneline)" "c/data.c c/gen/fw.c c/gen/fw.h c/gen/notes.TXT "
+check "convert: by a script of the repository" "$(cat c/gen/notes.TXT)" "HELLO"
+check "convert: with sh redirection" "$(cat c/data.c)" "AB"
+git commit -q --no-edit
+check "convert: clean" "$(st c)" ""
+# a changed script: the filter changes, and needs a new trust
+printf 'import sys\nopen(sys.argv[2], "wb").write(open(sys.argv[1], "rb").read().upper() + b"!")\n' > tools/upper.py
+git commit -qam "new upper"
+check "changed script: pending" "$(git assetsync status | grep -c 'pending:    c/  (filter changed)')" "1"
+check "changed script: warning" "$(git assetsync status | grep -c "filter conv runs commands and isn't trusted here yet")" "1"
+check "changed script: trust list" "$(git assetsync trust | head -1)" "filter conv: changed since trusted (used by c/)"
+check "changed script: pull refused" "$(rc git assetsync pull --no-edit c)" "2"
+quiet git assetsync trust --all
+pullc c
+check "changed script: pulled" "$(cat c/gen/notes.TXT)" "HELLO
+!"
+# without trust in CI: ASSETSYNC_TRUST=all
+filt rn --run 'cp -R {in}/. {out}/ && echo "$ASSETSYNC_RELEASE $ASSETSYNC_ENTRY {in} {out}" > {out}/env.txt'
+check "ASSETSYNC_TRUST=all" "$(ASSETSYNC_TRUST=all asd add r/ acme/cmd --filter rn >/dev/null 2>&1; git ls-files r | oneline)" \
+  "r/data.hex r/env.txt r/fw.bin r/notes.txt "
+check "run: environment, {in} and {out}" "$(cat r/env.txt)" "v1 r/ in out"
+check "ASSETSYNC_TRUST=all: not recorded" "$(git assetsync trust | grep '^filter rn')" "filter rn: not trusted (used by r/)"
+git reset -q --hard; rm -rf r
+# errors
+filt fail --convert '*.txt' x.out 'echo broken >&2; exit 3'
+filt none --convert '*.txt' x.out 'true'
+filt clash --convert '*.txt' 'fw.bin' 'cp {in} {out}'
+quiet git assetsync trust --all
+check "command fails" "$(asd add e/ acme/cmd --filter fail 2>&1 | grep '^error')" \
+  "error: e/ filter fail: 'convert '*.txt' x.out 'echo broken >&2; exit 3'': notes.txt: command failed (exit code 3): broken"
+check "command writes nothing" "$(asd add e/ acme/cmd --filter none 2>&1 | grep '^error')" \
+  "error: e/ filter none: 'convert '*.txt' x.out true': notes.txt: the command wrote no file {out}"
+filt names --convert '*.txt' 'gen/{stem}.c' 'echo {in} {out} > {out}' --convert '*.bin' '{path}' 'echo {in} {out} > {out}' \
+  --convert '*.hex' 'h/' 'echo {in} {out} > {out}/x'
+quiet git assetsync trust names
+quiet asd add n/ acme/cmd --filter names
+check "convert: {in} and {out} are short names (reproducible)" "$(cat n/gen/notes.c n/fw.bin n/h/x | oneline)" \
+  "notes.txt notes.c fw.bin out/fw.bin data.hex out "
+git reset -q --hard; rm -rf n
+check "command result collides" "$(asd add e/ acme/cmd --filter clash 2>&1 | grep '^error')" \
+  "error: e/ filter clash: 'convert '*.txt' fw.bin 'cp {in} {out}'': 'notes.txt' would give 'fw.bin', which is already there"
+if ! command -v cygpath >/dev/null; then
+  filt lnk --convert '*.txt' 'l/' 'ln -s /etc/passwd {out}/x'
+  quiet git assetsync trust lnk
+  check "command result: a link refused" "$(asd add e/ acme/cmd --filter lnk 2>&1 | grep -c "'x' is no regular file")" "1"
+fi
+check "errors: nothing written" "$(ls e 2>/dev/null; git status --porcelain)" ""
+# filter test runs commands only if trusted, too
+quiet git assetsync trust --revoke conv
+check "trust --revoke" "$(git assetsync trust | grep '^filter conv')" "filter conv: not trusted (used by c/)"
+check "filter test: not trusted" "$(git assetsync filter test conv "$F/notes.txt" 2>&1 | cut -c1-40)" "error: filter conv runs commands and isn"
+quiet git assetsync trust conv
+check "filter test: commands" "$(git assetsync filter test conv "$F/notes.txt" "$F/data.hex" "$F/fw.bin" | oneline)" \
+  "3 bytes  data.c 3 bytes  gen/fw.c 3 bytes  gen/fw.h 7 bytes  gen/notes.TXT "
+check "trust: a filter without commands" "$(git assetsync trust only-steps 2>&1; filt plain --extract; git assetsync trust plain)" \
+  "error: no filter 'only-steps' in .git-assetsync
+filter plain runs no commands - nothing to trust"
 
 
 # =============================================================================

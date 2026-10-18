@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`releases`](#releases)
+  - [`status`](#status) · [`pull`](#pull) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`releases`](#releases)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -182,7 +182,8 @@ line endings normalized) is still unmodified.
 | `unlink PATH…` | remove entries (the files are kept) |
 | `mv OLD NEW` | move a file or directory, keeping its entry |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
-| `filter [ACTION …]` | list filters; show, add, set, rename or remove them |
+| `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
+| `trust [NAME…]` | list the filters that run commands; trust them in this repository |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
@@ -526,6 +527,32 @@ input: madler/zlib v1.3.2: zlib-1.3.2.tar.gz
 …
 ```
 
+### `trust`
+
+```
+git assetsync trust
+git assetsync trust NAME… | --all
+git assetsync trust --revoke NAME…
+```
+
+Filters that run [commands](#commands-in-filters) run only if trusted in
+this repository. Without arguments, `trust` lists them with their state –
+`trusted`, `not trusted`, or `changed since trusted` – and their commands,
+naming the scripts of the repository they run; on a terminal it asks for
+each one that isn't trusted. `trust NAME…` trusts the filters as they are
+now, `--all` all filters that run commands, `--revoke` takes the trust
+back. Trusts are kept in the repository's own config (`.git/config`,
+`assetsync.trusted`), never committed – each clone decides for itself.
+
+```console
+$ git assetsync trust
+filter firmware: not trusted (used by src/fw/)
+  convert '*.bin' 'src/{stem}.c' 'xxd -i {in} > {out}'
+  convert '*.hex' 'src/{stem}_hex.c' 'python3 {root}/tools/hex2c.py {in} {out}'
+    (runs tools/hex2c.py of this repository)
+  (use "git assetsync trust <name>..." or "git assetsync trust --all" to trust them in this repository)
+```
+
 ### `install-hooks`, `uninstall-hooks`
 
 `install-hooks` installs two hooks that never block:
@@ -600,6 +627,8 @@ has the name of its step:
 | `--move PATTERN TARGET` | move the matching files to `TARGET`, see below |
 | `--copy PATTERN TARGET` | the same, but the files also stay where they are |
 | `--apply PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
+| `--convert PATTERN TARGET COMMAND` | convert each matching file with a command of your own (e.g. bin2c), see [Commands in filters](#commands-in-filters) |
+| `--run COMMAND` | run a command on all files at once, see [Commands in filters](#commands-in-filters) |
 
 **Several `--include` options in a row make one step** that keeps the
 files matching *any* of their patterns – they don't filter one after the
@@ -690,6 +719,61 @@ A filter may use other filters, but not itself (also not through others).
 A changed filter changes all entries that use it, directly or through
 other filters: `status` shows them as pending (`filter changed`), `pull`
 applies it. Renaming one changes nothing else.
+
+#### Commands in filters
+
+Two steps run commands, to convert files with tools of your own:
+
+- **`convert PATTERN TARGET COMMAND`** runs `COMMAND` once for each file
+  matching `PATTERN`: `{in}` is the file, `{out}` where the command writes
+  the result. The result replaces the file, under
+  the path `TARGET` – with the placeholders of `move` (`{path}`, `{dir}`,
+  `{parent}`, `{name}`, `{stem}`, `{ext}`), e.g. `'gen/{stem}.c'`. With a
+  trailing `/`, `TARGET` is a directory and `{out}` an empty directory: all
+  files the command writes there go into it (e.g. a `.c` and a `.h`). To
+  keep the original as well, `--copy` it first.
+- **`run COMMAND`** runs `COMMAND` once: `{in}` is a directory with all
+  files so far, `{out}` an empty directory; the files the command writes
+  there are the result.
+
+```sh
+git assetsync filter add firmware --extract --include '*.bin' --include '*.hex' \
+    --convert '*.bin' 'src/{stem}.c' 'xxd -i {in} > {out}' \
+    --convert '*.hex' 'src/{stem}_hex.c' 'python3 {root}/tools/hex2c.py {in} {out}'
+```
+
+The commands run with `sh -c` (on Windows the `sh` of Git for Windows;
+`ASSETSYNC_SH` sets another one), so redirections like `> {out}` work. They
+run in a temporary working directory where `{in}` and `{out}` are **short
+relative names**: for `convert`, `{in}` is the file's name (`fw.bin`) and
+`{out}` the name of `TARGET` (`fw.c`; if both are the same, `out/fw.c`; for
+a `TARGET/`, the directory `out`); for `run`, `in` and `out`. So tools that
+derive names from them – like `xxd -i`, which makes `fw_bin` of `fw.bin` –
+give the same result everywhere. `{root}` is the root of the repository,
+for its scripts: `python3 {root}/tools/hex2c.py {in} {out}`.
+
+The placeholders are filled in quoted; other `{…}` in a command (like
+`${VAR}`) stay as they are. In the environment, the placeholders are
+`ASSETSYNC_IN`, `ASSETSYNC_OUT`, `ASSETSYNC_ROOT`, `ASSETSYNC_NAME`, … too,
+and `ASSETSYNC_RELEASE` (the tag), `ASSETSYNC_SOURCE` and `ASSETSYNC_ENTRY`
+(the path of the entry). A command that fails (exit code not 0), writes
+no result, or writes links is an error; nothing is changed then. On Linux
+and macOS, the executable bit of what a command writes is kept.
+
+The result is recorded like any other (`blob` / `tree`), so commands only
+run on `pull`, `add` and `filter test` – never on `status`, and never on
+a clone: everyone else gets the committed files. Commands should be
+deterministic, so that the same release gives the same result.
+
+**Trust.** The commands come from `.git-assetsync`, a committed file:
+whoever can change it could run commands on every machine that pulls. So
+a filter with commands runs only if it is **trusted in your repository**
+– recorded in its own config (`.git/config`, never committed), with
+[`trust`](#trust). A trust is for the filter as it is: a changed filter,
+or a changed script of the repository its commands run (named as
+`{root}/tools/hex2c.py` or `$ASSETSYNC_ROOT/tools/hex2c.py`), needs a new one – and makes the entries using it
+pending, so they are converted again. On a terminal, `pull` and `add` ask;
+otherwise they refuse with a hint. In CI, set `ASSETSYNC_TRUST=all`.
 
 Archives are unpacked safely: members with paths outside the target
 (`..`, absolute, drive letters), in a `.git` directory, symbolic or hard

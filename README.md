@@ -26,9 +26,9 @@ $ git assetsync pull bin/tool.bin
 ```
 
 **Status: early development.** Files and whole directories from releases
-on GitHub and GitLab, with archives unpacked and files selected by built-in
-filters. Converting assets with tools of your own (e.g. binary → C source)
-is planned next.
+on GitHub and GitLab, with archives unpacked, files selected and moved by
+built-in filters, and converted with tools of your own (e.g. binary → C
+source).
 
 ## Why?
 
@@ -55,6 +55,8 @@ built the same way.
   into a new structure; filters are named, used by any number of entries
   and by each other (e.g. per asset); a directory belongs to its entry and
   is replaced as a whole on update
+- Converting files with commands of your own (bin2c, hex2c, …), per file
+  or for all at once – run only if you trust the filter in your clone
 - Follows the latest release, the newest release whose tag matches a
   pattern (e.g. `tool-*` for one of several tools released from one
   repository), or is pinned to one release; tags are taken as they are,
@@ -171,6 +173,7 @@ git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' --filter
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
 | `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
+| `trust [NAME…]` | list the filters that run commands; trust them in this repository |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 

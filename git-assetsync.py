@@ -54,7 +54,15 @@ strip N (N leading directories off), include / exclude PATTERN... (only /
 not the files matching any of them; gitignore-like), move / copy PATTERN
 TARGET (TARGET/: into that directory; else a path with {path} {dir}
 {parent} {name} {stem} {ext}), apply PATTERN NAME (the filter NAME on the
-matching files only). Filters are named; the
+matching files only), convert PATTERN TARGET COMMAND (each matching file:
+{in} -> {out}, which replaces it at TARGET; TARGET/: {out} a directory),
+run COMMAND ({in} a directory with all files, {out} one for the result).
+Commands run with sh -c (ASSETSYNC_SH; on Windows Git's sh) in a working
+directory where {in} and {out} are short relative names (fw.bin, fw.c),
+so results are the same everywhere; {root} is the repository's root (for
+scripts: {root}/tools/x.py). Placeholders are filled in quoted, also as
+ASSETSYNC_* variables. Commands run only in filters trusted in this
+repository (see trust; CI: ASSETSYNC_TRUST=all). Filters are named; the
 steps come from the options of filter add / set, in the order given. Downloads are kept in a cache (ASSETSYNC_CACHE; default
 ~/.cache/git-assetsync, %LOCALAPPDATA%\\git-assetsync).
 
@@ -159,10 +167,19 @@ command.
                                 order given:
         --extract, --subdir PATH, --strip N, --include PATTERN,
         --exclude PATTERN, --move PATTERN TARGET, --copy PATTERN TARGET,
-        --apply PATTERN NAME    (consecutive --include / --exclude: one step)
+        --apply PATTERN NAME, --convert PATTERN TARGET COMMAND, --run COMMAND
+                                (consecutive --include / --exclude: one step)
     filter set NAME STEP-OPTIONS...  replace the steps of a filter
     filter rename OLD NEW       rename a filter, also where it is used
     filter remove NAME          remove a filter nothing uses
+
+    trust                       list the filters that run commands, with their
+                                state (trusted, not trusted, changed since
+                                trusted) and the scripts they run; asks on a
+                                terminal
+    trust NAME... | --all       trust these filters (all), as they are now -
+                                in .git/config, never committed
+        --revoke                no longer trust them
 
     releases SOURCE|URL         list the releases, newest first, marked:
                                 latest, prerelease (GitLab: upcoming), draft,
@@ -797,7 +814,10 @@ def get_asset(origin, release, asset):
 # --------------------------------------------------------------------------
 
 # filter steps; the options of filter add / set have the same names
-STEPS = ("extract", "subdir", "strip", "include", "exclude", "move", "copy", "apply")
+STEPS = ("extract", "subdir", "strip", "include", "exclude", "move", "copy", "apply",
+         "convert", "run")
+# the steps that run commands: only in trusted filters (see trust)
+COMMAND_STEPS = ("convert", "run")
 # placeholders in the target of move / copy, for a file a/b/c.txt
 PLACEHOLDERS = ("path", "dir", "parent", "name", "stem", "ext")
 WIN_RESERVED = re.compile(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?")
@@ -822,10 +842,18 @@ class Work:
     """Temporary files of a filter run. The files of a stage are
     {path: (file, executable)}; files are never changed once written."""
 
-    def __init__(self, what):
+    def __init__(self, what, cwd=None, env=None, trusted=()):
         self.what = what
         self.dir = Path(tempfile.mkdtemp(prefix="assetsync-"))
         self.n = self.size = self.count = 0
+        self.cwd, self.env = cwd, env or {}   # for commands: repository root, ASSETSYNC_*
+        self.trusted = set(trusted)           # filters whose commands may run
+
+    def new_dir(self):
+        self.n += 1
+        d = self.dir / f"d{self.n}"
+        d.mkdir()
+        return d
 
     def __enter__(self):
         return self
@@ -1087,12 +1115,13 @@ def parse_step(step):
           "strip": len(args) == 1 and args[0].isdigit() and int(args[0]) > 0,
           "include": bool(args), "exclude": bool(args),
           "move": len(args) == 2 and all(args), "copy": len(args) == 2 and all(args),
-          "apply": len(args) == 2 and all(args)}.get(name)
+          "apply": len(args) == 2 and all(args),
+          "convert": len(args) == 3 and all(args), "run": len(args) == 1 and bool(args[0])}.get(name)
     if ok is None:
         raise FsError(f"unknown filter step '{step}' (known: {', '.join(STEPS)})")
     if not ok:
         raise FsError(f"malformed filter step '{step}'")
-    if name in ("move", "copy"):
+    if name in ("move", "copy", "convert"):
         for p in re.findall(r"\{([^{}]*)\}", args[1]):
             if p not in PLACEHOLDERS:
                 raise FsError(f"filter step '{step}': unknown placeholder {{{p}}} (known: "
@@ -1100,38 +1129,232 @@ def parse_step(step):
     return name, args
 
 
+def path_values(rel):
+    """The placeholders {path} {dir} {parent} {name} {stem} {ext} of rel."""
+    d, _, name = rel.rpartition("/")
+    stem, ext = os.path.splitext(name)
+    return {"path": rel, "dir": d, "parent": d.rpartition("/")[2], "name": name,
+            "stem": stem, "ext": ext}
+
+
+def fill(template, values, quote=False):
+    """template with the placeholders in values filled in (shell-quoted
+    for a command); other {...} are left as they are."""
+    def value(m):
+        if m.group(1) not in values:
+            return m.group(0)
+        return shlex.quote(values[m.group(1)]) if quote else values[m.group(1)]
+    return re.sub(r"\{(\w+)\}", value, template)
+
+
 def target_path(template, rel, what):
     """Where move / copy put the file rel: into the directory template if it
     ends with '/', else to the path template with its placeholders filled
     in. Relative to the filter's root."""
-    d, _, name = rel.rpartition("/")
-    stem, ext = os.path.splitext(name)
-    values = {"path": rel, "dir": d, "parent": d.rpartition("/")[2], "name": name,
-              "stem": stem, "ext": ext}
-    path = template + name if template.endswith("/") else \
-        re.sub(r"\{(\w+)\}", lambda m: values[m.group(1)], template)
+    values = path_values(rel)
+    path = template + values["name"] if template.endswith("/") else fill(template, values)
     result = safe_path(path.lstrip("/"), what)
     if not result:
         raise FsError(f"{what}: '{rel}' gets no file name from '{template}'")
     return result
 
 
-def expand_steps(steps, filters, chain=()):
+def shell_command():
+    """The shell for filter commands: ASSETSYNC_SH, sh on the PATH, or on
+    Windows the sh of Git for Windows."""
+    cmd = os.environ.get("ASSETSYNC_SH", "").strip()
+    if cmd:
+        return shlex.split(cmd)
+    found = shutil.which("sh")
+    if found:
+        return [found]
+    if os.name == "nt":
+        p = git(["--exec-path"], check=False)
+        for base in Path(out(p) or ".").parents:
+            for sh in (base / "bin" / "sh.exe", base / "usr" / "bin" / "sh.exe"):
+                if sh.is_file():
+                    return [str(sh)]
+    raise FsError("no 'sh' found to run filter commands (Git for Windows has one) - "
+                  "set ASSETSYNC_SH")
+
+
+def run_command(command, values, work, what, cwd):
+    """Run a filter command with sh -c in its working directory cwd, where
+    {in} and {out} are - short relative names, so that tools deriving names
+    from them (like xxd -i) give the same everywhere. The placeholders are
+    filled in (quoted) and in the environment as ASSETSYNC_*; {root} is the
+    repository's root, for its scripts."""
+    values = dict(values, root=Path(work.cwd).as_posix())
+    text = fill(command, values, quote=True)
+    env = dict(clean_env(), **work.env, **{f"ASSETSYNC_{k.upper()}": v for k, v in values.items()})
+    try:
+        p = subprocess.run(shell_command() + ["-c", text], cwd=cwd, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    except OSError as e:
+        raise FsError(f"{what}: cannot run the shell ({e.strerror}) - set ASSETSYNC_SH")
+    if p.returncode:
+        msg = (p.stderr.strip() or p.stdout.strip()).decode("utf-8", "replace").splitlines()
+        raise FsError(f"{what}: command failed (exit code {p.returncode})"
+                      + (f": {msg[-1]}" if msg else ""))
+
+
+def collect_dir(root, what, work):
+    """{path: (file, executable)} of the files a command wrote below root:
+    regular files only, valid names, within the limits."""
+    files = {}
+    for dirpath, dirs, names in os.walk(root):
+        for n in dirs + names:
+            p = Path(dirpath) / n
+            if p.is_symlink() or not (p.is_dir() or p.is_file()):
+                raise FsError(f"{what}: '{p.relative_to(root).as_posix()}' is no regular file")
+        for n in names:
+            p = Path(dirpath) / n
+            st = p.stat()
+            work.size += st.st_size
+            work.count += 1
+            if work.size > MAX_EXTRACT_SIZE or work.count > MAX_EXTRACT_FILES:
+                raise FsError(f"{what}: more than {MAX_EXTRACT_SIZE >> 30} GiB or "
+                              f"{MAX_EXTRACT_FILES} files")
+            rel = safe_path(p.relative_to(root).as_posix(), what)
+            files[rel] = (p, os.name != "nt" and bool(st.st_mode & 0o111))
+    return files
+
+
+def materialize(files, root):
+    """Write files {path: (file, executable)} below root, for a command."""
+    for rel, (src, executable) in files.items():
+        dest = root / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+        set_executable(dest, executable)
+
+
+ROOT_PREFIXES = ("{root}/", "$ASSETSYNC_ROOT/", "${ASSETSYNC_ROOT}/")
+
+
+def referenced_files(command, repo):
+    """[(path, blob id)] of the files of the repository a command names
+    (like {root}/tools/bin2c.py): part of the filter's hash, so that a
+    changed script changes the filter."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    found = {}
+    for w in words:
+        prefix = next((p for p in ROOT_PREFIXES if w.startswith(p)), None)
+        rel = w[len(prefix):] if prefix else ""
+        if rel and "{" not in rel and not path_problem(rel) and (repo.top / rel).is_file():
+            found[rel] = repo.worktree_blob(repo.top / rel)
+    return sorted(found.items())
+
+
+def own_lines(steps, repo):
+    """A filter's steps, with the files its commands name and their ids."""
+    lines = []
+    for step in steps:
+        lines.append(step)
+        name, args = parse_step(step)
+        if name in COMMAND_STEPS and repo:
+            lines += [f"  uses {p} {oid}" for p, oid in referenced_files(args[-1], repo)]
+    return lines
+
+
+def expand_steps(steps, filters, chain=(), repo=None):
     """The steps with the named filters they use, resolved - to check them
-    and to notice changes (names left out: renaming changes nothing)."""
+    and to notice changes (names left out: renaming changes nothing); with
+    repo, also the files the commands name."""
     result = []
     for step in steps:
         name, args = parse_step(step)
         if name != "apply":
-            result.append(step)
+            result += own_lines([step], repo)
             continue
         if args[1] not in filters:
             raise FsError(f"unknown filter '{args[1]}' (in '{step}')")
         if args[1] in chain:
             raise FsError(f"filter '{args[1]}' uses itself (via {' -> '.join(chain)})")
         result += [f"apply {shlex.quote(args[0])} {{"] \
-            + expand_steps(filters[args[1]], filters, chain + (args[1],)) + ["}"]
+            + expand_steps(filters[args[1]], filters, chain + (args[1],), repo) + ["}"]
     return result
+
+
+def used_filters(steps, filters, seen=None):
+    """Names of the filters the steps use, also through other filters."""
+    seen = [] if seen is None else seen
+    for step in steps:
+        name, args = parse_step(step)
+        if name == "apply" and args[1] in filters and args[1] not in seen:
+            seen.append(args[1])
+            used_filters(filters[args[1]], filters, seen)
+    return seen
+
+
+def runs_commands(steps):
+    return any(parse_step(s)[0] in COMMAND_STEPS for s in steps)
+
+
+def trust_hash(name, filters, repo):
+    """What a trust is for: a filter's own steps and the files its commands
+    name (filters it applies are trusted on their own)."""
+    text = "\n".join(own_lines(filters[name], repo))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def trusted_values(repo):
+    """['<hash> <name>'] in the repository's own config (never committed)."""
+    p = repo.git(["config", "--local", "--get-all", "assetsync.trusted"], check=False)
+    return out(p).splitlines()
+
+
+def is_trusted(repo, name, filters):
+    h = trust_hash(name, filters, repo)
+    return any(v.split(" ", 1)[0] == h for v in trusted_values(repo))
+
+
+def set_trust(repo, name, filters, trust=True):
+    """Trust (or no longer trust) the filter as it is now."""
+    values = [v for v in trusted_values(repo) if v.partition(" ")[2] != name]
+    if trust:
+        values.append(f"{trust_hash(name, filters, repo)} {name}")
+    repo.git(["config", "--local", "--unset-all", "assetsync.trusted"], check=False)
+    for v in values:
+        repo.git(["config", "--local", "--add", "assetsync.trusted", v])
+
+
+def untrusted(repo, steps, filters):
+    """Filters the steps use that run commands and are not trusted here."""
+    return [n for n in used_filters(steps, filters)
+            if runs_commands(filters[n]) and not is_trusted(repo, n, filters)]
+
+
+def show_commands(name, filters, repo, indent="  "):
+    for step in filters[name]:
+        kind, args = parse_step(step)
+        if kind in COMMAND_STEPS:
+            print(f"{indent}{step}")
+            for p, _ in referenced_files(args[-1], repo):
+                print(f"{indent}  (runs {p} of this repository)")
+
+
+def ensure_trusted(repo, steps, filters):
+    """The filters whose commands may run for steps: all they use - if
+    those that run commands are trusted, or ASSETSYNC_TRUST=all, or the
+    user trusts them now (asked on a terminal). Else an error."""
+    missing = untrusted(repo, steps, filters)
+    if missing and os.environ.get("ASSETSYNC_TRUST", "").strip().lower() != "all":
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise FsError(f"filter {and_list(missing)} run{'s' if len(missing) == 1 else ''} "
+                          "commands and isn't trusted in this repository yet - check with 'git "
+                          f"assetsync trust', then trust with 'git assetsync trust {missing[0]}'")
+        for name in missing:
+            print(f"filter {name} runs commands:")
+            show_commands(name, filters, repo)
+            answer = input(f"Trust filter {name} in this repository? [y/N] ")
+            if answer.strip().lower() not in ("y", "yes"):
+                raise FsError(f"filter {name} not trusted")
+            set_trust(repo, name, filters)
+    return set(used_filters(steps, filters))
 
 
 def run_steps(files, steps, work, filters=None, chain=()):
@@ -1178,6 +1401,60 @@ def run_steps(files, steps, work, filters=None, chain=()):
                                   "outside the filter")
                 rest[r] = v
             files = rest
+        elif name in COMMAND_STEPS:
+            fname = chain[-1] if chain else None
+            if fname not in work.trusted:
+                raise FsError(f"{work.what}: '{step}': filter {fname} is not trusted")
+            what = f"{work.what}: '{step}'"
+            if name == "run":
+                d = work.new_dir()
+                materialize(files, d / "in")
+                (d / "out").mkdir()
+                run_command(args[0], {"in": "in", "out": "out"}, work, what, d)
+                files = collect_dir(d / "out", what, work)
+                continue
+            pattern, target, command = args
+            rx = glob_regex(pattern)
+            matched = sorted(r for r in files if rx.match(r))
+            if not matched:
+                raise FsError(f"{what}: no files match '{pattern}'")
+            rest = {r: v for r, v in files.items() if r not in matched}
+            new, origin = {}, {}
+            for r in matched:
+                values = path_values(r)
+                into_dir = target.endswith("/")
+                t = fill(target.rstrip("/") if into_dir else target, values).lstrip("/")
+                t = safe_path(t, what) or "" if into_dir else safe_path(t, what)
+                if not into_dir and not t:
+                    raise FsError(f"{what}: '{r}' gets no file name from '{target}'")
+                # {in} and {out}: names in the command's working directory
+                d = work.new_dir()
+                materialize({values["name"]: files[r]}, d)
+                if into_dir:
+                    out_name = "out" if values["name"] != "out" else "out.d"
+                else:
+                    out_name = t.rpartition("/")[2]
+                    if out_name == values["name"]:
+                        out_name = f"out/{out_name}"
+                outp = d / out_name
+                (outp if into_dir else outp.parent).mkdir(parents=True, exist_ok=True)
+                run_command(command, dict(values, **{"in": values["name"], "out": out_name}),
+                            work, f"{what}: {r}", d)
+                if into_dir:
+                    result = {f"{t}/{k}" if t else k: v
+                              for k, v in collect_dir(outp, f"{what}: {r}", work).items()}
+                elif outp.is_file() and not outp.is_symlink():
+                    result = {t: (outp, os.name != "nt" and bool(outp.stat().st_mode & 0o111))}
+                else:
+                    raise FsError(f"{what}: {r}: the command wrote no file {{out}}")
+                for k, v in result.items():
+                    if k in new:
+                        raise FsError(f"{what}: '{origin[k]}' and '{r}' would both give '{k}'")
+                    if k in rest:
+                        raise FsError(f"{what}: '{r}' would give '{k}', which is already there")
+                    new[k], origin[k] = v, r
+            rest.update(new)
+            files = rest
         elif name == "extract":
             files = extract_all(files, work)
         elif name == "subdir":
@@ -1216,12 +1493,12 @@ def checked_result(files, what):
     return files
 
 
-def filter_hash(steps, filters):
+def filter_hash(steps, filters, repo=None):
     """Recorded with an entry, to notice a changed filter - also of a named
-    filter it uses (None: no filter)."""
+    filter it uses, or of a script its commands run (None: no filter)."""
     if not steps:
         return None
-    text = "\n".join(expand_steps(steps, filters))
+    text = "\n".join(expand_steps(steps, filters, (), repo))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
@@ -1943,9 +2220,13 @@ def evaluate(ctx, repo, entry):
         now = assets_digest([(a.name, a.digest) for a in st.assets])
         st.tag_changed = st.release.tag != entry.synced
         st.digest_changed = bool(now and entry.digest and now != entry.digest.lower())
-        st.filter_changed = filter_hash(entry.steps, entry.reg.filters) != entry.filterhash
+        st.filter_changed = filter_hash(entry.steps, entry.reg.filters, repo) != entry.filterhash
         st.changed = st.tag_changed or st.digest_changed or st.filter_changed
     st.pending = st.changed or st.worktree == "missing"
+    if st.pending:
+        for name in untrusted(repo, entry.steps, entry.reg.filters):
+            st.warnings.append(f"filter {name} runs commands and isn't trusted here yet "
+                               f"(see 'git assetsync trust')")
     return st
 
 
@@ -2358,7 +2639,10 @@ def install(repo, st, origin, release, assets, steps, filters, force):
     """Fetch, filter and install what an entry gets; staged. Returns
     (digest, base, stats)."""
     entry = st.entry
-    with Work(entry.shown) as work:
+    trusted = ensure_trusted(repo, steps, filters)
+    env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
+           "ASSETSYNC_ENTRY": entry.shown}
+    with Work(entry.shown, repo.top, env, trusted) as work:
         files, digest = entry_files(origin, release, assets, steps, filters, work)
         if entry.is_dir:
             tree = install_dir(repo, entry.rel, entry.target, files)
@@ -2401,7 +2685,7 @@ def pull_one(repo, reg, st, args):
     msg = build_message(st, discard, unchanged=base == entry.blob, stats=stats)
     entry.set("synced", st.release.tag)
     entry.set("digest", digest)
-    entry.set("filterhash", filter_hash(entry.steps, reg.filters))
+    entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
     entry.set(BASE_KEY[entry.kind], base)
     reg.finish()
     return commit_staged(repo, rel, msg, args, "updated and staged", rels=[entry.rel])
@@ -2509,8 +2793,8 @@ def filter_steps(args):
                 steps[-1] = shlex.join(shlex.split(steps[-1]) + [value])
             else:
                 steps.append(shlex.join([kind, value]))
-        else:                           # move, copy, apply: PATTERN and one more
-            steps.append(shlex.join([kind] + list(value)))
+        else:                           # move, copy, apply, convert, run
+            steps.append(shlex.join([kind] + ([value] if isinstance(value, str) else list(value))))
         last = kind
     for step in steps:
         parse_step(step)
@@ -2573,7 +2857,7 @@ def cmd_add(ctx, repo, args):
     entry = Entry(reg, rel)
     for k, v in (("source", name), ("asset", args.asset), ("filter", args.filter),
                  ("synced", release.tag), ("digest", digest),
-                 ("filterhash", filter_hash(steps, reg.filters)), (BASE_KEY[kind], base)):
+                 ("filterhash", filter_hash(steps, reg.filters, repo)), (BASE_KEY[kind], base)):
         if v:
             entry.set(k, v)
     reg.finish()
@@ -2969,7 +3253,8 @@ def filter_test(ctx, repo, reg, args):
     if out_dir and (out_dir.is_file() or out_dir.is_dir() and any(out_dir.iterdir())):
         raise FsError(f"'{args.output}' is not an empty directory")
     what = f"filter {args.name}"
-    with Work(what) as work:
+    trusted = ensure_trusted(repo, [shlex.join(["apply", "*", args.name])], reg.filters)
+    with Work(what, repo.top, {}, trusted) as work:
         files = {}
         if args.source:
             url, spec, _ = add_source(reg, args)
@@ -3005,6 +3290,58 @@ def filter_test(ctx, repo, reg, args):
         for rel, (src, executable) in sorted(result.items()):
             print(f"{human_size(src.stat().st_size):>{width}}  {rel}"
                   + ("  (executable)" if executable else ""))
+    return EXIT_OK
+
+
+def cmd_trust(ctx, repo, args):
+    """Filters run commands only if trusted - in this repository's own
+    config, never committed: whoever can change .git-assetsync could
+    otherwise run commands on every machine that pulls. A trust is for a
+    filter as it is: changing it, or a script it runs, needs a new one."""
+    reg = Registry(repo)
+    commands = [n for n in sorted(reg.filters) if runs_commands(reg.filters[n])]
+    for name in args.names:
+        if name not in reg.filters:
+            raise FsError(f"no filter '{name}' in {REGISTRY}")
+    if args.revoke:
+        if not args.names:
+            raise FsError("give the filters to no longer trust")
+        for name in args.names:
+            set_trust(repo, name, reg.filters, trust=False)
+            print(f"filter {name}: {paint('no longer trusted', 'yellow')}")
+        return EXIT_OK
+    names = args.names or (commands if args.all else [])
+    for name in names:
+        if not runs_commands(reg.filters[name]):
+            print(f"filter {name} runs no commands - nothing to trust")
+            continue
+        set_trust(repo, name, reg.filters)
+        print(f"filter {name}: {paint('trusted', 'green')}")
+    if names or args.all:
+        return EXIT_OK
+    if not commands:
+        print("no filter runs commands")
+        return EXIT_OK
+    names_trusted = {v.partition(" ")[2] for v in trusted_values(repo)}
+    missing = []
+    for name in commands:
+        if is_trusted(repo, name, reg.filters):
+            state = paint("trusted", "green")
+        else:
+            missing.append(name)
+            state = paint("changed since trusted" if name in names_trusted else "not trusted",
+                          "yellow")
+        users = reg.filter_users(name)
+        print(f"filter {name}: {state}" + (f" (used by {and_list(users)})" if users else ""))
+        show_commands(name, reg.filters, repo)
+    if missing and sys.stdin.isatty() and sys.stdout.isatty():
+        for name in missing:
+            if input(f"Trust filter {name}? [y/N] ").strip().lower() in ("y", "yes"):
+                set_trust(repo, name, reg.filters)
+                print(f"filter {name}: {paint('trusted', 'green')}")
+    elif missing:
+        print(f'  (use "git assetsync trust <name>..." or "git assetsync trust --all" to trust '
+              'them in this repository)')
     return EXIT_OK
 
 
@@ -3142,6 +3479,14 @@ def main(argv=None):
                    help="the same, keeping the files where they are")
     g.add_argument("--apply", action=StepOption, nargs=2, metavar=("PATTERN", "NAME"),
                    help="apply the filter NAME to the matching files")
+    g.add_argument("--convert", action=StepOption, nargs=3,
+                   metavar=("PATTERN", "TARGET", "COMMAND"),
+                   help="convert each matching file with COMMAND (run by sh): {in} the file, "
+                        "{out} the result, which replaces it at TARGET (placeholders as for "
+                        "--move; TARGET/: {out} is a directory); {root}: the repository")
+    g.add_argument("--run", action=StepOption, metavar="COMMAND",
+                   help="run COMMAND on all files: {in} a directory with them, {out} an empty "
+                        "directory for the result, which replaces them")
 
     p = sub.add_parser("add", parents=[colorp],
                        help="take a file or directory from release assets")
@@ -3274,6 +3619,12 @@ def main(argv=None):
     a = actions.add_parser("remove", parents=[colorp], help="remove an unused filter")
     a.add_argument("name", metavar="NAME")
 
+    p = sub.add_parser("trust", parents=[colorp],
+                       help="list the filters that run commands; trust them in this repository")
+    p.add_argument("names", nargs="*", metavar="NAME", help="filters to trust")
+    p.add_argument("--all", action="store_true", help="trust all filters that run commands")
+    p.add_argument("--revoke", action="store_true", help="no longer trust the filters NAME")
+
     sub.add_parser("install-hooks", parents=[colorp],
                    help="install pre-push/post-merge reminder hooks")
     sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the reminder hooks again")
@@ -3299,7 +3650,8 @@ def main(argv=None):
         ctx = Context(args)
         return {"status": cmd_status, "pull": cmd_pull, "add": cmd_add,
                 "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv,
-                "source": cmd_source, "filter": cmd_filter}[args.cmd](ctx, repo, args)
+                "source": cmd_source, "filter": cmd_filter,
+                "trust": cmd_trust}[args.cmd](ctx, repo, args)
     except FsError as e:
         error(str(e))
         return EXIT_ERROR
