@@ -43,6 +43,7 @@
 #   19. Archives: formats, executables, unsafe members
 #   20. Download cache
 #   21. 7z archives (an external 7-Zip)
+#   22. Filter steps in order, move / copy, named filters
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -1520,6 +1521,94 @@ else
     fi
   fi
 fi
+
+
+# =============================================================================
+section "22. Filter steps in order, move / copy, named filters"
+# =============================================================================
+cd "$T"
+mkdir -p pk/boards/boardA pk/boards/boardB pk/src/x pk/src/y pk/lib
+echo A > pk/boards/boardA/app.bin; echo B > pk/boards/boardB/app.bin; echo r > pk/boards/boardA/README
+echo a > pk/src/x/a.h; echo b > pk/src/y/b.h; echo z > pk/lib/z.lib
+mkarchive "$F/pkg.zip" "$T/pk"
+printf 'fw\000' > "$F/fw.bin"
+release acme/pk v1 10 "$F/pkg.zip" "$F/fw.bin"
+new_repo r22
+# steps in the order of the options; consecutive --include make one keep
+quiet asd add o/ acme/pk --include '*.zip' --extract --include '*.h' --include '*.lib' --exclude 'z*'
+check "order: as given" "$(git config -f .git-assetsync --get-all dir.o.step | oneline)" \
+  "keep '*.zip' extract keep '*.h' '*.lib' drop 'z*' "
+check "order: result" "$(git ls-files o | oneline)" "o/src/x/a.h o/src/y/b.h "
+git reset -q --hard; rm -rf o
+
+# move / copy
+quiet asd add m/ acme/pk --asset pkg.zip --extract --move '*.h' include/ \
+  --move 'boards/*/app.bin' 'firmware/{parent}.bin' --copy 'lib/*.lib' 'libs/{stem}-copy{ext}' \
+  --move 'boards/' 'docs/{path}'
+check "move/copy: result" "$(git ls-files m | oneline)" \
+  "m/docs/boards/boardA/README m/firmware/boardA.bin m/firmware/boardB.bin m/include/a.h m/include/b.h m/lib/z.lib m/libs/z-copy.lib "
+check "move: content follows" "$(cat m/firmware/boardB.bin)" "B"
+git commit -q --no-edit
+check "move/copy: clean" "$(st m)" ""
+check "move: collision" "$(asd add x/ acme/pk --asset pkg.zip --extract --move app.bin bin/ 2>&1 | grep '^error')" \
+  "error: x/: 'move app.bin bin/': 'boards/boardA/app.bin' and 'boards/boardB/app.bin' would both become 'bin/app.bin'"
+check "move: a pattern with '/' is anchored" "$(asd add x/ acme/pk --asset pkg.zip --extract --move '*/app.bin' bin/ 2>&1 | grep '^error')" \
+  "error: x/: 'move '*/app.bin' bin/': no files match '*/app.bin'"
+check "move: would replace" "$(asd add x/ acme/pk --asset pkg.zip --extract --move src/x/a.h src/y/b.h 2>&1 | grep '^error')" \
+  "error: x/: 'move src/x/a.h src/y/b.h': 'src/x/a.h' would replace 'src/y/b.h'"
+check "move: no match" "$(asd add x/ acme/pk --asset pkg.zip --extract --move '*.c' src/ 2>&1 | grep '^error')" \
+  "error: x/: 'move '*.c' src/': no files match '*.c'"
+check "move: unknown placeholder" "$(asd add x/ acme/pk --move '*' '{base}' 2>&1)" \
+  "error: filter step 'move '*' '{base}'': unknown placeholder {base} (known: {path}, {dir}, {parent}, {name}, {stem}, {ext})"
+check "move: target outside" "$(asd add x/ acme/pk --asset pkg.zip --extract --move '*.h' ../up/ 2>&1 | grep -c "unsafe path '../up/a.h'")" "1"
+git status --porcelain | grep -q . && git reset -q --hard
+
+# named filters: defined once, used per asset of one release
+OUT=$(git assetsync filter set headers --extract --include '*.h' --move '*.h' include/)
+check "filter set" "$(echo "$OUT" | head -1)" \
+  "filter headers: extract, keep '*.h', move '*.h' include/ (new); .git-assetsync staged"
+quiet git assetsync filter set fw --move '*' fw/
+check "filter list: not used" "$(git assetsync filter | oneline)" "fw${TAB}(1 step; not used) headers${TAB}(3 steps; not used) "
+quiet asd add v/ acme/pk --filter '*.zip' headers --filter '*.bin' fw
+check "filter steps: branches per asset" "$(git ls-files v | oneline)" "v/fw/fw.bin v/include/a.h v/include/b.h "
+git commit -q --no-edit
+check "filter list: used by" "$(git assetsync filter | grep '^headers')" "headers${TAB}(3 steps; used by v/)"
+check "filter show" "$(git assetsync filter show headers | oneline)" "extract keep '*.h' move '*.h' include/ (used by v/) "
+check "filter remove: refused while used" "$(git assetsync filter remove fw 2>&1)" "error: filter 'fw' is used by v/"
+check "clean" "$(st v)" ""
+# a changed named filter: its users are pending
+quiet git assetsync filter set headers --extract --include 'a.h' --move '*.h' include/
+check "changed filter: user pending" "$(git assetsync status | grep -c 'pending:    v/  (filter changed)')" "1"
+pullc v
+check "changed filter: pulled" "$(git ls-files v | oneline)" "v/fw/fw.bin v/include/a.h "
+# renaming changes the steps that use it, nothing else
+quiet git assetsync filter rename headers hdr
+check "rename: references" "$(git config -f .git-assetsync --get-all dir.v.step | oneline)" "filter '*.zip' hdr filter '*.bin' fw "
+check "rename: not pending" "$(st v)" ""
+git commit -q -m "rename filter"
+# errors
+check "unknown filter" "$(asd add x/ acme/pk --filter '*' nope 2>&1)" "error: unknown filter 'nope' (in 'filter '*' nope')"
+quiet git assetsync filter set a1 --include x
+check "filter using itself" "$(git assetsync filter set a1 --filter '*' a1 2>&1)" "error: filter 'a1' uses itself (via a1)"
+quiet git assetsync filter set a2 --filter '*' a1
+check "filters using each other" "$(git assetsync filter set a1 --filter '*' a2 2>&1)" "error: filter 'a1' uses itself (via a1 -> a2)"
+quiet git assetsync filter set ren --move '*' pkg.zip
+check "filter result collides" "$(asd add x/ acme/pk --filter 'fw.bin' ren 2>&1 | grep '^error')" \
+  "error: x/: 'filter fw.bin ren': its 'pkg.zip' collides with a file outside the filter"
+check "filter: no match" "$(asd add x/ acme/pk --filter '*.tar' fw 2>&1 | grep '^error')" \
+  "error: x/: 'filter '*.tar' fw': no files match '*.tar'"
+quiet git assetsync filter set bad --extract
+check "error in a filter: named" "$(asd add x/ acme/pk --filter fw.bin bad 2>&1 | grep '^error')" \
+  "error: x/ filter bad: 'extract': no archive among fw.bin"
+check "invalid filter name" "$(git assetsync filter set 'a b' --extract 2>&1)" \
+  "error: invalid filter name 'a b' (letters, digits, '.', '+', '-', '_')"
+check "filter set without steps" "$(git assetsync filter set e 2>&1)" \
+  "error: give the steps of the filter (--extract, --include, --move, ...)"
+git reset -q --hard
+# a registry with only filters stays
+new_repo r22b
+quiet git assetsync filter set only --extract
+check "only a filter: registry kept" "$(git status --porcelain | oneline)" "A  .git-assetsync "
 
 
 # =============================================================================
