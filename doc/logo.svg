@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img">
+  <title>git-assetsync</title>
+  <g stroke-linejoin="round" stroke-linecap="round">
+    <!-- release asset (package) -->
+    <path d="M36 10L60 22L36 34L12 22Z" fill="#F58A74" stroke="#F58A74" stroke-width="3"/>
+    <path d="M12 22L36 34V70L12 58Z" fill="#F05133" stroke="#F05133" stroke-width="3"/>
+    <path d="M36 34L60 22V58L36 70Z" fill="#C9401F" stroke="#C9401F" stroke-width="3"/>
+    <path d="M24 16L48 28V38" fill="none" stroke="#FFFFFF" stroke-opacity=".7" stroke-width="4"/>
+    <!-- synced file -->
+    <path d="M68 56H100L114 70V116H68Z" fill="#2DA44E" stroke="#2DA44E" stroke-width="4"/>
+    <path d="M100 56V70H114" fill="#FFFFFF" fill-opacity=".45" stroke="#FFFFFF" stroke-width="3"/>
+    <path d="M77 82H105M77 92H105M77 102H95" stroke="#FFFFFF" stroke-width="5"/>
+    <!-- sync arrow -->
+    <path d="M37 78V88Q37 98 47 98H58M55 90L63 98L55 106" fill="none" stroke="#8C959F" stroke-width="6"/>
+  </g>
+</svg>

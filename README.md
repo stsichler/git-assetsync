@@ -1,3 +1,5 @@
+<img src="doc/logo.svg" alt="" width="128" align="right">
+
 # git-assetsync
 
 [![Tests](https://github.com/stsichler/git-assetsync/actions/workflows/test.yml/badge.svg)](https://github.com/stsichler/git-assetsync/actions/workflows/test.yml)
