@@ -746,7 +746,8 @@ The commands run with `sh -c` (on Windows the `sh` of Git for Windows;
 `ASSETSYNC_SH` sets another one), so redirections like `> {out}` work. They
 run in a temporary working directory where `{in}` and `{out}` are **short
 relative names**: for `convert`, `{in}` is the file's name (`fw.bin`) and
-`{out}` the name of `TARGET` (`fw.c`; if both are the same, `out/fw.c`; for
+`{out}` the name of `TARGET` (`fw.c`; if both are the same – also when
+they differ only in case, as disks on Windows and macOS don't – `out/fw.c`; for
 a `TARGET/`, the directory `out`); for `run`, `in` and `out`. So tools that
 derive names from them – like `xxd -i`, which makes `fw_bin` of `fw.bin` –
 give the same result everywhere. `{root}` is the root of the repository,

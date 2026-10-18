@@ -1718,6 +1718,11 @@ check "changed script: pending" "$(git assetsync status | grep -c 'pending:    c
 check "changed script: warning" "$(git assetsync status | grep -c "filter conv runs commands and isn't trusted here yet")" "1"
 check "changed script: trust list" "$(git assetsync trust | head -1)" "filter conv: changed since trusted (used by c/)"
 check "changed script: pull refused" "$(rc git assetsync pull --no-edit c)" "2"
+# like a terminal that ends at once (Windows takes NUL for one): not trusted
+check "trust prompt at end of input: no" "$(printf '' | "$PYTHON" -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("a", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m); print(m.ask("q? "))' "$S" 2>/dev/null | tail -1)" "False"
 quiet git assetsync trust --all
 pullc c
 check "changed script: pulled" "$(cat c/gen/notes.TXT)" "HELLO
@@ -1738,12 +1743,14 @@ check "command fails" "$(asd add e/ acme/cmd --filter fail 2>&1 | grep '^error')
   "error: e/ filter fail: 'convert '*.txt' x.out 'echo broken >&2; exit 3'': notes.txt: command failed (exit code 3): broken"
 check "command writes nothing" "$(asd add e/ acme/cmd --filter none 2>&1 | grep '^error')" \
   "error: e/ filter none: 'convert '*.txt' x.out true': notes.txt: the command wrote no file {out}"
-filt names --convert '*.txt' 'gen/{stem}.c' 'echo {in} {out} > {out}' --convert '*.bin' '{path}' 'echo {in} {out} > {out}' \
+filt names --copy notes.txt U/notes.txt --convert 'U/*.txt' 'U/{stem}.TXT' 'echo {in} {out} > {out}' \
+  --convert '*.txt' 'gen/{stem}.c' 'echo {in} {out} > {out}' --convert '*.bin' '{path}' 'echo {in} {out} > {out}' \
   --convert '*.hex' 'h/' 'echo {in} {out} > {out}/x'
 quiet git assetsync trust names
 quiet asd add n/ acme/cmd --filter names
 check "convert: {in} and {out} are short names (reproducible)" "$(cat n/gen/notes.c n/fw.bin n/h/x | oneline)" \
   "notes.txt notes.c fw.bin out/fw.bin data.hex out "
+check "convert: names differing only in case: out/NAME" "$(cat n/U/notes.TXT)" "notes.txt out/notes.TXT"
 git reset -q --hard; rm -rf n
 check "command result collides" "$(asd add e/ acme/cmd --filter clash 2>&1 | grep '^error')" \
   "error: e/ filter clash: 'convert '*.txt' fw.bin 'cp {in} {out}'': 'notes.txt' would give 'fw.bin', which is already there"

@@ -1337,6 +1337,16 @@ def show_commands(name, filters, repo, indent="  "):
                 print(f"{indent}  (runs {p} of this repository)")
 
 
+def ask(question):
+    """A yes from the user on a terminal (end of input counts as no -
+    Windows takes the NUL device for a terminal)."""
+    try:
+        return input(question).strip().lower() in ("y", "yes")
+    except EOFError:
+        print()
+        return False
+
+
 def ensure_trusted(repo, steps, filters):
     """The filters whose commands may run for steps: all they use - if
     those that run commands are trusted, or ASSETSYNC_TRUST=all, or the
@@ -1350,9 +1360,9 @@ def ensure_trusted(repo, steps, filters):
         for name in missing:
             print(f"filter {name} runs commands:")
             show_commands(name, filters, repo)
-            answer = input(f"Trust filter {name} in this repository? [y/N] ")
-            if answer.strip().lower() not in ("y", "yes"):
-                raise FsError(f"filter {name} not trusted")
+            if not ask(f"Trust filter {name} in this repository? [y/N] "):
+                raise FsError(f"filter {name} not trusted - check with 'git assetsync trust', "
+                              f"then trust with 'git assetsync trust {name}'")
             set_trust(repo, name, filters)
     return set(used_filters(steps, filters))
 
@@ -1434,8 +1444,8 @@ def run_steps(files, steps, work, filters=None, chain=()):
                     out_name = "out" if values["name"] != "out" else "out.d"
                 else:
                     out_name = t.rpartition("/")[2]
-                    if out_name == values["name"]:
-                        out_name = f"out/{out_name}"
+                    if out_name.lower() == values["name"].lower():   # also on case-
+                        out_name = f"out/{out_name}"                 # insensitive disks
                 outp = d / out_name
                 (outp if into_dir else outp.parent).mkdir(parents=True, exist_ok=True)
                 run_command(command, dict(values, **{"in": values["name"], "out": out_name}),
@@ -3336,7 +3346,7 @@ def cmd_trust(ctx, repo, args):
         show_commands(name, reg.filters, repo)
     if missing and sys.stdin.isatty() and sys.stdout.isatty():
         for name in missing:
-            if input(f"Trust filter {name}? [y/N] ").strip().lower() in ("y", "yes"):
+            if ask(f"Trust filter {name}? [y/N] "):
                 set_trust(repo, name, reg.filters)
                 print(f"filter {name}: {paint('trusted', 'green')}")
     elif missing:
