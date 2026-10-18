@@ -162,9 +162,10 @@ cd my-repo
 
 # 1. Take a file from a release asset (once): fetched and staged like
 #    git add, then committed - git commit offers the proposed message.
-#    --asset is a glob pattern that must match exactly one asset (not
-#    needed if the release has only one).
-git assetsync add bin/tool acme/tool --asset 'tool-*-linux-x64'
+#    The source is the URL of the project on GitHub or GitLab; it is
+#    recorded as source 'acme/tool'. --asset is a glob pattern that must
+#    match exactly one asset (not needed if the release has only one).
+git assetsync add bin/tool https://github.com/acme/tool --asset 'tool-*-linux-x64'
 git commit
 
 # 2. See whether a new release is out
@@ -199,7 +200,8 @@ it belongs to the entry completely:
 
 ```sh
 git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
-git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' --filter zlib-headers
+git assetsync add third_party/zlib/ https://github.com/madler/zlib --asset 'zlib-*.tar.gz' \
+    --filter zlib-headers
 ```
 
 ## Commands
