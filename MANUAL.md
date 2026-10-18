@@ -95,7 +95,7 @@ Git-config format:
 [filter "zlib-headers"]          # a named filter: steps, in this order
 	step = extract
 	step = strip 1
-	step = keep '*.h' LICENSE
+	step = include '*.h' LICENSE
 [dir "third_party/zlib"]
 	source = madler/zlib
 	asset = zlib-*.tar.gz        # optional: without, all assets of the release
@@ -506,9 +506,9 @@ as pending in `status`, and `pull` updates them.
 |---|---|
 | (none) | list the filters, with their number of steps and the entries and filters using them |
 | `show NAME` | the steps of a filter, and who uses it |
-| `add NAME STEP-OPTIONS…` | define a new filter with the [step options](#filters) (`--extract`, `--include`, `--move`, `--filter`, …), in the order given. Names consist of letters, digits, `.`, `+`, `-` and `_` |
+| `add NAME STEP-OPTIONS…` | define a new filter with the [step options](#filters) (`--extract`, `--include`, `--move`, `--apply`, …), in the order given. Names consist of letters, digits, `.`, `+`, `-` and `_` |
 | `set NAME STEP-OPTIONS…` | replace the steps of an existing filter |
-| `rename OLD NEW` | rename a filter, and the entries and `filter` steps that use it |
+| `rename OLD NEW` | rename a filter, and the entries and `apply` steps that use it |
 | `remove NAME` | remove a filter that nothing uses |
 
 ### `install-hooks`, `uninstall-hooks`
@@ -572,24 +572,41 @@ removed automatically.
 A filter is a list of steps, applied in order to the files so far; files a
 step doesn't concern pass unchanged. At the start, the files are the
 assets, named as they are. `filter add` and `filter set` build the steps
-from their options, **in the order the options are given** (consecutive
-`--include` options make one `keep` step, consecutive `--exclude` options
-one `drop` step):
+from their options, **in the order the options are given**; each option
+has the name of its step:
+
+| Option (step) | Effect |
+|---|---|
+| `--extract` | unpack the archives among the files: ZIP, tar, tar.gz/.tgz, tar.bz2, tar.xz, single `.gz`/`.bz2`/`.xz` files (named without the suffix), and 7z with an external 7-Zip (see below). The type is recognized by the content, not the name. All archives go into one root; files that are no archives stay as they are |
+| `--subdir PATH` | only the files below `PATH`, which becomes the root |
+| `--strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive) |
+| `--include PATTERN` | only the files matching the pattern |
+| `--exclude PATTERN` | not the files matching the pattern |
+| `--move PATTERN TARGET` | move the matching files to `TARGET`, see below |
+| `--copy PATTERN TARGET` | the same, but the files also stay where they are |
+| `--apply PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
+
+**Several `--include` options in a row make one step** that keeps the
+files matching *any* of their patterns – they don't filter one after the
+other (which would leave nothing). The same for `--exclude`: one step that
+removes the files matching any of the patterns. So
 
 ```sh
 git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
 ```
 
-| Option | Step | Effect |
-|---|---|---|
-| `--extract` | `extract` | unpack the archives among the files: ZIP, tar, tar.gz/.tgz, tar.bz2, tar.xz, single `.gz`/`.bz2`/`.xz` files (named without the suffix), and 7z with an external 7-Zip (see below). The type is recognized by the content, not the name. All archives go into one root; files that are no archives stay as they are |
-| `--subdir PATH` | `subdir PATH` | only the files below `PATH`, which becomes the root |
-| `--strip N` | `strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive) |
-| `--include PATTERN` | `keep PATTERN…` | only the files matching one of the patterns |
-| `--exclude PATTERN` | `drop PATTERN…` | not the files matching one of the patterns |
-| `--move PATTERN TARGET` | `move PATTERN TARGET` | move the matching files to `TARGET`, see below |
-| `--copy PATTERN TARGET` | `copy PATTERN TARGET` | the same, but the files also stay where they are |
-| `--filter PATTERN NAME` | `filter PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
+keeps the headers *and* the license:
+
+```ini
+[filter "zlib-headers"]
+	step = extract
+	step = strip 1
+	step = include '/*.h' LICENSE
+```
+
+Only options in between separate them: `--include '*.h' --exclude 'x*'
+--include 'a*'` makes three steps, applied one after the other (headers,
+not starting with `x`, starting with `a`). `filter show` lists the steps.
 
 Patterns are like in `.gitignore` (and `git filesync add --include`),
 relative to the root after the previous steps: without a `/` a pattern
@@ -619,12 +636,12 @@ So `--move 'images/*/app.bin' 'firmware/{parent}.bin'` makes
 the same target, or a target that is another file, are an error.
 
 It is an error if `extract` finds no archive, `subdir`, `move`, `copy` or
-`filter` no files, `strip` a file with too few directories, or if nothing
+`apply` no files, `strip` a file with too few directories, or if nothing
 is left. A file entry must end up with exactly one file.
 
 #### Filters using filters
 
-The step `filter PATTERN NAME` applies the filter `NAME` to the files
+The step `apply PATTERN NAME` applies the filter `NAME` to the files
 matching `PATTERN` only; they keep their paths, and the result joins the
 other files again (a path that collides with one of them is an error).
 Since the files are the assets before `extract`, one directory entry can
@@ -633,7 +650,7 @@ treat the assets of a release differently:
 ```sh
 git assetsync filter add headers --extract --strip 1 --include '*.h' --move '*.h' include/
 git assetsync filter add firmware --move '*' firmware/
-git assetsync filter add sdk --filter 'sdk-*-headers.zip' headers --filter 'fw-*.bin' firmware
+git assetsync filter add sdk --apply 'sdk-*-headers.zip' headers --apply 'fw-*.bin' firmware
 git assetsync add vendor/sdk/ acme/sdk --filter sdk
 ```
 
@@ -641,13 +658,13 @@ git assetsync add vendor/sdk/ acme/sdk --filter sdk
 [filter "headers"]
 	step = extract
 	step = strip 1
-	step = keep '*.h'
+	step = include '*.h'
 	step = move '*.h' include/
 [filter "firmware"]
 	step = move '*' firmware/
 [filter "sdk"]
-	step = filter 'sdk-*-headers.zip' headers
-	step = filter 'fw-*.bin' firmware
+	step = apply 'sdk-*-headers.zip' headers
+	step = apply 'fw-*.bin' firmware
 [dir "vendor/sdk"]
 	source = acme/sdk
 	filter = sdk

@@ -38,7 +38,7 @@ assets of a project on GitHub or GitLab:
     [filter "zlib-headers"]        ; a filter: its steps, in this order
         step = extract
         step = strip 1
-        step = keep '*.h' LICENSE
+        step = include '*.h' LICENSE
 
 An entry records what the committed file (directory) comes from, so the
 local state is known offline; only the check for new releases asks the
@@ -50,10 +50,11 @@ Filter steps (no code is run): extract (unpack zip, tar, tar.gz/bz2/xz,
 .gz/.bz2/.xz, and 7z with an external 7-Zip - 7zz/7z on the PATH or
 ASSETSYNC_7Z; unsafe members - paths outside, links, names invalid on
 Windows - are refused), subdir PATH (only that directory, as the root),
-strip N (N leading directories off), keep / drop PATTERN... (gitignore-
-like), move / copy PATTERN TARGET (TARGET/: into that directory; else a
-path with {path} {dir} {parent} {name} {stem} {ext}), filter PATTERN NAME
-(the filter NAME on the matching files only). Filters are named; the
+strip N (N leading directories off), include / exclude PATTERN... (only /
+not the files matching any of them; gitignore-like), move / copy PATTERN
+TARGET (TARGET/: into that directory; else a path with {path} {dir}
+{parent} {name} {stem} {ext}), apply PATTERN NAME (the filter NAME on the
+matching files only). Filters are named; the
 steps come from the options of filter add / set, in the order given. Downloads are kept in a cache (ASSETSYNC_CACHE; default
 ~/.cache/git-assetsync, %LOCALAPPDATA%\\git-assetsync).
 
@@ -151,7 +152,7 @@ command.
                                 order given:
         --extract, --subdir PATH, --strip N, --include PATTERN,
         --exclude PATTERN, --move PATTERN TARGET, --copy PATTERN TARGET,
-        --filter PATTERN NAME
+        --apply PATTERN NAME    (consecutive --include / --exclude: one step)
     filter set NAME STEP-OPTIONS...  replace the steps of a filter
     filter rename OLD NEW       rename a filter, also where it is used
     filter remove NAME          remove a filter nothing uses
@@ -788,7 +789,8 @@ def get_asset(origin, release, asset):
 # filters: unpacking archives and selecting files, without running code
 # --------------------------------------------------------------------------
 
-STEPS = ("extract", "subdir", "strip", "keep", "drop", "move", "copy", "filter")
+# filter steps; the options of filter add / set have the same names
+STEPS = ("extract", "subdir", "strip", "include", "exclude", "move", "copy", "apply")
 # placeholders in the target of move / copy, for a file a/b/c.txt
 PLACEHOLDERS = ("path", "dir", "parent", "name", "stem", "ext")
 WIN_RESERVED = re.compile(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?")
@@ -1076,9 +1078,9 @@ def parse_step(step):
     ok = {"extract": not args,
           "subdir": len(args) == 1 and bool(args[0].strip("/")),
           "strip": len(args) == 1 and args[0].isdigit() and int(args[0]) > 0,
-          "keep": bool(args), "drop": bool(args),
+          "include": bool(args), "exclude": bool(args),
           "move": len(args) == 2 and all(args), "copy": len(args) == 2 and all(args),
-          "filter": len(args) == 2 and all(args)}.get(name)
+          "apply": len(args) == 2 and all(args)}.get(name)
     if ok is None:
         raise FsError(f"unknown filter step '{step}' (known: {', '.join(STEPS)})")
     if not ok:
@@ -1113,14 +1115,14 @@ def expand_steps(steps, filters, chain=()):
     result = []
     for step in steps:
         name, args = parse_step(step)
-        if name != "filter":
+        if name != "apply":
             result.append(step)
             continue
         if args[1] not in filters:
             raise FsError(f"unknown filter '{args[1]}' (in '{step}')")
         if args[1] in chain:
             raise FsError(f"filter '{args[1]}' uses itself (via {' -> '.join(chain)})")
-        result += [f"filter {shlex.quote(args[0])} {{"] \
+        result += [f"apply {shlex.quote(args[0])} {{"] \
             + expand_steps(filters[args[1]], filters, chain + (args[1],)) + ["}"]
     return result
 
@@ -1147,7 +1149,7 @@ def run_steps(files, steps, work, filters=None, chain=()):
                 new[t], origin[t] = files[r], r
             rest.update(new)
             files = rest
-        elif name == "filter":
+        elif name == "apply":
             pattern, fname = args
             if fname not in (filters or {}):
                 raise FsError(f"{work.what}: unknown filter '{fname}'")
@@ -1188,7 +1190,7 @@ def run_steps(files, steps, work, filters=None, chain=()):
         else:
             rxs = [glob_regex(a) for a in args]
             files = {r: v for r, v in files.items()
-                     if any(x.match(r) for x in rxs) == (name == "keep")}
+                     if any(x.match(r) for x in rxs) == (name == "include")}
     if chain:            # a named filter: may leave nothing of its part
         return files
     if not files:
@@ -1595,7 +1597,7 @@ class Registry:
         """Entries using the named filter, and named filters with a 'filter'
         step using it."""
         def uses(steps):
-            return any(parse_step(s)[0] == "filter" and parse_step(s)[1][1] == name
+            return any(parse_step(s)[0] == "apply" and parse_step(s)[1][1] == name
                        for s in steps)
         return [f"{r}/" if self.kinds.get(r) == "dir" else r
                 for r in sorted(self.files) if self.files[r].get("filter") == name] + \
@@ -1610,8 +1612,8 @@ class Registry:
             result = []
             for step in steps:
                 kind, args = parse_step(step)
-                result.append(shlex.join(["filter", args[0], new])
-                              if kind == "filter" and args[1] == old else step)
+                result.append(shlex.join(["apply", args[0], new])
+                              if kind == "apply" and args[1] == old else step)
             return result
         for rel, values in self.files.items():
             if values.get("filter") == old:
@@ -1678,7 +1680,7 @@ class Entry:
     shown = property(lambda self: self.rel + ("/" if self.is_dir else ""))
     filter = property(lambda self: self.v.get("filter") or None)   # name of its [filter]
     # its filter as steps: the named filter applied to all files
-    steps = property(lambda self: [shlex.join(["filter", "*", self.filter])] if self.filter
+    steps = property(lambda self: [shlex.join(["apply", "*", self.filter])] if self.filter
                      else [])
 
     @property
@@ -2477,8 +2479,8 @@ class StepOption(argparse.Action):
 
 def filter_steps(args):
     """Filter steps from the options of filter add / set, in the order given;
-    consecutive --include (--exclude) make one keep (drop) step. None if
-    none are given."""
+    consecutive --include (--exclude) options make one include (exclude)
+    step with all their patterns. None if none are given."""
     steps, last = [], None
     for kind, value in getattr(args, "steps", None) or []:
         if kind == "extract":
@@ -2490,12 +2492,11 @@ def filter_steps(args):
                 raise FsError("--strip needs a number of at least 1")
             steps.append(f"strip {value}")
         elif kind in ("include", "exclude"):
-            word = "keep" if kind == "include" else "drop"
             if last == kind:
                 steps[-1] = shlex.join(shlex.split(steps[-1]) + [value])
             else:
-                steps.append(shlex.join([word, value]))
-        else:                           # move, copy, filter: PATTERN and one more
+                steps.append(shlex.join([kind, value]))
+        else:                           # move, copy, apply: PATTERN and one more
             steps.append(shlex.join([kind] + list(value)))
         last = kind
     for step in steps:
@@ -2526,7 +2527,7 @@ def cmd_add(ctx, repo, args):
     if args.filter and args.filter not in reg.filters:
         raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
                       f"'git assetsync filter add {args.filter} ...'")
-    steps = [shlex.join(["filter", "*", args.filter])] if args.filter else []
+    steps = [shlex.join(["apply", "*", args.filter])] if args.filter else []
     url, spec, named = add_source(reg, args)
     origin, release = ctx.release(url, spec)
     assets = select_assets(release, args.asset, origin.label, is_dir)
@@ -3065,7 +3066,8 @@ def main(argv=None):
     g.add_argument("--strip", action=StepOption, type=int, metavar="N",
                    help="remove N leading directories from the paths")
     g.add_argument("--include", action=StepOption, metavar="PATTERN",
-                   help="only files matching (gitignore-like; consecutive ones: any of them)")
+                   help="only files matching (gitignore-like; consecutive ones make one step: "
+                        "files matching any of them)")
     g.add_argument("--exclude", action=StepOption, metavar="PATTERN",
                    help="not the files matching")
     g.add_argument("--move", action=StepOption, nargs=2, metavar=("PATTERN", "TARGET"),
@@ -3073,8 +3075,8 @@ def main(argv=None):
                         "to TARGET with {path} {dir} {parent} {name} {stem} {ext}")
     g.add_argument("--copy", action=StepOption, nargs=2, metavar=("PATTERN", "TARGET"),
                    help="the same, keeping the files where they are")
-    g.add_argument("--filter", action=StepOption, nargs=2, metavar=("PATTERN", "NAME"),
-                   help="apply the named filter NAME to the matching files")
+    g.add_argument("--apply", action=StepOption, nargs=2, metavar=("PATTERN", "NAME"),
+                   help="apply the filter NAME to the matching files")
 
     p = sub.add_parser("add", parents=[colorp],
                        help="take a file or directory from release assets")

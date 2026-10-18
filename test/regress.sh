@@ -1231,7 +1231,7 @@ check "dir: added" "$(echo "$OUT" | grep '^added')" "added lib/zlib/ <- madler/z
 check "dir: files (ignored *.lib included)" "$(git ls-files lib | oneline)" \
   "lib/zlib/include/zconf.h lib/zlib/include/zlib.h lib/zlib/lib/x64/zlib.lib "
 check "dir: [dir] entry with its filter" "$(reg dir.lib/zlib.filter) $(git config -f .git-assetsync --get-all filter.zwin.step | oneline)" \
-  "zwin extract strip 1 keep 'include/*.h' 'lib/x64/*.lib' drop '*.pdb' "
+  "zwin extract strip 1 include 'include/*.h' 'lib/x64/*.lib' exclude '*.pdb' "
 check "dir: tree as staged" "$(reg dir.lib/zlib.tree)" "$(git write-tree --prefix=lib/zlib/)"
 check "dir: filterhash" "$(reg dir.lib/zlib.filterhash | wc -c | tr -d ' ')" "17"
 git commit -q --no-edit
@@ -1558,7 +1558,7 @@ new_repo r22
 # steps in the order of the options; consecutive --include make one keep
 filt ord --include '*.zip' --extract --include '*.h' --include '*.lib' --exclude 'z*'
 check "order: as given" "$(git config -f .git-assetsync --get-all filter.ord.step | oneline)" \
-  "keep '*.zip' extract keep '*.h' '*.lib' drop 'z*' "
+  "include '*.zip' extract include '*.h' '*.lib' exclude 'z*' "
 quiet asd add o/ acme/pk --filter ord
 check "order: result" "$(git ls-files o | oneline)" "o/src/x/a.h o/src/y/b.h "
 git reset -q --hard; rm -rf o
@@ -1594,13 +1594,13 @@ git status --porcelain | grep -q . && git reset -q --hard
 new_repo r22c
 OUT=$(git assetsync filter add headers --extract --include '*.h' --move '*.h' include/)
 check "filter add" "$(echo "$OUT" | head -1)" \
-  "filter headers: extract, keep '*.h', move '*.h' include/ (new); .git-assetsync staged"
+  "filter headers: extract, include '*.h', move '*.h' include/ (new); .git-assetsync staged"
 check "filter add: exists" "$(git assetsync filter add headers --extract 2>&1)" \
   "error: filter 'headers' already exists (change it with 'git assetsync filter set headers ...')"
 check "filter set: unknown" "$(git assetsync filter set nope --extract 2>&1)" "error: no filter 'nope' in .git-assetsync (known: headers)"
 quiet git assetsync filter add fw --move '*' fw/
 check "filter list: not used" "$(git assetsync filter | oneline)" "fw${TAB}(1 step; not used) headers${TAB}(3 steps; not used) "
-quiet git assetsync filter add sdk --filter '*.zip' headers --filter '*.bin' fw
+quiet git assetsync filter add sdk --apply '*.zip' headers --apply '*.bin' fw
 git commit -qm filters
 quiet asd add v/ acme/pk --filter sdk
 check "filter steps: branches per asset" "$(git ls-files v | oneline)" "v/fw/fw.bin v/include/a.h v/include/b.h "
@@ -1608,7 +1608,7 @@ check "entry: filter = name" "$(reg dir.v.filter) $(git config -f .git-assetsync
 git commit -q --no-edit
 check "filter list: used by" "$(git assetsync filter | grep -E '^(headers|sdk)' | oneline)" \
   "headers${TAB}(3 steps; used by filter sdk) sdk${TAB}(2 steps; used by v/) "
-check "filter show" "$(git assetsync filter show headers | oneline)" "extract keep '*.h' move '*.h' include/ (used by filter sdk) "
+check "filter show" "$(git assetsync filter show headers | oneline)" "extract include '*.h' move '*.h' include/ (used by filter sdk) "
 check "filter remove: refused while used" "$(git assetsync filter remove fw 2>&1)" "error: filter 'fw' is used by filter sdk"
 check "clean" "$(st v)" ""
 # a changed named filter: its users are pending
@@ -1620,24 +1620,24 @@ check "changed filter: pulled" "$(git ls-files v | oneline)" "v/fw/fw.bin v/incl
 quiet git assetsync filter rename headers hdr
 quiet git assetsync filter rename sdk sdk2
 check "rename: references" "$(git config -f .git-assetsync --get-all filter.sdk2.step | oneline)$(reg dir.v.filter)" \
-  "filter '*.zip' hdr filter '*.bin' fw sdk2"
+  "apply '*.zip' hdr apply '*.bin' fw sdk2"
 check "rename: not pending" "$(st v)" ""
 git commit -q -m "rename filter"
 # errors
-check "unknown filter in a filter" "$(git assetsync filter add x --filter '*' nope 2>&1)" "error: unknown filter 'nope' (in 'filter '*' nope')"
+check "unknown filter in a filter" "$(git assetsync filter add x --apply '*' nope 2>&1)" "error: unknown filter 'nope' (in 'apply '*' nope')"
 quiet git assetsync filter add a1 --include x
-check "filter using itself" "$(git assetsync filter set a1 --filter '*' a1 2>&1)" "error: filter 'a1' uses itself (via a1)"
-quiet git assetsync filter add a2 --filter '*' a1
-check "filters using each other" "$(git assetsync filter set a1 --filter '*' a2 2>&1)" "error: filter 'a1' uses itself (via a1 -> a2)"
+check "filter using itself" "$(git assetsync filter set a1 --apply '*' a1 2>&1)" "error: filter 'a1' uses itself (via a1)"
+quiet git assetsync filter add a2 --apply '*' a1
+check "filters using each other" "$(git assetsync filter set a1 --apply '*' a2 2>&1)" "error: filter 'a1' uses itself (via a1 -> a2)"
 filt ren --move '*' pkg.zip
-filt useren --filter fw.bin ren
+filt useren --apply fw.bin ren
 check "filter result collides" "$(asd add x/ acme/pk --filter useren 2>&1 | grep '^error')" \
-  "error: x/ filter useren: 'filter fw.bin ren': its 'pkg.zip' collides with a file outside the filter"
-filt nom --filter '*.tar' fw
+  "error: x/ filter useren: 'apply fw.bin ren': its 'pkg.zip' collides with a file outside the filter"
+filt nom --apply '*.tar' fw
 check "filter: no match" "$(asd add x/ acme/pk --filter nom 2>&1 | grep '^error')" \
-  "error: x/ filter nom: 'filter '*.tar' fw': no files match '*.tar'"
+  "error: x/ filter nom: 'apply '*.tar' fw': no files match '*.tar'"
 filt bad --extract
-filt usebad --filter fw.bin bad
+filt usebad --apply fw.bin bad
 check "error in a nested filter: named" "$(asd add x/ acme/pk --filter usebad 2>&1 | grep '^error')" \
   "error: x/ filter usebad filter bad: 'extract': no archive among fw.bin"
 check "invalid filter name" "$(git assetsync filter add 'a b' --extract 2>&1)" \
