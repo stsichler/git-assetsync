@@ -1623,6 +1623,25 @@ check "rename: references" "$(git config -f .git-assetsync --get-all filter.sdk2
   "apply '*.zip' hdr apply '*.bin' fw sdk2"
 check "rename: not pending" "$(st v)" ""
 git commit -q -m "rename filter"
+# filter test: local files or the assets of a release; nothing else changes
+check "filter test: a local file" "$(git assetsync filter test hdr "$F/pkg.zip")" "2 bytes  include/a.h"
+check "filter test: a directory" "$(git assetsync filter test fw "$T/pk/src" | oneline)" "2 bytes  fw/a.h 2 bytes  fw/b.h "
+check "filter test: --source" "$(git assetsync filter test sdk2 --source acme/pk 2>/dev/null | oneline)" \
+  "3 bytes  fw/fw.bin 2 bytes  include/a.h "
+check "filter test: --source, input shown" "$(git assetsync filter test sdk2 --source acme/pk 2>&1 >/dev/null)" \
+  "input: acme/pk v1: fw.bin, pkg.zip"
+check "filter test -o" "$(git assetsync filter test sdk2 --source acme/pk -o "$T/ftout" 2>/dev/null; cat "$T/ftout/include/a.h")" \
+  "2 files written to $T/ftout
+a"
+check "filter test -o: not empty" "$(git assetsync filter test sdk2 --source acme/pk -o "$T/ftout" 2>&1 | tr '\\' /)" \
+  "error: '$T/ftout' is not an empty directory"
+check "filter test: no input" "$(git assetsync filter test hdr 2>&1)" \
+  "error: give the input: FILE... (local files, as if they were the assets) or --source SOURCE (the assets of its release)"
+check "filter test: missing file" "$(git assetsync filter test hdr nothing.zip 2>&1)" "error: 'nothing.zip' not found"
+check "filter test: unknown filter" "$(git assetsync filter test nope "$F/pkg.zip" 2>&1)" "error: no filter 'nope' in .git-assetsync (known: fw, hdr, sdk2)"
+check "filter test: error as in pull" "$(git assetsync filter test hdr "$F/fw.bin" 2>&1)" \
+  "error: filter hdr: 'extract': no archive among fw.bin"
+check "filter test: nothing changed" "$(git status --porcelain)" ""
 # errors
 check "unknown filter in a filter" "$(git assetsync filter add x --apply '*' nope 2>&1)" "error: unknown filter 'nope' (in 'apply '*' nope')"
 quiet git assetsync filter add a1 --include x

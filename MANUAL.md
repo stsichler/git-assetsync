@@ -492,6 +492,7 @@ as for `add`; with a URL it also works outside a repository.
 ```
 git assetsync filter
 git assetsync filter show NAME
+git assetsync filter test NAME (FILE… | --source SOURCE [--release …] [--prerelease] [--asset PATTERN]) [-o DIR]
 git assetsync filter add NAME STEP-OPTIONS…
 git assetsync filter set NAME STEP-OPTIONS…
 git assetsync filter rename OLD NEW
@@ -506,10 +507,24 @@ as pending in `status`, and `pull` updates them.
 |---|---|
 | (none) | list the filters, with their number of steps and the entries and filters using them |
 | `show NAME` | the steps of a filter, and who uses it |
+| `test NAME FILE…` | apply a filter to local files, as if they were the assets (a directory: its files, with their paths below it), and list the result – or write it to a new or empty directory with `-o DIR` |
+| `test NAME --source SOURCE` | the same with the assets of the release `SOURCE` selects (`--release`, `--prerelease`, `--type` as for [`add`](#add); `--asset PATTERN`: only the matching ones) – to try a filter on the real thing before an entry uses it |
 | `add NAME STEP-OPTIONS…` | define a new filter with the [step options](#filters) (`--extract`, `--include`, `--move`, `--apply`, …), in the order given. Names consist of letters, digits, `.`, `+`, `-` and `_` |
 | `set NAME STEP-OPTIONS…` | replace the steps of an existing filter |
 | `rename OLD NEW` | rename a filter, and the entries and `apply` steps that use it |
 | `remove NAME` | remove a filter that nothing uses |
+
+`filter test` changes nothing in the repository; errors are the ones
+`pull` would report:
+
+```console
+$ git assetsync filter test zlib-headers --source madler/zlib --asset 'zlib-*.tar.gz'
+input: madler/zlib v1.3.2: zlib-1.3.2.tar.gz
+1002 bytes  LICENSE
+ 577.9 KiB  crc32.h
+  13.9 KiB  deflate.h
+…
+```
 
 ### `install-hooks`, `uninstall-hooks`
 

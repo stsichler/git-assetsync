@@ -148,6 +148,13 @@ command.
 
     filter                      list the filters (and who uses them)
     filter show NAME            the steps of a filter
+    filter test NAME FILE...    apply a filter to local files (as if they were
+                                the assets; a directory: its files) and list
+                                the result; nothing else changes
+        --source SOURCE         instead: the assets of its release (with
+                                --release, --prerelease, --type as for add;
+                                --asset PATTERN: only the matching ones)
+        -o, --output DIR        write the result to DIR (new or empty)
     filter add NAME STEP-OPTIONS...  define a new filter; the steps in the
                                 order given:
         --extract, --subdir PATH, --strip N, --include PATTERN,
@@ -1193,13 +1200,19 @@ def run_steps(files, steps, work, filters=None, chain=()):
                      if any(x.match(r) for x in rxs) == (name == "include")}
     if chain:            # a named filter: may leave nothing of its part
         return files
+    return checked_result(files, work.what)
+
+
+def checked_result(files, what):
+    """The files a filter gives for an entry: some, and none that differ
+    only in case."""
     if not files:
-        raise FsError(f"{work.what}: the filter leaves no files")
+        raise FsError(f"{what}: the filter leaves no files")
     seen = {}
     for r in files:
         other = seen.setdefault(r.lower(), r)
         if other != r:
-            raise FsError(f"{work.what}: '{other}' and '{r}' differ only in case")
+            raise FsError(f"{what}: '{other}' and '{r}' differ only in case")
     return files
 
 
@@ -2908,6 +2921,8 @@ def cmd_filter(ctx, repo, args):
         raise FsError(f"no filter '{args.name}' in {REGISTRY}"
                       + (f" (known: {', '.join(sorted(reg.filters))})" if reg.filters else ""))
     users = reg.filter_users(args.name) if args.name in reg.filters else []
+    if action == "test":
+        return filter_test(ctx, repo, reg, args)
     if action == "show":
         for step in reg.filters[args.name]:
             print(step)
@@ -2940,6 +2955,56 @@ def cmd_filter(ctx, repo, args):
     if action == "set" and users:
         print(f'  (used by {and_list(users)}: use "git assetsync status" to see what '
               'changes, "git assetsync pull <file>..." to update)')
+    return EXIT_OK
+
+
+def filter_test(ctx, repo, reg, args):
+    """Apply a filter to local files (as if they were the assets) or to the
+    assets of a release, and list the result or write it to a directory -
+    without changing anything in the repository."""
+    if bool(args.files) == bool(args.source):
+        raise FsError("give the input: FILE... (local files, as if they were the assets) "
+                      "or --source SOURCE (the assets of its release)")
+    out_dir = repo.user_path(args.output) if args.output else None
+    if out_dir and (out_dir.is_file() or out_dir.is_dir() and any(out_dir.iterdir())):
+        raise FsError(f"'{args.output}' is not an empty directory")
+    what = f"filter {args.name}"
+    with Work(what) as work:
+        files = {}
+        if args.source:
+            url, spec, _ = add_source(reg, args)
+            origin, release = ctx.release(url, spec)
+            assets = select_assets(release, args.asset, origin.label, True)
+            for a in assets:
+                add_member(files, safe_path(a.name, f"{what}: asset"),
+                           (get_asset(origin, release, a)[0], False), what)
+            print(paint(f"input: {origin.label} {release.tag}: "
+                        f"{', '.join(a.name for a in assets)}", "dim", "err"), file=sys.stderr)
+        for name in args.files or []:
+            path = repo.user_path(name)
+            if path.is_dir():
+                for p in sorted(path.rglob("*")):
+                    if p.is_file():
+                        rel = safe_path(p.relative_to(path).as_posix(), what)
+                        add_member(files, rel, (p, bool(p.stat().st_mode & 0o111)), what)
+            elif path.is_file():
+                add_member(files, safe_path(path.name, what), (path, False), what)
+            else:
+                raise FsError(f"'{name}' not found")
+        result = checked_result(run_steps(files, reg.filters[args.name], work, reg.filters,
+                                          (args.name,)), what)
+        if out_dir:
+            for rel, (src, executable) in sorted(result.items()):
+                dest = out_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dest)
+                set_executable(dest, executable)
+            print(f"{paint(plural(len(result), 'file'), 'green')} written to {args.output}")
+            return EXIT_OK
+        width = max(len(human_size(src.stat().st_size)) for src, _ in result.values())
+        for rel, (src, executable) in sorted(result.items()):
+            print(f"{human_size(src.stat().st_size):>{width}}  {rel}"
+                  + ("  (executable)" if executable else ""))
     return EXIT_OK
 
 
@@ -3187,6 +3252,21 @@ def main(argv=None):
     a = actions.add_parser("set", parents=[colorp, filterp],
                            help="replace the steps of a filter (in the order given)")
     a.add_argument("name", metavar="NAME")
+    a = actions.add_parser("test", parents=[colorp],
+                           help="apply a filter to local files or to the assets of a release, "
+                                "and list or write the result (nothing else changes)")
+    a.add_argument("name", metavar="NAME")
+    a.add_argument("files", nargs="*", metavar="FILE",
+                   help="input files, as if they were the assets (a directory: its files)")
+    a.add_argument("--source", metavar="URL|SOURCE",
+                   help="the input: the assets of the release this source selects (as for add)")
+    a.add_argument("--release", metavar="TAG|PATTERN", help="with --source: as for add")
+    a.add_argument("--prerelease", action="store_true", help="with --source: as for add")
+    a.add_argument("--type", choices=sorted(PLATFORMS), help="with --source: as for add")
+    a.add_argument("--asset", metavar="PATTERN",
+                   help="with --source: only the matching assets (default: all)")
+    a.add_argument("-o", "--output", metavar="DIR",
+                   help="write the result to DIR (new or empty) instead of listing it")
     a = actions.add_parser("rename", parents=[colorp],
                            help="rename a filter and the steps using it")
     a.add_argument("name", metavar="OLD")

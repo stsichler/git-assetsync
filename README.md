@@ -170,7 +170,7 @@ git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' --filter
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
-| `filter [ACTION …]` | list filters; show, add, set, rename or remove them |
+| `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
