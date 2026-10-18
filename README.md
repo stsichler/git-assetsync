@@ -43,6 +43,28 @@ It is a sibling of [git-filesync](https://github.com/stsichler/git-filesync),
 which keeps single files in sync with files in other Git repositories, and
 built the same way.
 
+### Compared to other vendoring tools
+
+| | git-assetsync | [vendir](https://carvel.dev/vendir/) | [git-vendor](https://github.com/thejoshwolfe/git-vendor) |
+|---|---|---|---|
+| Takes content from | release assets on GitHub and GitLab | Git, GitHub releases, HTTP, Helm charts, images, … | Git repositories |
+| Which version | the latest release, the newest whose tag matches a pattern (by date), or a pinned one | a tag, the latest release, or semver constraints | a branch, a tag or a commit |
+| Archives | unpacked safely (ZIP, tar, 7z with 7-Zip) | unpacked (one archive per release) | – |
+| Selecting files | include / exclude, subdirectory, strip, move / copy into a new structure; named filters, reusable and per asset | include / exclude paths, new root | include / exclude |
+| Converting with tools of your own | yes (e.g. bin2c), in filters you trust | – | – |
+| What's new | `status` like `git status`: new releases, local modifications (those offline) | – (`sync` fetches and writes) | `st` |
+| Updating | `pull` commits, with a message naming the release and its notes | writes the files and a lock file | stages the changes |
+| Local modifications | reported; `pull` refuses them, `--force` discards | overwritten | discarded |
+| Form | one Python script, standard library only | Go binary | Python script |
+
+vendir is the closest: it vendors many kinds of sources declaratively into
+directories, often for Kubernetes configuration. git-assetsync is narrower
+– release assets only – but works the Git way: files, directories and their
+state are part of the repository, `status` and `pull` behave like their Git
+namesakes, and each update is a commit that says what it brings. git-vendor
+copies content of other Git repositories, with filters – for single files
+from other Git repositories see git-filesync.
+
 ## Features
 
 - Takes files and directories from release assets on GitHub or GitLab,
