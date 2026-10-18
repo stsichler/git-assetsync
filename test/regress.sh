@@ -1782,7 +1782,7 @@ release acme/vf v1 10 "$F/vf.txt" "$F/pkg.zip"
 new_repo r24
 filt hdr --extract --include '*.h' --move '*.h' include/
 filt rnd --convert '*.txt' '{name}' 'echo $$ > {out}'
-filt rnddir --copy vf.txt keep/vf.txt --convert '/vf.txt' 'gen/{stem}.c' 'echo $$ > {out}'
+filt rnddir --copy vf.txt keep/v.txt --convert vf.txt 'gen/{stem}.c' 'echo $$ > {out}'
 quiet git assetsync trust rnd rnddir
 addc f.txt acme/vf --asset vf.txt
 addc d/ acme/vf --asset pkg.zip --filter hdr
