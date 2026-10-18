@@ -92,15 +92,17 @@ Git-config format:
 	blob = …
 [source "madler/zlib"]
 	url = https://github.com/madler/zlib
+[filter "zlib-headers"]          # a named filter: steps, in this order
+	step = extract
+	step = strip 1
+	step = keep '*.h' LICENSE
 [dir "third_party/zlib"]
 	source = madler/zlib
 	asset = zlib-*.tar.gz        # optional: without, all assets of the release
-	step = extract               # optional: the filter, in this order
-	step = strip 1
-	step = keep '*.h' LICENSE
+	filter = zlib-headers        # optional: the filter applied to the assets
 	synced = v1.3.2
 	digest = sha256:…
-	filterhash = 3f9a…           # of the steps it was synced with
+	filterhash = 3f9a…           # of the filter it was synced with
 	tree = …                     # the directory as committed (git's tree id)
 ```
 
@@ -126,9 +128,12 @@ Git-config format:
 - **`[dir "PATH"]`** – a directory and the assets it comes from: like
   `[file]`, but `asset` may match several assets (without it: all), and
   the base is `tree`, the id of the directory as committed.
-- **`step`** (in `[file]` and `[dir]`) – the [filter](#filters), one key
-  per step, in order. `filterhash` records the filter the entry was synced
-  with, so a changed filter shows up as pending.
+- **`[filter "NAME"]`** – a [named filter](#filters): its steps, one
+  `step` key per step, in order. An entry uses it with `filter = NAME` (in
+  `[file]` and `[dir]`); `filterhash` records the filter the entry was
+  synced with, so a changed filter shows up as pending. Like sources,
+  filters are referred to by name – but they are never created or removed
+  automatically.
 
 All files of a source take the same release, e.g. a header and a library
 published together. To follow a different release of the same project,
@@ -177,7 +182,7 @@ line endings normalized) is still unmodified.
 | `unlink PATH…` | remove entries (the files are kept) |
 | `mv OLD NEW` | move a file or directory, keeping its entry |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
-| `filter [ACTION …]` | list named filters; show, set, rename or remove them |
+| `filter [ACTION …]` | list filters; show, add, set, rename or remove them |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
@@ -285,7 +290,7 @@ how to commit them with the proposed message; the exit code is then 1.
 
 ```
 git assetsync add PATH SOURCE [--asset PATTERN] [--release TAG|PATTERN] [--prerelease]
-                  [--type github|gitlab] [STEP-OPTIONS…] [--force] [-n]
+                  [--type github|gitlab] [--filter NAME] [--force] [-n]
 ```
 
 The arguments are in the same order as for `git filesync add`. Takes the
@@ -317,9 +322,9 @@ commit --no-edit` takes it as it is).
   For a directory, all matching assets are taken; without `--asset` all
   assets of the release – they are listed first, and more than 10 assets
   or 100 MiB need `--force`.
-- **Step options** (`--extract`, `--subdir`, `--strip`, `--include`,
-  `--exclude`, `--move`, `--copy`, `--filter`) unpack the assets, select
-  and move files – in the order given, see [Filters](#filters).
+- **`--filter NAME`** applies the named [filter](#filters) `NAME` to the
+  assets – to unpack them, select and move files. Define it first with
+  [`filter add`](#filter).
 
 | Option | Meaning |
 |---|---|
@@ -327,7 +332,7 @@ commit --no-edit` takes it as it is).
 | `--release TAG\|PATTERN` | release to take: a tag pins the source to that release, a pattern takes the newest release whose tag matches (default: the latest release) |
 | `--prerelease` | prereleases count too (with a pattern, or instead of the latest release) |
 | `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
-| `--extract`, `--subdir PATH`, `--strip N`, `--include PATTERN`, `--exclude PATTERN`, `--move PATTERN TARGET`, `--copy PATTERN TARGET`, `--filter PATTERN NAME` | the steps of the [filter](#filters), in the order given |
+| `--filter NAME` | the named [filter](#filters) to apply to the assets |
 | `--force` | replace an existing entry for `PATH`; overwrite an existing file that differs; take over a directory that isn't empty; take more than 10 assets or 100 MiB |
 | `-n`, `--dry-run` | only show which release, assets and filter would be taken; nothing is downloaded |
 
@@ -341,10 +346,13 @@ history.
 
 ```sh
 git assetsync add bin/tool acme/tool --asset 'tool-*-linux-x64'
+
+git assetsync filter add glab-binary --extract --include bin/glab
 git assetsync add tools/glab https://gitlab.com/gitlab-org/cli \
-    --asset '*_linux_amd64.tar.gz' --extract --include bin/glab
-git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' \
-    --extract --strip 1 --include '/*.h' --include LICENSE
+    --asset '*_linux_amd64.tar.gz' --filter glab-binary
+
+git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
+git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' --filter zlib-headers
 ```
 
 ### `set`
@@ -352,7 +360,7 @@ git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' \
 ```
 git assetsync set PATH… [--source URL|SOURCE] [--release TAG|PATTERN | --latest]
                         [--prerelease | --no-prerelease] [--type github|gitlab]
-                        [--asset PATTERN | --no-asset] [STEP-OPTIONS… | --no-filter] [-n]
+                        [--asset PATTERN | --no-asset] [--filter NAME | --no-filter] [-n]
 ```
 
 Changes the entries of files and directories – their source, release
@@ -369,8 +377,7 @@ commits the change with them.
 | `--prerelease`, `--no-prerelease` | (without `--source`) let prereleases count for these files, or not |
 | `--type github\|gitlab` | (without `--source`) the platform of the host |
 | `--asset PATTERN`, `--no-asset` | another asset of the release; `--no-asset`: the release's only asset (a directory: all) |
-| step options (`--extract`, `--include`, `--move`, `--filter`, …) | another [filter](#filters): the options replace the steps as a whole |
-| `--no-filter` | remove the filter |
+| `--filter NAME`, `--no-filter` | use another named [filter](#filters), or none |
 | `-n`, `--dry-run` | only show what would change |
 
 If the files are all files of their source and no source with that URL and
@@ -383,7 +390,8 @@ modifications stay modifications. With another URL or asset, which release
 asset a file comes from is unknown until the next `pull`: `status` shows it
 as pending (`entry changed`), and `pull` fetches it – if it is the same file,
 the commit only records that (`Record … (file unchanged)`). Another filter
-shows as pending (`filter changed`); `pull` filters the assets again. A
+(or a changed one) shows as pending (`filter changed`); `pull` filters
+the assets again, from the [download cache](#download-cache). A
 file can't become a directory or the other way round: `unlink` it and
 `add` it again.
 
@@ -391,7 +399,7 @@ file can't become a directory or the other way round: `unlink` it and
 git assetsync set bin/tool --release 'v2.*'           # this file only: newest 2.x
 git assetsync set firmware/ --source https://gitlab.com/me/fw-fork
 git assetsync set bin/tool --asset 'tool-*-linux-arm64'
-git assetsync set third_party/zlib --extract --strip 1 --include '/*.h'   # another filter
+git assetsync set third_party/zlib --filter zlib-all       # another named filter
 ```
 
 ### `unlink`
@@ -484,21 +492,23 @@ as for `add`; with a URL it also works outside a repository.
 ```
 git assetsync filter
 git assetsync filter show NAME
+git assetsync filter add NAME STEP-OPTIONS…
 git assetsync filter set NAME STEP-OPTIONS…
 git assetsync filter rename OLD NEW
 git assetsync filter remove NAME
 ```
 
-Lists and changes the [named filters](#named-filters). The changing
-actions only change `.git-assetsync` and stage it; entries using a
-changed filter show as pending in `status`, and `pull` updates them.
+Lists and changes the [filters](#filters). The changing actions only
+change `.git-assetsync` and stage it; entries using a changed filter show
+as pending in `status`, and `pull` updates them.
 
 | Action | Meaning |
 |---|---|
 | (none) | list the filters, with their number of steps and the entries and filters using them |
 | `show NAME` | the steps of a filter, and who uses it |
-| `set NAME STEP-OPTIONS…` | create a filter, or replace its steps, with the same [step options](#filters) as `add` (`--extract`, `--include`, `--move`, `--filter`, …) in the order given. Names consist of letters, digits, `.`, `+`, `-` and `_` |
-| `rename OLD NEW` | rename a filter, and the `filter` steps that use it |
+| `add NAME STEP-OPTIONS…` | define a new filter with the [step options](#filters) (`--extract`, `--include`, `--move`, `--filter`, …), in the order given. Names consist of letters, digits, `.`, `+`, `-` and `_` |
+| `set NAME STEP-OPTIONS…` | replace the steps of an existing filter |
+| `rename OLD NEW` | rename a filter, and the entries and `filter` steps that use it |
 | `remove NAME` | remove a filter that nothing uses |
 
 ### `install-hooks`, `uninstall-hooks`
@@ -553,12 +563,22 @@ change is committed with them. For some of its files only, use
 ### Filters
 
 A filter turns the downloaded assets into the files of an entry, without
-running any code. It is a list of steps, applied in order to the files so
-far; files a step doesn't concern pass unchanged. At the start, the files
-are the assets, named as they are. `add`, `set` and `filter set` build
-the steps from their options, **in the order the options are given**
-(consecutive `--include` options make one `keep` step, consecutive
-`--exclude` options one `drop` step):
+running any code. Filters are **named**: defined once with
+[`filter add`](#filter) – in `.git-assetsync` as `[filter "NAME"]` – and
+used by any number of entries (`add --filter NAME`, `set --filter NAME`),
+also of different sources. Like sources, they are never created or
+removed automatically.
+
+A filter is a list of steps, applied in order to the files so far; files a
+step doesn't concern pass unchanged. At the start, the files are the
+assets, named as they are. `filter add` and `filter set` build the steps
+from their options, **in the order the options are given** (consecutive
+`--include` options make one `keep` step, consecutive `--exclude` options
+one `drop` step):
+
+```sh
+git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
+```
 
 | Option | Step | Effect |
 |---|---|---|
@@ -569,7 +589,7 @@ the steps from their options, **in the order the options are given**
 | `--exclude PATTERN` | `drop PATTERN…` | not the files matching one of the patterns |
 | `--move PATTERN TARGET` | `move PATTERN TARGET` | move the matching files to `TARGET`, see below |
 | `--copy PATTERN TARGET` | `copy PATTERN TARGET` | the same, but the files also stay where they are |
-| `--filter PATTERN NAME` | `filter PATTERN NAME` | apply the [named filter](#named-filters) `NAME` to the matching files only |
+| `--filter PATTERN NAME` | `filter PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
 
 Patterns are like in `.gitignore` (and `git filesync add --include`),
 relative to the root after the previous steps: without a `/` a pattern
@@ -602,21 +622,19 @@ It is an error if `extract` finds no archive, `subdir`, `move`, `copy` or
 `filter` no files, `strip` a file with too few directories, or if nothing
 is left. A file entry must end up with exactly one file.
 
-#### Named filters
+#### Filters using filters
 
-Filters can be defined once and used by several entries – or for
-different parts of one entry: `[filter "NAME"]` sections hold steps like
-an entry, and the step `filter PATTERN NAME` applies them to the matching
-files only, which keep their paths; the result joins the other files
-again (a path that collides with one of them is an error). Since the
-files are the assets before `extract`, one directory entry can treat the
-assets of a release differently:
+The step `filter PATTERN NAME` applies the filter `NAME` to the files
+matching `PATTERN` only; they keep their paths, and the result joins the
+other files again (a path that collides with one of them is an error).
+Since the files are the assets before `extract`, one directory entry can
+treat the assets of a release differently:
 
 ```sh
-git assetsync filter set headers --extract --strip 1 --include '*.h' --move '*.h' include/
-git assetsync filter set firmware --move '*' firmware/
-git assetsync add vendor/sdk/ acme/sdk --filter 'sdk-*-headers.zip' headers \
-    --filter 'fw-*.bin' firmware
+git assetsync filter add headers --extract --strip 1 --include '*.h' --move '*.h' include/
+git assetsync filter add firmware --move '*' firmware/
+git assetsync filter add sdk --filter 'sdk-*-headers.zip' headers --filter 'fw-*.bin' firmware
+git assetsync add vendor/sdk/ acme/sdk --filter sdk
 ```
 
 ```ini
@@ -627,18 +645,19 @@ git assetsync add vendor/sdk/ acme/sdk --filter 'sdk-*-headers.zip' headers \
 	step = move '*.h' include/
 [filter "firmware"]
 	step = move '*' firmware/
-[dir "vendor/sdk"]
-	source = acme/sdk
+[filter "sdk"]
 	step = filter 'sdk-*-headers.zip' headers
 	step = filter 'fw-*.bin' firmware
+[dir "vendor/sdk"]
+	source = acme/sdk
+	filter = sdk
 	...
 ```
 
-Named filters may use other named filters, but not themselves (also not
-through others). A changed named filter changes all entries that use it:
-`status` shows them as pending (`filter changed`), `pull` applies it.
-Renaming one changes nothing else. See [`filter`](#filter) for the
-command to list, show, set, rename and remove them.
+A filter may use other filters, but not itself (also not through others).
+A changed filter changes all entries that use it, directly or through
+other filters: `status` shows them as pending (`filter changed`), `pull`
+applies it. Renaming one changes nothing else.
 
 Archives are unpacked safely: members with paths outside the target
 (`..`, absolute, drive letters), in a `.git` directory, symbolic or hard
@@ -691,7 +710,7 @@ Update third_party/zlib/ to madler/zlib v1.3.2 (was v1.3.1)
 Release: https://github.com/madler/zlib/releases/tag/v1.3.2
 Title:   zlib 1.3.2
 Asset:   zlib-1.3.2.tar.gz
-Filter:  extract, strip 1, keep '/*.h' LICENSE
+Filter:  zlib-headers
 Files:   1 added, 0 removed, 9 changed (12 in total)
 ```
 

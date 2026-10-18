@@ -32,14 +32,13 @@ assets of a project on GitHub or GitLab:
     [dir "third_party/zlib"]       ; the directory belongs to the entry
         source = madler/zlib
         asset = zlib-*.tar.gz      ; optional: the assets (glob); without: all
-        step = extract             ; optional filter, in this order
+        filter = zlib-headers      ; optional: the filter applied to the assets
+        synced = ...; digest = ...; filterhash = <of the filter>
+        tree = <id of the directory as committed>
+    [filter "zlib-headers"]        ; a filter: its steps, in this order
+        step = extract
         step = strip 1
         step = keep '*.h' LICENSE
-        step = move '*.h' include/
-        synced = ...; digest = ...; filterhash = <of the steps>
-        tree = <id of the directory as committed>
-    [filter "fw"]                  ; a named filter: steps for 'filter' steps
-        step = move '*.bin' firmware/
 
 An entry records what the committed file (directory) comes from, so the
 local state is known offline; only the check for new releases asks the
@@ -54,8 +53,8 @@ Windows - are refused), subdir PATH (only that directory, as the root),
 strip N (N leading directories off), keep / drop PATTERN... (gitignore-
 like), move / copy PATTERN TARGET (TARGET/: into that directory; else a
 path with {path} {dir} {parent} {name} {stem} {ext}), filter PATTERN NAME
-(the named filter NAME on the matching files only). Steps come from the
-options of add, set and filter set, in the order given. Downloads are kept in a cache (ASSETSYNC_CACHE; default
+(the filter NAME on the matching files only). Filters are named; the
+steps come from the options of filter add / set, in the order given. Downloads are kept in a cache (ASSETSYNC_CACHE; default
 ~/.cache/git-assetsync, %LOCALAPPDATA%\\git-assetsync).
 
 Commands (run inside the repository; without a command: status). PATH may
@@ -100,9 +99,7 @@ command.
                                 default the release's only asset; a
                                 directory: all matching, default all - more
                                 than 10 or 100 MiB only with --force)
-        --extract, --subdir PATH, --strip N, --include PATTERN,
-        --exclude PATTERN, --move PATTERN TARGET, --copy PATTERN TARGET,
-        --filter PATTERN NAME   the filter steps, in the order given
+        --filter NAME           the filter to apply to the assets
         --release TAG|PATTERN   release to take (exact tag: pinned) or the
                                 newest one matching (default: the latest)
         --prerelease            prereleases count too (with a pattern, or
@@ -124,8 +121,7 @@ command.
                                 selection or platform for these files only
         --asset PATTERN, --no-asset  another asset (--no-asset: the only one,
                                 for a directory all)
-        step options as for add, --no-filter
-                                another filter (replaces it as a whole)
+        --filter NAME, --no-filter  another filter, or none
         -n, --dry-run           only show what would change
 
     unlink PATH...              remove entries (the files are kept); also
@@ -149,11 +145,15 @@ command.
                                 (all: only .git-assetsync is staged; pull
                                 updates the files and commits the change)
 
-    filter                      list the named filters (and who uses them)
+    filter                      list the filters (and who uses them)
     filter show NAME            the steps of a filter
-    filter set NAME STEP-OPTIONS...  create or replace a filter (step
-                                options as for add, in the order given)
-    filter rename OLD NEW       rename a filter and the steps using it
+    filter add NAME STEP-OPTIONS...  define a new filter; the steps in the
+                                order given:
+        --extract, --subdir PATH, --strip N, --include PATTERN,
+        --exclude PATTERN, --move PATTERN TARGET, --copy PATTERN TARGET,
+        --filter PATTERN NAME
+    filter set NAME STEP-OPTIONS...  replace the steps of a filter
+    filter rename OLD NEW       rename a filter, also where it is used
     filter remove NAME          remove a filter nothing uses
 
     releases SOURCE|URL         list the releases, newest first, marked:
@@ -1515,14 +1515,6 @@ class Registry:
             self._cfg(key, value)
             self.files.setdefault(rel, {})[name] = value
 
-    def set_steps(self, rel, steps):
-        """Set the filter steps of an entry (a key with several values)."""
-        self.set_file(rel, "step", None)
-        for step in steps:
-            self._cfg("--add", f"{self.section(rel)}.{rel}.step", step)
-        if steps:
-            self.files[rel]["step"] = list(steps)
-
     def find_source(self, url, spec, exclude=None):
         """Key of a [source] with url and exactly the selection keys of spec."""
         for name, s in self.sources.items():
@@ -1600,12 +1592,13 @@ class Registry:
         del self.filters[name]
 
     def filter_users(self, name):
-        """Entries and named filters with a 'filter' step using name."""
+        """Entries using the named filter, and named filters with a 'filter'
+        step using it."""
         def uses(steps):
             return any(parse_step(s)[0] == "filter" and parse_step(s)[1][1] == name
                        for s in steps)
         return [f"{r}/" if self.kinds.get(r) == "dir" else r
-                for r in sorted(self.files) if uses(self.files[r].get("step") or [])] + \
+                for r in sorted(self.files) if self.files[r].get("filter") == name] + \
             [f"filter {n}" for n in sorted(self.filters) if uses(self.filters[n])]
 
     def rename_filter(self, old, new):
@@ -1621,9 +1614,8 @@ class Registry:
                               if kind == "filter" and args[1] == old else step)
             return result
         for rel, values in self.files.items():
-            steps = values.get("step") or []
-            if renamed(steps) != steps:
-                self.set_steps(rel, renamed(steps))
+            if values.get("filter") == old:
+                self.set_file(rel, "filter", new)
         for name, steps in list(self.filters.items()):
             if renamed(steps) != steps:
                 self.set_filter(name, renamed(steps))
@@ -1684,7 +1676,10 @@ class Entry:
     is_dir = property(lambda self: self.kind == "dir")
     # how the entry is shown: a directory with a trailing '/'
     shown = property(lambda self: self.rel + ("/" if self.is_dir else ""))
-    steps = property(lambda self: list(self.v.get("step") or []))
+    filter = property(lambda self: self.v.get("filter") or None)   # name of its [filter]
+    # its filter as steps: the named filter applied to all files
+    steps = property(lambda self: [shlex.join(["filter", "*", self.filter])] if self.filter
+                     else [])
 
     @property
     def v(self):
@@ -1905,6 +1900,13 @@ def evaluate(ctx, repo, entry):
         st.error = f"incomplete entry in {REGISTRY} (needs a source with url)"
         return st
     try:
+        if "step" in entry.v:
+            raise FsError("filter steps belong to a named filter - define one with 'git "
+                          "assetsync filter add NAME ...' and use it with 'git assetsync set "
+                          f"{cmd_arg(entry.rel)} --filter NAME'")
+        if entry.filter and entry.filter not in entry.reg.filters:
+            raise FsError(f"filter '{entry.filter}' not found in {REGISTRY} (define it with "
+                          f"'git assetsync filter add {entry.filter} ...')")
         expand_steps(entry.steps, entry.reg.filters)
         (local_state_dir if entry.is_dir else local_state_file)(repo, st)
     except FsError as e:
@@ -2024,7 +2026,7 @@ def print_long(ctx, repo, sts, verbose):
             synced = f"synced {e.synced}" if e.synced else "not synced yet"
             label = st.committed or ("uncommitted" if e.blob else "not synced")
             what = e.asset or ("all assets" if e.is_dir else "only asset")
-            steps = f", filter: {', '.join(e.steps)}" if e.steps else ""
+            steps = f", filter {e.filter}" if e.filter else ""
             rows.append((label, e.shown,
                          f"{what} from {e.name}, {spec_text(e.spec)}{steps}; {synced}", "dim"))
         section("Files:", [], rows, None)
@@ -2106,7 +2108,7 @@ def cmd_status(ctx, repo, args):
     return rc
 
 
-def release_lines(release, assets, steps=(), stats=None):
+def release_lines(release, assets, filter_name=None, stats=None):
     """Body lines of a commit message naming the release, assets and filter,
     and for a directory what changes in it."""
     lines = [f"Release: {release.url or release.tag}"]
@@ -2118,8 +2120,8 @@ def release_lines(release, assets, steps=(), stats=None):
     else:
         lines.append(f"Assets:  {', '.join(names[:5])}"
                      + (f" and {len(names) - 5} more" if len(names) > 5 else ""))
-    if steps:
-        lines.append(f"Filter:  {', '.join(steps)}")
+    if filter_name:
+        lines.append(f"Filter:  {filter_name}")
     if stats:
         added, removed, changed, total = stats
         lines.append(f"Files:   {added} added, {removed} removed, {changed} changed "
@@ -2171,7 +2173,7 @@ def build_message(st, discarded, unchanged=False, stats=None):
         subject = f"Update {rel} from {name} {tag} (filter changed)"
     else:
         subject = f"Restore {rel} from {name} {tag}"
-    lines = [subject, ""] + release_lines(release, st.assets, entry.steps, stats)
+    lines = [subject, ""] + release_lines(release, st.assets, entry.filter, stats)
     notes = notes_lines(release.notes) if old and tag != old else []
     if notes:
         lines += ["", "Release notes:"] + notes
@@ -2333,7 +2335,7 @@ def one_file(files, entry_shown, rel):
     """The files of a [file] entry: exactly one."""
     if len(files) != 1:
         raise FsError(f"{entry_shown}: the filter gives {len(files)} files, a file needs exactly "
-                      f"one - narrow it with --include, or add '{rel}/' as a directory")
+                      f"one - narrow the filter, or add '{rel}/' as a directory")
     return files
 
 
@@ -2464,8 +2466,8 @@ def large_binary_hint(repo, rels):
 
 
 class StepOption(argparse.Action):
-    """A filter option of add / set / filter set: collected in args.steps in
-    the order given on the command line."""
+    """A step option of filter add / set: collected in args.steps in the
+    order given on the command line."""
 
     def __call__(self, parser, namespace, values, option_string=None):
         steps = getattr(namespace, "steps", None) or []
@@ -2474,9 +2476,9 @@ class StepOption(argparse.Action):
 
 
 def filter_steps(args):
-    """Filter steps from the options of add / set / filter set, in the order
-    given; consecutive --include (--exclude) make one keep (drop) step. None
-    if none are given."""
+    """Filter steps from the options of filter add / set, in the order given;
+    consecutive --include (--exclude) make one keep (drop) step. None if
+    none are given."""
     steps, last = [], None
     for kind, value in getattr(args, "steps", None) or []:
         if kind == "extract":
@@ -2521,8 +2523,10 @@ def cmd_add(ctx, repo, args):
     if others:
         raise FsError(f"cannot add '{shown_rel}': overlaps with the entry for "
                       f"{', '.join(others)} - entries must not overlap")
-    steps = filter_steps(args) or []
-    expand_steps(steps, reg.filters)
+    if args.filter and args.filter not in reg.filters:
+        raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
+                      f"'git assetsync filter add {args.filter} ...'")
+    steps = [shlex.join(["filter", "*", args.filter])] if args.filter else []
     url, spec, named = add_source(reg, args)
     origin, release = ctx.release(url, spec)
     assets = select_assets(release, args.asset, origin.label, is_dir)
@@ -2541,7 +2545,7 @@ def cmd_add(ctx, repo, args):
     if args.dry_run:
         print(f"would add {shown_rel} from {name} {release.tag} "
               f"({', '.join(a.name for a in assets)}, {spec_text(spec)}"
-              + (f", filter: {', '.join(steps)}" if steps else "") + ")")
+              + (f", filter {args.filter}" if args.filter else "") + ")")
         return EXIT_OK
     obj = repo.head_object(rel)
     st = State(entry=SimpleNamespace(shown=shown_rel, rel=rel, target=target, is_dir=is_dir),
@@ -2553,12 +2557,11 @@ def cmd_add(ctx, repo, args):
     name = named or reg.add_source(url, spec)
     reg.new_entry(rel, kind)
     entry = Entry(reg, rel)
-    for k, v in (("source", name), ("asset", args.asset), ("synced", release.tag),
-                 ("digest", digest), ("filterhash", filter_hash(steps, reg.filters)),
-                 (BASE_KEY[kind], base)):
+    for k, v in (("source", name), ("asset", args.asset), ("filter", args.filter),
+                 ("synced", release.tag), ("digest", digest),
+                 ("filterhash", filter_hash(steps, reg.filters)), (BASE_KEY[kind], base)):
         if v:
             entry.set(k, v)
-    reg.set_steps(rel, steps)
     reg.finish()
     large_binary_hint(repo, [f"{rel}/{n}" for n in repo.tree_names(base)] if is_dir else [rel])
     print(f"{paint('added', 'green')} {shown_rel} <- {name} {release.tag} "
@@ -2570,7 +2573,7 @@ def cmd_add(ctx, repo, args):
         return EXIT_OK
     # staged only, like git add; the proposed message is prepared for the commit
     msg = "\n".join([f"Add {shown_rel} from {name} {release.tag}", ""]
-                    + release_lines(release, assets, steps, stats)) + "\n"
+                    + release_lines(release, assets, args.filter, stats)) + "\n"
     report_staged(repo, shown_rel, msg, paint("staged", "green"), rels=[rel])
     return EXIT_OK
 
@@ -2612,17 +2615,14 @@ def cmd_set(ctx, repo, args):
     comes from is unknown until the next pull (synced removed)."""
     select = args.release is not None or args.latest or args.prerelease is not None or \
         args.type is not None
-    steps = filter_steps(args)
-    if args.no_filter and steps:
-        raise FsError("--no-filter excludes the other filter options")
-    if args.no_filter:
-        steps = []
     if not (args.source or select or args.asset is not None or args.no_asset or
-            steps is not None):
+            args.filter or args.no_filter):
         raise FsError("nothing to change: give --source, --release/--latest/--prerelease/"
-                      "--type, --asset/--no-asset or filter options")
+                      "--type, --asset/--no-asset or --filter/--no-filter")
     reg = Registry(repo)
-    expand_steps(steps or [], reg.filters)
+    if args.filter and args.filter not in reg.filters:
+        raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
+                      f"'git assetsync filter add {args.filter} ...'")
     if args.release is not None and args.latest:
         raise FsError("--release and --latest exclude each other")
     reg.dry_run = args.dry_run
@@ -2673,12 +2673,12 @@ def cmd_set(ctx, repo, args):
                 e.set("asset", new)
                 e.set("synced", None)
                 changed = True
-    if steps is not None:
+    if args.filter or args.no_filter:
         for e in entries:
-            if e.steps != steps:
-                print(f"{would}{e.shown}: filter {', '.join(e.steps) or '(none)'} -> "
-                      f"{', '.join(steps) or '(none)'}")
-                reg.set_steps(e.rel, steps)
+            if e.filter != args.filter:
+                print(f"{would}{e.shown}: filter {e.filter or '(none)'} -> "
+                      f"{args.filter or '(none)'}")
+                e.set("filter", args.filter)
                 changed = True
     if not changed:
         print("nothing to change")
@@ -2900,7 +2900,10 @@ def cmd_filter(ctx, repo, args):
         if not reg.filters:
             print(f"no filters in {REGISTRY}")
         return EXIT_OK
-    if action != "set" and args.name not in reg.filters:
+    if action == "add" and args.name in reg.filters:
+        raise FsError(f"filter '{args.name}' already exists (change it with 'git assetsync "
+                      f"filter set {args.name} ...')")
+    if action != "add" and args.name not in reg.filters:
         raise FsError(f"no filter '{args.name}' in {REGISTRY}"
                       + (f" (known: {', '.join(sorted(reg.filters))})" if reg.filters else ""))
     users = reg.filter_users(args.name) if args.name in reg.filters else []
@@ -2909,7 +2912,7 @@ def cmd_filter(ctx, repo, args):
             print(step)
         print(f"({'used by ' + and_list(users) if users else 'not used'})")
         return EXIT_OK
-    if action == "set":
+    if action in ("add", "set"):
         if not re.fullmatch(r"[\w.+-]+", args.name):
             raise FsError(f"invalid filter name '{args.name}' (letters, digits, '.', '+', '-', "
                           "'_')")
@@ -2917,9 +2920,8 @@ def cmd_filter(ctx, repo, args):
         if not steps:
             raise FsError("give the steps of the filter (--extract, --include, --move, ...)")
         expand_steps(steps, dict(reg.filters, **{args.name: steps}), (args.name,))
-        new = args.name not in reg.filters
         reg.set_filter(args.name, steps)
-        done = f"filter {args.name}: {', '.join(steps)}" + (" (new)" if new else "")
+        done = f"filter {args.name}: {', '.join(steps)}" + (" (new)" if action == "add" else "")
     elif action == "rename":
         if not re.fullmatch(r"[\w.+-]+", args.value):
             raise FsError(f"invalid filter name '{args.value}'")
@@ -3074,8 +3076,10 @@ def main(argv=None):
     g.add_argument("--filter", action=StepOption, nargs=2, metavar=("PATTERN", "NAME"),
                    help="apply the named filter NAME to the matching files")
 
-    p = sub.add_parser("add", parents=[colorp, filterp],
+    p = sub.add_parser("add", parents=[colorp],
                        help="take a file or directory from release assets")
+    p.add_argument("--filter", metavar="NAME",
+                   help="the named filter (see 'filter add') to apply to the assets")
     p.add_argument("path", metavar="PATH",
                    help="file in this repository; with a trailing '/' or an existing "
                         "directory: a directory that belongs to the entry")
@@ -3094,7 +3098,7 @@ def main(argv=None):
     p.add_argument("--force", action="store_true", help="replace an existing entry or file")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
-    p = sub.add_parser("set", parents=[colorp, filterp],
+    p = sub.add_parser("set", parents=[colorp],
                        help="change entries: source, release selection, asset or filter")
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
     p.add_argument("--source", metavar="URL|SOURCE",
@@ -3112,8 +3116,9 @@ def main(argv=None):
     g.add_argument("--asset", metavar="PATTERN", help="another asset (glob, exactly one match)")
     g.add_argument("--no-asset", action="store_true",
                    help="no pattern: the release's only asset (a directory: all)")
-    p.add_argument("--no-filter", action="store_true",
-                   help="remove the filter (the filter options replace it as a whole)")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--filter", metavar="NAME", help="use the named filter NAME")
+    g.add_argument("--no-filter", action="store_true", help="use no filter")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
     p = sub.add_parser("releases", parents=[colorp],
@@ -3174,8 +3179,11 @@ def main(argv=None):
     actions = p.add_subparsers(dest="action", metavar="ACTION")
     a = actions.add_parser("show", parents=[colorp], help="the steps of a filter")
     a.add_argument("name", metavar="NAME")
+    a = actions.add_parser("add", parents=[colorp, filterp],
+                           help="define a new filter with the steps given (in this order)")
+    a.add_argument("name", metavar="NAME")
     a = actions.add_parser("set", parents=[colorp, filterp],
-                           help="create or replace a filter with the steps given")
+                           help="replace the steps of a filter (in the order given)")
     a.add_argument("name", metavar="NAME")
     a = actions.add_parser("rename", parents=[colorp],
                            help="rename a filter and the steps using it")

@@ -273,6 +273,13 @@ EOF
 # followed by the JSON list of its members (see there)
 mkfake7z() { printf '7z\274\257\047\034' > "$1" && printf '%s' "$2" >> "$1"; }
 
+# filt NAME STEP-OPTIONS... - define (or change) the named filter NAME in
+# the current repository, and commit it
+filt() {
+  { git assetsync filter add "$@" || git assetsync filter set "$@"; } >/dev/null 2>&1
+  git commit -q -m "filter $1" -- .git-assetsync
+}
+
 # downloads - number of asset downloads since the last reset_calls
 downloads() { if [ -f "$GH/calls.log" ]; then grep -c -E 'releases/assets/|packages/generic/' "$GH/calls.log"; else echo 0; fi; }
 
@@ -1118,7 +1125,7 @@ new_repo r16
 addc x.bin acme/set --asset x.bin --release v1
 addc y.bin acme/set --asset y.bin --release v1
 check "nothing to change" "$(git assetsync set x.bin 2>&1)" \
-  "error: nothing to change: give --source, --release/--latest/--prerelease/--type, --asset/--no-asset or filter options"
+  "error: nothing to change: give --source, --release/--latest/--prerelease/--type, --asset/--no-asset or --filter/--no-filter"
 check "same selection: nothing to change" "$(git assetsync set x.bin --release v1)" "nothing to change"
 
 # another release selection for one file of two: the source is split
@@ -1218,21 +1225,21 @@ release madler/zlib v1.3 10 "$F/zlib-1.3-win64.zip" "$F/checksums.txt"
 
 new_repo r18
 printf '*.lib\n*.log\n' > .gitignore && git add .gitignore && git commit -qm ignore
-OUT=$(asd add lib/zlib/ madler/zlib --asset 'zlib-*-win64.zip' --extract --strip 1 \
-  --include 'include/*.h' --include 'lib/x64/*.lib' --exclude '*.pdb' 2>&1)
+filt zwin --extract --strip 1 --include 'include/*.h' --include 'lib/x64/*.lib' --exclude '*.pdb'
+OUT=$(asd add lib/zlib/ madler/zlib --asset 'zlib-*-win64.zip' --filter zwin 2>&1)
 check "dir: added" "$(echo "$OUT" | grep '^added')" "added lib/zlib/ <- madler/zlib v1.3 (zlib-1.3-win64.zip)"
 check "dir: files (ignored *.lib included)" "$(git ls-files lib | oneline)" \
   "lib/zlib/include/zconf.h lib/zlib/include/zlib.h lib/zlib/lib/x64/zlib.lib "
-check "dir: [dir] entry" "$(git config -f .git-assetsync --get-all dir.lib/zlib.step | oneline)" \
-  "extract strip 1 keep 'include/*.h' 'lib/x64/*.lib' drop '*.pdb' "
+check "dir: [dir] entry with its filter" "$(reg dir.lib/zlib.filter) $(git config -f .git-assetsync --get-all filter.zwin.step | oneline)" \
+  "zwin extract strip 1 keep 'include/*.h' 'lib/x64/*.lib' drop '*.pdb' "
 check "dir: tree as staged" "$(reg dir.lib/zlib.tree)" "$(git write-tree --prefix=lib/zlib/)"
 check "dir: filterhash" "$(reg dir.lib/zlib.filterhash | wc -c | tr -d ' ')" "17"
 git commit -q --no-edit
 check "dir: message" "$(git log -1 --format=%B | grep -E '^(Add|Filter|Files)' | oneline)" \
-  "Add lib/zlib/ from madler/zlib v1.3 Filter:  extract, strip 1, keep 'include/*.h' 'lib/x64/*.lib', drop '*.pdb' Files:   3 added, 0 removed, 0 changed (3 in total) "
+  "Add lib/zlib/ from madler/zlib v1.3 Filter:  zwin Files:   3 added, 0 removed, 0 changed (3 in total) "
 check "dir: clean" "$(st) $(git status --porcelain)" " "
 check "dir: nothing to pull" "$(git assetsync status | tail -1)" "nothing to pull, 1 directory unmodified"
-check "dir: status -v" "$(git assetsync status -v | grep -c "unmodified: lib/zlib/  (zlib-\*-win64.zip from madler/zlib, latest release, filter: extract")" "1"
+check "dir: status -v" "$(git assetsync status -v | grep -c "unmodified: lib/zlib/  (zlib-\*-win64.zip from madler/zlib, latest release, filter zwin;")" "1"
 check "dir: shown with /" "$(cd lib && git assetsync status -v | grep -c 'unmodified: zlib/ ')" "1"
 
 # a new release: files changed, removed, added
@@ -1269,18 +1276,20 @@ check "dir: --force: untracked deleted, ignored kept" "$(ls lib/zlib | oneline)"
 check "dir: clean after restore" "$(st) $(git status --porcelain)" " "
 
 # another filter (set): pending, pulled from the cache
-quiet git assetsync set lib/zlib --extract --strip 1 --include 'include/*.h'
-check "set filter: staged" "$(git config -f .git-assetsync --get-all dir.lib/zlib.step | oneline)" \
-  "extract strip 1 keep 'include/*.h' "
+filt zh --extract --strip 1 --include 'include/*.h'
+quiet git assetsync set lib/zlib --filter zh
+check "set filter: staged" "$(reg dir.lib/zlib.filter) $(git status --porcelain | oneline)" "zh M  .git-assetsync "
 check "set filter: pending" "$(git assetsync status | grep -c 'pending:    lib/zlib/  (filter changed)')" "1"
 reset_calls
 pullc lib/zlib
 check "filter changed: pulled" "$(git ls-files lib | oneline)" "lib/zlib/include/new.h lib/zlib/include/zlib.h "
 check "filter changed: message" "$(git log -1 --format=%s)" "Update lib/zlib/ from madler/zlib v1.3.1 (filter changed)"
 check "filter changed: no download (cache)" "$(downloads)" "0"
-check "set --no-filter" "$(git assetsync set lib/zlib --no-filter; git config -f .git-assetsync --get-all dir.lib/zlib.step)" \
-  "lib/zlib/: filter extract, strip 1, keep 'include/*.h' -> (none)
+check "set --no-filter" "$(git assetsync set lib/zlib --no-filter; reg dir.lib/zlib.filter)" \
+  "lib/zlib/: filter zh -> (none)
 .git-assetsync staged (use \"git assetsync status\" to see what changes, \"git assetsync pull <file>...\" to update)"
+check "set --filter: unknown" "$(git assetsync set lib/zlib --filter nope 2>&1)" \
+  "error: no filter 'nope' in .git-assetsync - define it first with 'git assetsync filter add nope ...'"
 git reset -q --hard
 
 # entries must not overlap
@@ -1296,12 +1305,17 @@ git checkout -q .git-assetsync
 mkdir -p "$T/b/firmware" && echo fw > "$T/b/firmware/fw.bin" && echo doc > "$T/b/firmware/doc.txt"
 mkarchive "$F/bundle.zip" "$T/b"
 release acme/bundle v1 10 "$F/bundle.zip"
-quiet asd add fw.bin acme/bundle --extract --include fw.bin
-check "file from an archive" "$(cat fw.bin) $(git config -f .git-assetsync --get-all file.fw.bin.step | oneline)" "fw extract keep fw.bin "
-check "file: several files" "$(asd add two.bin acme/bundle --extract 2>&1)" \
-  "error: two.bin: the filter gives 2 files, a file needs exactly one - narrow it with --include, or add 'two.bin/' as a directory"
-check "dir from the same archive" "$(asd add -n fwdir/ acme/bundle --extract --subdir firmware)" \
-  "would add fwdir/ from acme/bundle v1 (bundle.zip, latest release, filter: extract, subdir firmware)"
+filt fwbin --extract --include fw.bin
+filt ex --extract
+filt fwsub --extract --subdir firmware
+quiet asd add fw.bin acme/bundle --filter fwbin
+check "file from an archive" "$(cat fw.bin) $(reg file.fw.bin.filter)" "fw fwbin"
+check "file: several files" "$(asd add two.bin acme/bundle --filter ex 2>&1)" \
+  "error: two.bin: the filter gives 2 files, a file needs exactly one - narrow the filter, or add 'two.bin/' as a directory"
+check "dir from the same archive" "$(asd add -n fwdir/ acme/bundle --filter fwsub)" \
+  "would add fwdir/ from acme/bundle v1 (bundle.zip, latest release, filter fwsub)"
+check "add --filter: unknown" "$(asd add x/ acme/bundle --filter nope 2>&1)" \
+  "error: no filter 'nope' in .git-assetsync - define it first with 'git assetsync filter add nope ...'"
 git reset -q --hard; rm -f fw.bin
 
 # a directory of all assets (no --asset); a guard against many or big ones
@@ -1354,7 +1368,8 @@ new_repo r18b
 printf '* text=auto\n' > .gitattributes
 if git lfs version >/dev/null 2>&1; then printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >> .gitattributes; fi
 git add .gitattributes && git commit -qm attrs
-addc d/ acme/eol-dir --extract
+filt ex --extract
+addc d/ acme/eol-dir --filter ex
 check "dir: text=auto: normalized" "$(git cat-file -p HEAD:d/crlf.txt | od -c | grep -c '\\r')" "0"
 if git lfs version >/dev/null 2>&1; then
   check "dir: LFS: pointer" "$(git cat-file -p HEAD:d/data.bin | head -1)" "version https://git-lfs.github.com/spec/v1"
@@ -1380,24 +1395,28 @@ section "19. Archives: formats, executables, unsafe members"
 cd "$T"
 mkdir -p fmt/sub && echo one > fmt/one.txt && echo two > fmt/sub/two.txt && printf '#!/bin/sh\n' > fmt/run.sh
 new_repo r19
+filt ex --extract
+filt ex-strip --extract --strip 1
+filt ex-subdir --extract --subdir nope
+filt ex-c --extract --include '*.c'
 for ext in zip tar tar.gz tgz tar.bz2 tar.xz; do
   mkarchive "$F/fmt.$ext" "$T/fmt"
   release acme/fmt-$ext v1 10 "$F/fmt.$ext"
-  quiet asd add "x-$ext/" acme/fmt-$ext --extract
+  quiet asd add "x-$ext/" acme/fmt-$ext --filter ex
   check "extract $ext" "$(git ls-files -s "x-$ext" | awk '{print $1, $4}' | oneline)" \
     "100644 x-$ext/one.txt 100755 x-$ext/run.sh 100644 x-$ext/sub/two.txt "
 done
 printf 'plain\n' | gzip > "$F/plain.txt.gz"
 release acme/gz v1 10 "$F/plain.txt.gz"
-quiet asd add plain.txt acme/gz --extract
+quiet asd add plain.txt acme/gz --filter ex
 check "extract a .gz file" "$(cat plain.txt)" "plain"
-check "extract without an archive" "$(asd add x/ acme/many-assets --extract 2>&1 >/dev/null)" \
-  "error: x/: 'extract': no archive among a1.txt, a2.txt"
-check "strip too deep" "$(asd add x/ acme/fmt-zip --extract --strip 1 2>&1)" \
-  "error: x/: 'strip 1': 'one.txt' has fewer than 1 directory to strip"
-check "subdir missing" "$(asd add x/ acme/fmt-zip --extract --subdir nope 2>&1)" \
-  "error: x/: 'subdir nope': no files there"
-check "nothing left" "$(asd add x/ acme/fmt-zip --extract --include '*.c' 2>&1)" \
+check "extract without an archive" "$(asd add x/ acme/many-assets --filter ex 2>&1 >/dev/null)" \
+  "error: x/ filter ex: 'extract': no archive among a1.txt, a2.txt"
+check "strip too deep" "$(asd add x/ acme/fmt-zip --filter ex-strip 2>&1)" \
+  "error: x/ filter ex-strip: 'strip 1': 'one.txt' has fewer than 1 directory to strip"
+check "subdir missing" "$(asd add x/ acme/fmt-zip --filter ex-subdir 2>&1)" \
+  "error: x/ filter ex-subdir: 'subdir nope': no files there"
+check "nothing left" "$(asd add x/ acme/fmt-zip --filter ex-c 2>&1)" \
   "error: x/: the filter leaves no files"
 git reset -q --hard; git clean -qfd
 
@@ -1405,18 +1424,18 @@ for kind in slip abs symlink git case winname dup; do
   for ext in zip tar; do
     mkevil "$F/evil-$kind.$ext" $kind
     release acme/evil-$kind-$ext v1 10 "$F/evil-$kind.$ext"
-    OUT=$(asd add "e/" acme/evil-$kind-$ext --extract 2>&1)
-    check "unsafe $kind ($ext): refused" "$(echo "$OUT" | grep -c '^error: e/: ')" "1"
+    OUT=$(asd add "e/" acme/evil-$kind-$ext --filter ex 2>&1)
+    check "unsafe $kind ($ext): refused" "$(echo "$OUT" | grep -c '^error: e/[ :]')" "1"
     check "unsafe $kind ($ext): nothing written" "$(ls -A e 2>/dev/null; git status --porcelain; ls ../evil.txt 2>/dev/null)" ""
   done
 done
 mkevil "$F/evil-hardlink.tar" hardlink
 release acme/evil-hardlink v1 10 "$F/evil-hardlink.tar"
-check "unsafe hardlink (tar): refused" "$(asd add e/ acme/evil-hardlink --extract 2>&1 | grep '^error')" \
-  "error: e/: evil-hardlink.tar: 'hard' is a hard link"
+check "unsafe hardlink (tar): refused" "$(asd add e/ acme/evil-hardlink --filter ex 2>&1 | grep '^error')" \
+  "error: e/ filter ex: evil-hardlink.tar: 'hard' is a hard link"
 printf 'PK\003\004broken' > "$F/broken.zip"
 release acme/broken v1 10 "$F/broken.zip"
-check "broken archive" "$(asd add e/ acme/broken --extract 2>&1 | grep -c '^error: e/: broken.zip: cannot unpack')" "1"
+check "broken archive" "$(asd add e/ acme/broken --filter ex 2>&1 | grep -c '^error: e/ filter ex: broken.zip: cannot unpack')" "1"
 
 
 # =============================================================================
@@ -1452,17 +1471,19 @@ section "21. 7z archives (an external 7-Zip)"
 cd "$T"
 FAKE7Z="\"$PYTHON\" \"$TD/fake_7z.py\""
 new_repo r21
+filt ex --extract
+filt exnd --extract --exclude doc.txt
 # x7 NAME JSON - release acme/7z-NAME with the fake archive NAME.7z
 x7() { mkfake7z "$F/$1.7z" "$2" && release acme/7z-$1 v1 10 "$F/$1.7z"; }
 x7 ok '[{"path": "a.txt", "content": "a"}, {"path": "sub", "attrs": "D drwxr-xr-x"},
         {"path": "sub/run.sh", "content": "run", "attrs": "A -rwxr-xr-x"},
         {"path": "win.txt", "content": "w", "attrs": "A"}]'
-ASSETSYNC_7Z=$FAKE7Z quiet asd add ok/ acme/7z-ok --extract
+ASSETSYNC_7Z=$FAKE7Z quiet asd add ok/ acme/7z-ok --filter ex
 check "7z: unpacked" "$(git ls-files -s ok | awk '{print $1, $4}' | oneline)" \
   "100644 ok/a.txt 100755 ok/sub/run.sh 100644 ok/win.txt "
 check "7z: listing checked first" "$(head -1 "$GH/7z.log" | cut -d' ' -f1-3)" "l -sccUTF-8 -slt"
 rm -f "$GH/7z.log"
-check "7z: older 7-Zip without -scc" "$(git reset -q --hard; FAKE_7Z_OLD=1 ASSETSYNC_7Z=$FAKE7Z asd add ok2/ acme/7z-ok --extract >/dev/null 2>&1; git ls-files ok2 | lines) $(grep -c -- '-scc' "$GH/7z.log") $(lines < "$GH/7z.log")" "3 2 4"
+check "7z: older 7-Zip without -scc" "$(git reset -q --hard; FAKE_7Z_OLD=1 ASSETSYNC_7Z=$FAKE7Z asd add ok2/ acme/7z-ok --filter ex >/dev/null 2>&1; git ls-files ok2 | lines) $(grep -c -- '-scc' "$GH/7z.log") $(lines < "$GH/7z.log")" "3 2 4"
 git reset -q --hard; rm -rf ok2
 for bad in 'unsafe|[{"path": "../evil.txt", "content": "e"}]|unsafe path' \
            'abs|[{"path": "/tmp/evil.txt", "content": "e"}]|unsafe path' \
@@ -1473,25 +1494,25 @@ for bad in 'unsafe|[{"path": "../evil.txt", "content": "e"}]|unsafe path' \
            'fail|[{"path": "a.txt", "fail": true}]|7-Zip failed: ERROR: Data Error'; do
   name=${bad%%|*}; rest=${bad#*|}; json=${rest%|*}; msg=${rest##*|}
   x7 "$name" "$json"
-  OUT=$(ASSETSYNC_7Z=$FAKE7Z asd add e/ acme/7z-$name --extract 2>&1)
-  check "7z: $name refused" "$(echo "$OUT" | grep -c "^error: e/: $name.7z.*$msg")" "1"
+  OUT=$(ASSETSYNC_7Z=$FAKE7Z asd add e/ acme/7z-$name --filter ex 2>&1)
+  check "7z: $name refused" "$(echo "$OUT" | grep -c "^error: e/ filter ex: $name.7z.*$msg")" "1"
   check "7z: $name: nothing written" "$(ls -A e 2>/dev/null; git status --porcelain; ls ../evil.txt 2>/dev/null)" ""
 done
 if ! command -v cygpath >/dev/null; then    # symbolic links: not on Windows
   x7 sneaky '[{"path": "a.txt", "content": "a"}, {"path": "x", "sneaky_link": "/etc"}]'
   check "7z: link unpacked although listed as a file: refused" \
-    "$(ASSETSYNC_7Z=$FAKE7Z asd add e/ acme/7z-sneaky --extract 2>&1 | grep '^error')" \
-    "error: e/: sneaky.7z: 'x' is no regular file"
+    "$(ASSETSYNC_7Z=$FAKE7Z asd add e/ acme/7z-sneaky --filter ex 2>&1 | grep '^error')" \
+    "error: e/ filter ex: sneaky.7z: 'x' is no regular file"
 fi
-check "7z: 7-Zip not runnable" "$(ASSETSYNC_7Z=/nonexistent/7z asd add e/ acme/7z-ok --extract 2>&1 | grep '^error' | sed 's/ (.*) / /')" \
+check "7z: 7-Zip not runnable" "$(ASSETSYNC_7Z=/nonexistent/7z asd add e/ acme/7z-ok --filter ex 2>&1 | grep '^error' | sed 's/ (.*) / /')" \
   "error: cannot run 7-Zip '/nonexistent/7z' - install it or set ASSETSYNC_7Z"
-check "7z without --extract: kept as it is" "$(ASSETSYNC_7Z=/nonexistent/7z asd add -n raw/ acme/7z-ok)" \
+check "7z without --filter ex: kept as it is" "$(ASSETSYNC_7Z=/nonexistent/7z asd add -n raw/ acme/7z-ok)" \
   "would add raw/ from acme/7z-ok v1 (ok.7z, latest release)"
 if ! command -v cygpath >/dev/null; then
   # no 7-Zip at all: a PATH with only git and Python
   mkdir -p "$T/only" && ln -sf "$(command -v git)" "$T/only/git" && ln -sf "$(command -v "$PYTHON")" "$T/only/$PYTHON"
-  check "7z: no 7-Zip" "$(PATH=$T/only "$PYTHON" "$S" add e/ acme/7z-ok --extract 2>&1 | grep '^error')" \
-    "error: e/: ok.7z is a 7z archive: unpacking it needs 7-Zip - install it (https://www.7-zip.org; 7zz or 7z) or set ASSETSYNC_7Z"
+  check "7z: no 7-Zip" "$(PATH=$T/only "$PYTHON" "$S" add e/ acme/7z-ok --filter ex 2>&1 | grep '^error')" \
+    "error: e/ filter ex: ok.7z is a 7z archive: unpacking it needs 7-Zip - install it (https://www.7-zip.org; 7zz or 7z) or set ASSETSYNC_7Z"
 fi
 
 # with the real 7-Zip, if there is one (the CI installs it)
@@ -1505,7 +1526,7 @@ else
   chmod +x "$T/s7/run.sh"
   (cd "$T/s7" && "$SZ" a -bd "$F/real.7z" inc doc.txt run.sh >/dev/null)
   release acme/real7z v1 10 "$F/real.7z"
-  quiet asd add real/ acme/real7z --extract --exclude doc.txt
+  quiet asd add real/ acme/real7z --filter exnd
   check "real 7-Zip: unpacked" "$(git ls-files real | oneline)" "real/inc/x.h real/run.sh "
   if ! command -v cygpath >/dev/null; then   # no executable bit in archives made on Windows
     check "real 7-Zip: executable" "$(git ls-files -s real/run.sh | cut -c1-6)" "100755"
@@ -1514,10 +1535,10 @@ else
     release acme/real7zlink v1 10 "$F/reallink.7z"
     # only if this 7-Zip stored the link as one (p7zip on macOS follows it)
     if "$SZ" l -slt "$F/reallink.7z" | grep -q '^Attributes = .* l'; then
-      check "real 7-Zip: symbolic link refused" "$(asd add rl/ acme/real7zlink --extract 2>&1 | grep '^error')" \
-        "error: rl/: reallink.7z: 'link' is a symbolic link"
+      check "real 7-Zip: symbolic link refused" "$(asd add rl/ acme/real7zlink --filter ex 2>&1 | grep '^error')" \
+        "error: rl/ filter ex: reallink.7z: 'link' is a symbolic link"
     else
-      check "real 7-Zip: link stored as a file: a file" "$(asd add rl/ acme/real7zlink --extract >/dev/null 2>&1; git ls-files rl | oneline)" "rl/doc.txt rl/link "
+      check "real 7-Zip: link stored as a file: a file" "$(asd add rl/ acme/real7zlink --filter ex >/dev/null 2>&1; git ls-files rl | oneline)" "rl/doc.txt rl/link "
     fi
   fi
 fi
@@ -1535,79 +1556,106 @@ printf 'fw\000' > "$F/fw.bin"
 release acme/pk v1 10 "$F/pkg.zip" "$F/fw.bin"
 new_repo r22
 # steps in the order of the options; consecutive --include make one keep
-quiet asd add o/ acme/pk --include '*.zip' --extract --include '*.h' --include '*.lib' --exclude 'z*'
-check "order: as given" "$(git config -f .git-assetsync --get-all dir.o.step | oneline)" \
+filt ord --include '*.zip' --extract --include '*.h' --include '*.lib' --exclude 'z*'
+check "order: as given" "$(git config -f .git-assetsync --get-all filter.ord.step | oneline)" \
   "keep '*.zip' extract keep '*.h' '*.lib' drop 'z*' "
+quiet asd add o/ acme/pk --filter ord
 check "order: result" "$(git ls-files o | oneline)" "o/src/x/a.h o/src/y/b.h "
 git reset -q --hard; rm -rf o
 
 # move / copy
-quiet asd add m/ acme/pk --asset pkg.zip --extract --move '*.h' include/ \
-  --move 'boards/*/app.bin' 'firmware/{parent}.bin' --copy 'lib/*.lib' 'libs/{stem}-copy{ext}' \
-  --move 'boards/' 'docs/{path}'
+filt mv --extract --move '*.h' include/ --move 'boards/*/app.bin' 'firmware/{parent}.bin' \
+  --copy 'lib/*.lib' 'libs/{stem}-copy{ext}' --move 'boards/' 'docs/{path}'
+quiet asd add m/ acme/pk --asset pkg.zip --filter mv
 check "move/copy: result" "$(git ls-files m | oneline)" \
   "m/docs/boards/boardA/README m/firmware/boardA.bin m/firmware/boardB.bin m/include/a.h m/include/b.h m/lib/z.lib m/libs/z-copy.lib "
 check "move: content follows" "$(cat m/firmware/boardB.bin)" "B"
 git commit -q --no-edit
 check "move/copy: clean" "$(st m)" ""
-check "move: collision" "$(asd add x/ acme/pk --asset pkg.zip --extract --move app.bin bin/ 2>&1 | grep '^error')" \
-  "error: x/: 'move app.bin bin/': 'boards/boardA/app.bin' and 'boards/boardB/app.bin' would both become 'bin/app.bin'"
-check "move: a pattern with '/' is anchored" "$(asd add x/ acme/pk --asset pkg.zip --extract --move '*/app.bin' bin/ 2>&1 | grep '^error')" \
-  "error: x/: 'move '*/app.bin' bin/': no files match '*/app.bin'"
-check "move: would replace" "$(asd add x/ acme/pk --asset pkg.zip --extract --move src/x/a.h src/y/b.h 2>&1 | grep '^error')" \
-  "error: x/: 'move src/x/a.h src/y/b.h': 'src/x/a.h' would replace 'src/y/b.h'"
-check "move: no match" "$(asd add x/ acme/pk --asset pkg.zip --extract --move '*.c' src/ 2>&1 | grep '^error')" \
-  "error: x/: 'move '*.c' src/': no files match '*.c'"
-check "move: unknown placeholder" "$(asd add x/ acme/pk --move '*' '{base}' 2>&1)" \
+filt coll --extract --move app.bin bin/
+filt anch --extract --move '*/app.bin' bin/
+filt repl --extract --move src/x/a.h src/y/b.h
+filt nomatch --extract --move '*.c' src/
+filt outside --extract --move '*.h' ../up/
+check "move: collision" "$(asd add x/ acme/pk --asset pkg.zip --filter coll 2>&1 | grep '^error')" \
+  "error: x/ filter coll: 'move app.bin bin/': 'boards/boardA/app.bin' and 'boards/boardB/app.bin' would both become 'bin/app.bin'"
+check "move: a pattern with '/' is anchored" "$(asd add x/ acme/pk --asset pkg.zip --filter anch 2>&1 | grep '^error')" \
+  "error: x/ filter anch: 'move '*/app.bin' bin/': no files match '*/app.bin'"
+check "move: would replace" "$(asd add x/ acme/pk --asset pkg.zip --filter repl 2>&1 | grep '^error')" \
+  "error: x/ filter repl: 'move src/x/a.h src/y/b.h': 'src/x/a.h' would replace 'src/y/b.h'"
+check "move: no match" "$(asd add x/ acme/pk --asset pkg.zip --filter nomatch 2>&1 | grep '^error')" \
+  "error: x/ filter nomatch: 'move '*.c' src/': no files match '*.c'"
+check "move: unknown placeholder" "$(git assetsync filter add bad1 --move '*' '{base}' 2>&1)" \
   "error: filter step 'move '*' '{base}'': unknown placeholder {base} (known: {path}, {dir}, {parent}, {name}, {stem}, {ext})"
-check "move: target outside" "$(asd add x/ acme/pk --asset pkg.zip --extract --move '*.h' ../up/ 2>&1 | grep -c "unsafe path '../up/a.h'")" "1"
+check "move: target outside" "$(asd add x/ acme/pk --asset pkg.zip --filter outside 2>&1 | grep -c "unsafe path '../up/a.h'")" "1"
 git status --porcelain | grep -q . && git reset -q --hard
 
 # named filters: defined once, used per asset of one release
-OUT=$(git assetsync filter set headers --extract --include '*.h' --move '*.h' include/)
-check "filter set" "$(echo "$OUT" | head -1)" \
+new_repo r22c
+OUT=$(git assetsync filter add headers --extract --include '*.h' --move '*.h' include/)
+check "filter add" "$(echo "$OUT" | head -1)" \
   "filter headers: extract, keep '*.h', move '*.h' include/ (new); .git-assetsync staged"
-quiet git assetsync filter set fw --move '*' fw/
+check "filter add: exists" "$(git assetsync filter add headers --extract 2>&1)" \
+  "error: filter 'headers' already exists (change it with 'git assetsync filter set headers ...')"
+check "filter set: unknown" "$(git assetsync filter set nope --extract 2>&1)" "error: no filter 'nope' in .git-assetsync (known: headers)"
+quiet git assetsync filter add fw --move '*' fw/
 check "filter list: not used" "$(git assetsync filter | oneline)" "fw${TAB}(1 step; not used) headers${TAB}(3 steps; not used) "
-quiet asd add v/ acme/pk --filter '*.zip' headers --filter '*.bin' fw
+quiet git assetsync filter add sdk --filter '*.zip' headers --filter '*.bin' fw
+git commit -qm filters
+quiet asd add v/ acme/pk --filter sdk
 check "filter steps: branches per asset" "$(git ls-files v | oneline)" "v/fw/fw.bin v/include/a.h v/include/b.h "
+check "entry: filter = name" "$(reg dir.v.filter) $(git config -f .git-assetsync --get-all dir.v.step)" "sdk "
 git commit -q --no-edit
-check "filter list: used by" "$(git assetsync filter | grep '^headers')" "headers${TAB}(3 steps; used by v/)"
-check "filter show" "$(git assetsync filter show headers | oneline)" "extract keep '*.h' move '*.h' include/ (used by v/) "
-check "filter remove: refused while used" "$(git assetsync filter remove fw 2>&1)" "error: filter 'fw' is used by v/"
+check "filter list: used by" "$(git assetsync filter | grep -E '^(headers|sdk)' | oneline)" \
+  "headers${TAB}(3 steps; used by filter sdk) sdk${TAB}(2 steps; used by v/) "
+check "filter show" "$(git assetsync filter show headers | oneline)" "extract keep '*.h' move '*.h' include/ (used by filter sdk) "
+check "filter remove: refused while used" "$(git assetsync filter remove fw 2>&1)" "error: filter 'fw' is used by filter sdk"
 check "clean" "$(st v)" ""
 # a changed named filter: its users are pending
 quiet git assetsync filter set headers --extract --include 'a.h' --move '*.h' include/
 check "changed filter: user pending" "$(git assetsync status | grep -c 'pending:    v/  (filter changed)')" "1"
 pullc v
 check "changed filter: pulled" "$(git ls-files v | oneline)" "v/fw/fw.bin v/include/a.h "
-# renaming changes the steps that use it, nothing else
+# renaming changes the steps and entries that use it, nothing else
 quiet git assetsync filter rename headers hdr
-check "rename: references" "$(git config -f .git-assetsync --get-all dir.v.step | oneline)" "filter '*.zip' hdr filter '*.bin' fw "
+quiet git assetsync filter rename sdk sdk2
+check "rename: references" "$(git config -f .git-assetsync --get-all filter.sdk2.step | oneline)$(reg dir.v.filter)" \
+  "filter '*.zip' hdr filter '*.bin' fw sdk2"
 check "rename: not pending" "$(st v)" ""
 git commit -q -m "rename filter"
 # errors
-check "unknown filter" "$(asd add x/ acme/pk --filter '*' nope 2>&1)" "error: unknown filter 'nope' (in 'filter '*' nope')"
-quiet git assetsync filter set a1 --include x
+check "unknown filter in a filter" "$(git assetsync filter add x --filter '*' nope 2>&1)" "error: unknown filter 'nope' (in 'filter '*' nope')"
+quiet git assetsync filter add a1 --include x
 check "filter using itself" "$(git assetsync filter set a1 --filter '*' a1 2>&1)" "error: filter 'a1' uses itself (via a1)"
-quiet git assetsync filter set a2 --filter '*' a1
+quiet git assetsync filter add a2 --filter '*' a1
 check "filters using each other" "$(git assetsync filter set a1 --filter '*' a2 2>&1)" "error: filter 'a1' uses itself (via a1 -> a2)"
-quiet git assetsync filter set ren --move '*' pkg.zip
-check "filter result collides" "$(asd add x/ acme/pk --filter 'fw.bin' ren 2>&1 | grep '^error')" \
-  "error: x/: 'filter fw.bin ren': its 'pkg.zip' collides with a file outside the filter"
-check "filter: no match" "$(asd add x/ acme/pk --filter '*.tar' fw 2>&1 | grep '^error')" \
-  "error: x/: 'filter '*.tar' fw': no files match '*.tar'"
-quiet git assetsync filter set bad --extract
-check "error in a filter: named" "$(asd add x/ acme/pk --filter fw.bin bad 2>&1 | grep '^error')" \
-  "error: x/ filter bad: 'extract': no archive among fw.bin"
-check "invalid filter name" "$(git assetsync filter set 'a b' --extract 2>&1)" \
+filt ren --move '*' pkg.zip
+filt useren --filter fw.bin ren
+check "filter result collides" "$(asd add x/ acme/pk --filter useren 2>&1 | grep '^error')" \
+  "error: x/ filter useren: 'filter fw.bin ren': its 'pkg.zip' collides with a file outside the filter"
+filt nom --filter '*.tar' fw
+check "filter: no match" "$(asd add x/ acme/pk --filter nom 2>&1 | grep '^error')" \
+  "error: x/ filter nom: 'filter '*.tar' fw': no files match '*.tar'"
+filt bad --extract
+filt usebad --filter fw.bin bad
+check "error in a nested filter: named" "$(asd add x/ acme/pk --filter usebad 2>&1 | grep '^error')" \
+  "error: x/ filter usebad filter bad: 'extract': no archive among fw.bin"
+check "invalid filter name" "$(git assetsync filter add 'a b' --extract 2>&1)" \
   "error: invalid filter name 'a b' (letters, digits, '.', '+', '-', '_')"
-check "filter set without steps" "$(git assetsync filter set e 2>&1)" \
+check "filter add without steps" "$(git assetsync filter add e 2>&1)" \
   "error: give the steps of the filter (--extract, --include, --move, ...)"
+git reset -q --hard
+# an entry with a missing filter, or with steps of its own
+git config -f .git-assetsync dir.v.filter gone
+check "entry: missing filter" "$(git assetsync status v 2>&1 | head -1)" \
+  "error: v/: filter 'gone' not found in .git-assetsync (define it with 'git assetsync filter add gone ...')"
+git config -f .git-assetsync dir.v.filter sdk2; git config -f .git-assetsync dir.v.step extract
+check "entry: steps of its own" "$(git assetsync status v 2>&1 | head -1)" \
+  "error: v/: filter steps belong to a named filter - define one with 'git assetsync filter add NAME ...' and use it with 'git assetsync set v --filter NAME'"
 git reset -q --hard
 # a registry with only filters stays
 new_repo r22b
-quiet git assetsync filter set only --extract
+quiet git assetsync filter add only --extract
 check "only a filter: registry kept" "$(git status --porcelain | oneline)" "A  .git-assetsync "
 
 

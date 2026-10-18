@@ -52,9 +52,9 @@ built the same way.
 - Built-in filters, without running any code: unpack ZIP, tar and – with
   7-Zip installed – 7z archives safely, take a subdirectory, strip leading
   directories, include or exclude files by pattern, move and copy files
-  into a new structure; named filters, reusable and applicable to some
-  files only (e.g. per asset); a directory belongs to its entry and is
-  replaced as a whole on update
+  into a new structure; filters are named, used by any number of entries
+  and by each other (e.g. per asset); a directory belongs to its entry and
+  is replaced as a whole on update
 - Follows the latest release, the newest release whose tag matches a
   pattern (e.g. `tool-*` for one of several tools released from one
   repository), or is pinned to one release; tags are taken as they are,
@@ -152,12 +152,12 @@ Each commit contains the file and its updated entry in `.git-assetsync`.
 newest release whose tag matches, `--release v1.0` pins the file to that
 release. `git assetsync source set-release` changes that later.
 
-A directory, unpacked from an archive – with a trailing `/`, it belongs to
-the entry completely:
+A directory, unpacked from an archive by a filter – with a trailing `/`,
+it belongs to the entry completely:
 
 ```sh
-git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' \
-    --extract --strip 1 --include '/*.h' --include LICENSE
+git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
+git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' --filter zlib-headers
 ```
 
 ## Commands
@@ -170,7 +170,7 @@ git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' \
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
-| `filter [ACTION …]` | list named filters; show, set, rename or remove them |
+| `filter [ACTION …]` | list filters; show, add, set, rename or remove them |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
