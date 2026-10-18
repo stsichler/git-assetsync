@@ -13,9 +13,6 @@ unpacked from a ZIP that another project publishes as release assets on
 GitHub or GitLab, see when a new release is out, and update with one
 command, in a commit that says where it came from.
 
-> git-assetsync is developed together with [Claude](https://claude.ai) by
-> Anthropic: design, code, tests and documentation.
-
 ```console
 $ git assetsync status
 Upstream changes to pull:
@@ -27,11 +24,6 @@ $ git assetsync pull bin/tool.bin
  2 files changed, 2 insertions(+), 2 deletions(-)
 ```
 
-**Status: early development.** Files and whole directories from releases
-on GitHub and GitLab, with archives unpacked, files selected and moved by
-built-in filters, and converted with tools of your own (e.g. binary → C
-source).
-
 ## Why?
 
 Projects often need a file that another project builds and publishes: a
@@ -41,11 +33,35 @@ from or whether there is a newer one. git-assetsync records for each such
 file the release and asset it comes from, tells you when a newer release
 is out, and updates the file with a meaningful commit.
 
-It is a sibling of [git-filesync](https://github.com/stsichler/git-filesync),
-which keeps single files in sync with files in other Git repositories, and
-built the same way.
+Because each file is committed in your repository, the repository stays
+**self-contained**: after a plain clone or checkout every file is there –
+unlike with downloads at build time, nothing has to be fetched from other
+projects, and neither git-assetsync nor access to GitHub or GitLab is
+needed to build.
 
-### Compared to other vendoring tools
+For single files kept in sync with files in **other Git repositories**
+there is its sibling
+[git-filesync](https://github.com/stsichler/git-filesync), built the same
+way.
+
+### Compared to downloading at build time
+
+| | Downloading at build time (scripts, build systems) | git-assetsync |
+|---|---|---|
+| What your repository contains | a URL or version number of the asset | the file itself (or the files unpacked from it), committed like any other file |
+| Cloning and building | needs network and access to the release, every time – and the release must still be there | a plain clone is complete and works on its own |
+| Which version | whatever the URL or script says; newer releases go unnoticed | `status` shows new releases; you decide when to `pull` |
+| Unpacking, selecting, converting | in each build script, its own way | once, in a named filter, and the result is committed |
+| Updating | edit the URL or version; the log shows only that | `pull`; the commit contains the actual change and names the release, with its notes |
+| For everyone else | the same downloads on every machine and CI run | nothing – only whoever updates needs git-assetsync |
+
+Downloading at build time remains the better choice for big files that
+change with every build, or when your repository must not contain them;
+git-assetsync fits when the files belong to your project's sources – a
+tool, a firmware image, a generated header – and should be versioned with
+them.
+
+### Compared to vendoring tools
 
 | | git-assetsync | [vendir](https://carvel.dev/vendir/) | [git-vendor](https://github.com/thejoshwolfe/git-vendor) |
 |---|---|---|---|
