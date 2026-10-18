@@ -214,6 +214,7 @@ git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' --filter
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
 | `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
 | `trust [NAME…]` | list the filters that run commands; trust them in this repository |
+| `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 

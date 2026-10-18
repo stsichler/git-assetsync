@@ -45,6 +45,7 @@
 #   21. 7z archives (an external 7-Zip)
 #   22. Filter steps in order, move / copy, named filters
 #   23. Commands in filters: convert, run, trust
+#   24. verify: is the committed state reproducible?
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -1770,6 +1771,55 @@ check "filter test: commands" "$(git assetsync filter test conv "$F/notes.txt" "
 check "trust: a filter without commands" "$(git assetsync trust only-steps 2>&1; filt plain --extract; git assetsync trust plain)" \
   "error: no filter 'only-steps' in .git-assetsync
 filter plain runs no commands - nothing to trust"
+
+
+# =============================================================================
+section "24. verify: is the committed state reproducible?"
+# =============================================================================
+cd "$T"
+printf 'v1\n' > "$F/vf.txt"
+release acme/vf v1 10 "$F/vf.txt" "$F/pkg.zip"
+new_repo r24
+filt hdr --extract --include '*.h' --move '*.h' include/
+filt rnd --convert '*.txt' '{name}' 'echo $$ > {out}'
+filt rnddir --copy vf.txt keep/vf.txt --convert '/vf.txt' 'gen/{stem}.c' 'echo $$ > {out}'
+quiet git assetsync trust rnd rnddir
+addc f.txt acme/vf --asset vf.txt
+addc d/ acme/vf --asset pkg.zip --filter hdr
+check "verify: all verified" "$(git assetsync verify | oneline)" "d/: verified (v1) f.txt: verified (v1) "
+check "verify: exit code 0" "$(rc git assetsync verify)" "0"
+ASSETSYNC_TRUST=all addc r.txt acme/vf --asset vf.txt --filter rnd
+ASSETSYNC_TRUST=all addc rd/ acme/vf --asset vf.txt --filter rnddir
+check "verify: not reproducible (file)" "$(git assetsync verify r.txt)" "r.txt: differs from what v1 gives now"
+check "verify: not reproducible (directory)" "$(git assetsync verify rd | oneline)" \
+  "rd/: differs from what v1 gives now: ${TAB}M${TAB}gen/vf.c "
+check "verify: exit code 1" "$(rc git assetsync verify)" "1"
+check "verify: nothing changed" "$(git status --porcelain)" ""
+# a changed filter, an entry not synced, a re-uploaded asset, a deleted release
+quiet git assetsync filter set hdr --extract --include 'a.h'
+check "verify: filter changed since the sync" "$(git assetsync verify d)" \
+  "d/: its filter changed since the sync - pull first, then verify"
+git checkout -q .git-assetsync
+printf '[file "hand.txt"]\n\tsource = acme/vf\n' >> .git-assetsync
+git config -f .git-assetsync source.acme/vf.url >/dev/null || true
+check "verify: not synced" "$(git assetsync verify hand.txt)" "hand.txt: not synced yet, nothing to verify"
+git checkout -q .git-assetsync
+printf 'v1 again\n' > "$F/vf.txt"
+reupload acme/vf v1 "$F/vf.txt"
+check "verify: asset re-uploaded" "$(git assetsync verify f.txt 2>/dev/null)" \
+  "f.txt: the assets of v1 differ from those it was synced with (re-uploaded?)"
+rm -rf "$GH/github.com/acme/vf/1"
+check "verify: release gone" "$(git assetsync verify f.txt 2>&1)" "error: f.txt: release v1 of acme/vf no longer exists"
+check "verify: exit code 2" "$(rc git assetsync verify f.txt)" "2"
+# stored differently since (moved to LFS): still the same
+if git lfs version >/dev/null 2>&1; then
+  printf 'bin\000\n' > "$F/vb.bin"
+  release acme/vb v1 10 "$F/vb.bin"
+  addc vb.bin acme/vb
+  printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' > .gitattributes && git add .gitattributes
+  git add --renormalize . && git commit -qm "to LFS"
+  check "verify: moved to LFS since" "$(git assetsync verify vb.bin)" "vb.bin: verified (v1)"
+fi
 
 
 # =============================================================================

@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`releases`](#releases)
+  - [`status`](#status) · [`pull`](#pull) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -184,6 +184,7 @@ line endings normalized) is still unmodified.
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
 | `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
 | `trust [NAME…]` | list the filters that run commands; trust them in this repository |
+| `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
@@ -553,6 +554,34 @@ filter firmware: not trusted (used by src/fw/)
   (use "git assetsync trust <name>..." or "git assetsync trust --all" to trust them in this repository)
 ```
 
+### `verify`
+
+```
+git assetsync verify [PATH…]
+```
+
+Checks that the committed state is reproducible: for each entry (default:
+all), `verify` takes the assets of the release it was synced with (not
+the newest one) from the [download cache](#download-cache) or the
+platform, applies its filter again, and compares the result with the
+recorded base (`blob` / `tree`) – as `git add` would store it, so files
+stored differently since (moved to Git LFS, line endings normalized) still
+count as the same. The working tree and the index are not touched.
+
+```console
+$ git assetsync verify
+third_party/zlib/: verified (v1.3.2)
+src/fw/: differs from what v2.1 gives now:
+	M	gen/fw.c
+```
+
+It also reports when the assets of the release differ from those the entry
+was synced with (re-uploaded), when the release no longer exists, and when
+the filter changed since the sync (`pull` first). Filters that run
+commands must be [trusted](#trust). The exit code is 0 if everything is
+verified, 1 if something differs, 2 on errors – so a CI job can check that
+nobody changed a file by hand and that the filters are deterministic.
+
 ### `install-hooks`, `uninstall-hooks`
 
 `install-hooks` installs two hooks that never block:
@@ -764,7 +793,8 @@ and macOS, the executable bit of what a command writes is kept.
 The result is recorded like any other (`blob` / `tree`), so commands only
 run on `pull`, `add` and `filter test` – never on `status`, and never on
 a clone: everyone else gets the committed files. Commands should be
-deterministic, so that the same release gives the same result.
+deterministic, so that the same release gives the same result –
+[`verify`](#verify) checks it.
 
 **Trust.** The commands come from `.git-assetsync`, a committed file:
 whoever can change it could run commands on every machine that pulls. So
@@ -984,7 +1014,7 @@ them. For GitLab sources, install `glab` in the job (and give
 | Code | Meaning |
 |---|---|
 | `0` | ok |
-| `1` | unfinished: `pull` without the commit done; `status --exit-code` with something to pull or a modified file |
+| `1` | unfinished: `pull` without the commit done; `status --exit-code` with something to pull or a modified file; `verify` found a difference |
 | `2` | error (also: `pull` refused a modified file) |
 
 `--dry-run` / `-n` exit with 0, or 2 on errors.

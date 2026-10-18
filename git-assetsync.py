@@ -181,6 +181,11 @@ command.
                                 in .git/config, never committed
         --revoke                no longer trust them
 
+    verify [PATH...]            filter the assets each entry was synced with
+                                again and compare with the recorded base:
+                                is the committed state reproducible? (exit
+                                1 if not); nothing in the repository changes
+
     releases SOURCE|URL         list the releases, newest first, marked:
                                 latest, prerelease (GitLab: upcoming), draft,
                                 selected by which [source]; also outside a
@@ -3008,6 +3013,72 @@ def human_size(n):
     return f"{n:.1f} GiB"
 
 
+def verify_one(repo, reg, entry):
+    """(ok, text) of filtering the assets an entry was synced with again and
+    comparing the result with its recorded base - without touching the
+    working tree or the index. None if there is nothing to verify."""
+    if not entry.synced or not entry.blob:
+        return None, "not synced yet, nothing to verify"
+    expand_steps(entry.steps, reg.filters)
+    if filter_hash(entry.steps, reg.filters, repo) != entry.filterhash:
+        return None, "its filter changed since the sync - pull first, then verify"
+    origin = platform_of(entry.url, entry.spec.get("type"))
+    release = origin.by_tag(entry.synced)
+    if not release:
+        raise FsError(f"release {entry.synced} of {origin.label} no longer exists")
+    assets = select_assets(release, entry.asset, origin.label, entry.is_dir)
+    trusted = ensure_trusted(repo, entry.steps, reg.filters)
+    env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
+           "ASSETSYNC_ENTRY": entry.shown}
+    st = State(entry=entry, rel=entry.rel)
+    with Work(entry.shown, repo.top, env, trusted) as work:
+        files, digest = entry_files(origin, release, assets, entry.steps, reg.filters, work)
+        if digest != (entry.digest or "").lower():
+            return False, (f"the assets of {release.tag} differ from those it was synced with "
+                           "(re-uploaded?)")
+        if not entry.is_dir:
+            (src, _), = one_file(files, entry.shown, entry.rel).values()
+            new = repo.add_file(src, entry.rel)
+            if matches_base(repo, st, new):
+                return True, f"verified ({release.tag})"
+            return False, f"differs from what {release.tag} gives now"
+        items = [("100755" if executable else "100644",
+                  repo.add_file(src, f"{entry.rel}/{name}"), name)
+                 for name, (src, executable) in sorted(files.items())]
+        new = repo.make_tree(items)
+        if tree_matches_base(repo, st, new):
+            return True, f"verified ({release.tag})"
+        p = repo.git(["diff-tree", "-r", "--no-renames", "--name-status", entry.blob, new])
+        changes = [f"\t{line}" for line in out(p).splitlines()]
+        return False, f"differs from what {release.tag} gives now:\n" + "\n".join(changes)
+
+
+def cmd_verify(ctx, repo, args):
+    """Is the committed state reproducible? Filters the assets each entry
+    was synced with again and compares the result with its base."""
+    reg = Registry(repo)
+    rc = EXIT_OK
+    entries = select_entries(repo, reg, args.paths)
+    if not entries:
+        print(f"no synced files ({REGISTRY} not found or empty)")
+    for entry in entries:
+        problem = path_problem(entry.rel)
+        try:
+            if problem:
+                raise FsError(problem)
+            ok, text = verify_one(repo, reg, entry)
+        except FsError as e:
+            error(f"{entry.shown}: {e}")
+            rc = EXIT_ERROR
+            continue
+        style = "green" if ok else "dim" if ok is None else "boldred"
+        first, _, rest = text.partition("\n")
+        print(f"{entry.shown}: {paint(first, style)}" + (f"\n{rest}" if rest else ""))
+        if ok is False:
+            rc = max(rc, EXIT_PENDING)
+    return rc
+
+
 def cmd_releases(ctx, repo, args):
     """List releases newest first, marked: latest (as the platform says),
     prerelease, draft, and which sources of this repository select them -
@@ -3543,6 +3614,10 @@ def main(argv=None):
     g.add_argument("--no-filter", action="store_true", help="use no filter")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
+    p = sub.add_parser("verify", parents=[colorp],
+                       help="filter the synced assets again and compare with what is committed")
+    p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
+
     p = sub.add_parser("releases", parents=[colorp],
                        help="list the releases of a source (and their assets)")
     p.add_argument("source", metavar="SOURCE|URL",
@@ -3661,7 +3736,7 @@ def main(argv=None):
         return {"status": cmd_status, "pull": cmd_pull, "add": cmd_add,
                 "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv,
                 "source": cmd_source, "filter": cmd_filter,
-                "trust": cmd_trust}[args.cmd](ctx, repo, args)
+                "trust": cmd_trust, "verify": cmd_verify}[args.cmd](ctx, repo, args)
     except FsError as e:
         error(str(e))
         return EXIT_ERROR
