@@ -6,7 +6,9 @@
     <path d="M12 22L36 34V70L12 58Z" fill="#F05133" stroke="#F05133" stroke-width="3"/>
     <path d="M36 34L60 22V58L36 70Z" fill="#C9401F" stroke="#C9401F" stroke-width="3"/>
     <path d="M24 16L48 28V38" fill="none" stroke="#FFFFFF" stroke-opacity=".7" stroke-width="4"/>
-    <!-- synced file -->
+    <!-- synced files: several -->
+    <path d="M80 44H112L126 58V104H80Z" fill="#A8DBB5" stroke="#A8DBB5" stroke-width="4"/>
+    <path d="M74 50H106L120 64V110H74Z" fill="#6CC287" stroke="#6CC287" stroke-width="4"/>
     <path d="M68 56H100L114 70V116H68Z" fill="#2DA44E" stroke="#2DA44E" stroke-width="4"/>
     <path d="M100 56V70H114" fill="#FFFFFF" fill-opacity=".45" stroke="#FFFFFF" stroke-width="3"/>
     <path d="M77 82H105M77 92H105M77 102H95" stroke="#FFFFFF" stroke-width="5"/>
