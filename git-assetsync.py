@@ -2464,16 +2464,13 @@ def cmd_status(ctx, repo, args):
     reg = Registry(repo)
     entries = select_entries(repo, reg, args.paths)
     if not entries:
-        if not (args.hook or args.short):
+        if not args.short:
             print(f"no synced files ({REGISTRY} not found or empty)")
         return EXIT_OK
     sts = [evaluate(ctx, repo, e) for e in entries]
     attention = [st for st in sts if st.error or st.pending or st.modified]
     rc = EXIT_ERROR if any(st.error for st in sts) else \
         EXIT_PENDING if args.exit_code and attention else EXIT_OK
-    if args.hook:                   # hooks installed before 0.10 (now: hook)
-        hook_reminders(sts)
-        return rc
     for st in sts:
         if st.error:
             report_error(st)
@@ -3838,7 +3835,6 @@ def main(argv=None):
                    help="also list all files with their sources")
     p.add_argument("--exit-code", action="store_true",
                    help="exit with 1 if something is to pull or a file is modified")
-    p.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)   # before 0.10
     p.add_argument("--no-fetch", action="store_true",
                    help="don't ask the platform for new releases")
 

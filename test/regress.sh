@@ -939,8 +939,6 @@ check "pre-push hook: git-assetsync missing never blocks" \
   "$(HOME=$T/nohome sh .git/hooks/pre-push >/dev/null 2>&1; echo $?)" "0"
 check "install-hooks: again" "$(git assetsync install-hooks | oneline)" \
   "pre-push: already installed post-merge: already installed "
-check "status --hook: still there (old hooks)" "$(git assetsync status --hook 2>&1 | head -1)" \
-  "assetsync: dr.txt: upstream pending (v1 -> v2)"
 check "uninstall-hooks" "$(git assetsync uninstall-hooks | oneline)" "pre-push: removed post-merge: removed "
 # hooks of an older version are updated in place
 printf '#!/bin/sh\necho before\n# git-assetsync: remind about new releases to pull (never blocks)\ngit assetsync status --hook </dev/null || true\necho after\n' > .git/hooks/pre-push
