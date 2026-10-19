@@ -78,7 +78,6 @@ command.
         -v, --verbose           also list all files with their sources
         --exit-code             exit 1 if something is to pull or a file is
                                 modified
-        --hook                  terse output on stderr (for git hooks)
         --no-fetch              don't ask the platform for new releases
 
     pull PATH... | --all        update the files (directories) to the selected
@@ -219,8 +218,11 @@ command.
         -n N, --all             the newest N releases (default 10), or all
         --type github|gitlab    platform of the URL's host
 
-    install-hooks               install pre-push/post-merge reminder hooks
+    install-hooks               install pre-push/post-merge hooks (or update
+                                them): reminders about new releases, local
+                                modifications, errors
     uninstall-hooks             remove them again
+    hook pre-push|post-merge    what the installed hooks run
 
     Common options:
         --color[=WHEN], --no-color  always, never or auto (default)
@@ -270,10 +272,14 @@ from urllib.request import urlopen
 __version__ = "0.9.0"
 REGISTRY = ".git-assetsync"
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
+EXIT_REFUSED = 3          # hook pre-push: refuse the push (none of its checks does yet)
 HOOK_MARKER = "git-assetsync"
+# What the installed hooks run - an interface, so that later versions need no
+# reinstall. Only EXIT_REFUSED blocks a push; any other failure (e.g.
+# git-assetsync not installed) never does.
 HOOKS = {
-    "pre-push": "git assetsync status --hook",
-    "post-merge": "git assetsync status --hook --no-fetch",
+    "pre-push": f'git assetsync hook pre-push "$@" || [ $? -ne {EXIT_REFUSED} ] || exit 1',
+    "post-merge": 'git assetsync hook post-merge "$@" </dev/null || true',
 }
 REGISTRY_HEADER = ("# git-assetsync: files and directories of this repository that are taken\n"
                    "# from release assets of other projects. Maintained by 'git assetsync';\n"
@@ -2465,15 +2471,8 @@ def cmd_status(ctx, repo, args):
     attention = [st for st in sts if st.error or st.pending or st.modified]
     rc = EXIT_ERROR if any(st.error for st in sts) else \
         EXIT_PENDING if args.exit_code and attention else EXIT_OK
-    if args.hook:
-        for st in attention:
-            print(f"assetsync: {paint(st.entry.shown, 'yellow', 'err')}: "
-                  f"{render(describe(st), 'err')}", file=sys.stderr)
-        if any(st.pending for st in attention):
-            print("assetsync: run 'git assetsync pull <file>' to update", file=sys.stderr)
-        if any(st.modified for st in attention):
-            print("assetsync: see 'git assetsync status' for local modifications",
-                  file=sys.stderr)
+    if args.hook:                   # hooks installed before 0.10 (now: hook)
+        hook_reminders(sts)
         return rc
     for st in sts:
         if st.error:
@@ -2483,6 +2482,27 @@ def cmd_status(ctx, repo, args):
     else:
         print_long(ctx, repo, sts, args.verbose)
     return rc
+
+
+def hook_reminders(sts):
+    """Terse notes on stderr about entries needing attention: something to
+    pull, local modifications, an error."""
+    attention = [st for st in sts if st.error or st.pending or st.modified]
+    for st in attention:
+        print(f"assetsync: {paint(st.entry.shown, 'yellow', 'err')}: "
+              f"{render(describe(st), 'err')}", file=sys.stderr)
+    if any(st.pending for st in attention):
+        print("assetsync: run 'git assetsync pull <file>' to update", file=sys.stderr)
+    if any(st.modified for st in attention):
+        print("assetsync: see 'git assetsync status' and 'git assetsync diff <file>' for "
+              "local modifications", file=sys.stderr)
+
+
+def cmd_hook(ctx, repo, args):
+    """Run by the installed hooks (HOOKS): reminders on stderr. Exit code
+    EXIT_REFUSED only to refuse a push (no check does that yet)."""
+    hook_reminders([evaluate(ctx, repo, e) for e in Registry(repo).entries()])
+    return EXIT_OK
 
 
 def release_lines(release, assets, filter_name=None, stats=None):
@@ -2775,12 +2795,24 @@ def propose_message(repo, msg):
     return True
 
 
+def shown_path(repo, path):
+    """A path outside the working tree (e.g. in .git) as shown to the user:
+    relative to the current directory if possible."""
+    try:
+        return Path(os.path.relpath(path, repo.base)).as_posix()
+    except ValueError:            # Windows: another drive
+        return Path(path).as_posix()
+
+
 def commit_hint(repo, name, msg, rels=None):
     """(command, note) for committing staged changes with the proposed
     message: a plain `git commit` if the message could be prepared for it
     (see propose_message), otherwise one with a message file."""
     if propose_message(repo, msg):
-        return "git commit", "it offers the proposed commit message"
+        # git drops SQUASH_MSG after any commit (also one that didn't use
+        # it) and on reset; our copy stays until the next proposal
+        copy = shown_path(repo, repo.state_file("ASSETSYNC_", "SQUASH_MSG"))
+        return "git commit", f"it offers the proposed commit message; a copy stays in {copy}"
     _, cmd = message_file(repo, name, msg, rels)
     return cmd, "a plain 'git commit' won't offer the proposed message: .git/SQUASH_MSG is in use"
 
@@ -3711,13 +3743,15 @@ def hook_dir(repo, action):
 
 
 def hook_snippet(cmd):
-    return (f"# {HOOK_MARKER}: remind about new releases to pull (never blocks)\n"
-            f"{cmd} </dev/null || true\n")
+    return (f"# {HOOK_MARKER}: reminders about synced files; blocks a push only if "
+            "git-assetsync refuses it\n"
+            f"{cmd}\n")
 
 
 def is_our_hook_line(line):
     s = line.strip()
-    return s.startswith(f"# {HOOK_MARKER}:") or s.startswith("git assetsync status --hook")
+    return s.startswith((f"# {HOOK_MARKER}:", "git assetsync hook ",
+                         "git assetsync status --hook"))     # the latter: before 0.10
 
 
 def cmd_install_hooks(repo, args):
@@ -3727,10 +3761,20 @@ def cmd_install_hooks(repo, args):
         f = hookdir / name
         snippet = hook_snippet(cmd)
         if f.exists():
-            if HOOK_MARKER in f.read_text(encoding="utf-8", errors="replace"):
+            text = f.read_bytes().decode("utf-8", "replace")
+            lines = text.splitlines(keepends=True)
+            at = next((i for i, ln in enumerate(lines) if is_our_hook_line(ln)), None)
+            if at is None:
+                print(f"{name}: {paint('hook exists', 'yellow')}, add these lines to {f}:\n{snippet}")
+                continue
+            # ours: replace our lines with the current ones, in the same place
+            rest = [ln for ln in lines if not is_our_hook_line(ln)]
+            new = "".join(rest[:at] + [snippet] + rest[at:])
+            if new == text:
                 print(f"{name}: already installed")
             else:
-                print(f"{name}: {paint('hook exists', 'yellow')}, add these lines to {f}:\n{snippet}")
+                f.write_bytes(new.encode("utf-8"))
+                print(f"{name}: {paint('updated', 'green')}")
             continue
         f.write_bytes(("#!/bin/sh\n" + snippet + "exit 0\n").encode())
         f.chmod(0o755)
@@ -3794,7 +3838,7 @@ def main(argv=None):
                    help="also list all files with their sources")
     p.add_argument("--exit-code", action="store_true",
                    help="exit with 1 if something is to pull or a file is modified")
-    p.add_argument("--hook", action="store_true", help="terse output for git hooks")
+    p.add_argument("--hook", action="store_true", help=argparse.SUPPRESS)   # before 0.10
     p.add_argument("--no-fetch", action="store_true",
                    help="don't ask the platform for new releases")
 
@@ -4003,9 +4047,11 @@ def main(argv=None):
     p.add_argument("--all", action="store_true", help="trust all filters that run commands")
     p.add_argument("--revoke", action="store_true", help="no longer trust the filters NAME")
 
-    sub.add_parser("install-hooks", parents=[colorp],
-                   help="install pre-push/post-merge reminder hooks")
-    sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the reminder hooks again")
+    sub.add_parser("install-hooks", parents=[colorp], help="install the pre-push/post-merge hooks")
+    sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the hooks again")
+    p = sub.add_parser("hook", parents=[colorp], help="what the installed hooks run")
+    p.add_argument("name", choices=list(HOOKS))
+    p.add_argument("hook_args", nargs=argparse.REMAINDER, help="the hook's arguments")
 
     argv = list(sys.argv[1:] if argv is None else argv)
     extra = []
@@ -4030,8 +4076,10 @@ def main(argv=None):
             return cmd_install_hooks(repo, args)
         if args.cmd == "uninstall-hooks":
             return cmd_uninstall_hooks(repo, args)
+        if args.cmd == "hook":
+            args.no_fetch = args.name == "post-merge"    # pre-push: online anyway
         ctx = Context(args)
-        return {"status": cmd_status, "pull": cmd_pull, "diff": cmd_diff,
+        return {"hook": cmd_hook, "status": cmd_status, "pull": cmd_pull, "diff": cmd_diff,
                 "difftool": cmd_difftool, "add": cmd_add,
                 "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv,
                 "source": cmd_source, "filter": cmd_filter,

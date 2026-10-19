@@ -301,7 +301,7 @@ release --title "Tool 1.0" acme/tool v1.0 10 "$F/tool-1.0.bin"
 new_repo r1
 OUT=$(asd add bin/tool.bin acme/tool --asset 'tool-*.bin' 2>&1)
 check "add stages, like git add" "$(git status --porcelain | oneline)" "A  .git-assetsync A  bin/tool.bin "
-check "add: says how to commit" "$(echo "$OUT" | grep -cxE '    git commit|\(it offers the proposed commit message\)')" "2"
+check "add: says how to commit" "$(echo "$OUT" | grep -cxE '    git commit|\(it offers the proposed commit message; a copy stays in \.git/ASSETSYNC_SQUASH_MSG\)')" "2"
 check "add: file is the asset" "$(cat bin/tool.bin)" "tool 1.0"
 check "add: source" "$(reg source.acme/tool.url)" "https://github.com/acme/tool"
 check "add: no release key (latest)" "$(reg source.acme/tool.release)" ""
@@ -703,6 +703,13 @@ check "two adds: proposals collected" "$(grep -c '^Add ' .git/SQUASH_MSG)" "2"
 git commit -q --no-edit
 check "commit takes both" "$(git log -1 --format=%B | grep -c '^Add ')" "2"
 check "SQUASH_MSG removed by git" "$(ls .git/SQUASH_MSG 2>/dev/null)" ""
+check "... the copy stays" "$(grep -c '^Add ' .git/ASSETSYNC_SQUASH_MSG)" "2"
+mkdir -p sub
+check "copy: path relative to the current directory" \
+  "$(cd sub && git assetsync add p3.txt acme/p --asset p.txt 2>&1 | grep -o 'a copy stays in .*')" \
+  "a copy stays in ../.git/ASSETSYNC_SQUASH_MSG)"
+git commit -q -m "another message"
+check "copy: a commit without it" "$(ls .git/SQUASH_MSG 2>/dev/null; grep -c '^Add sub/p3.txt' .git/ASSETSYNC_SQUASH_MSG)" "1"
 asset p.txt "p 2"
 release acme/p v2 11 "$F/p.txt"
 OUT=$(git assetsync pull --no-commit p1.txt 2>&1)
@@ -919,14 +926,30 @@ section "13. Hooks and colors"
 # =============================================================================
 cd "$T/r12"
 check "install-hooks" "$(git assetsync install-hooks | oneline)" "pre-push: installed post-merge: installed "
-check "hook runs status --hook" "$(sh .git/hooks/post-merge 2>&1 | head -1)" ""
+check "hook runs 'hook post-merge'" "$(grep -c '^git assetsync hook post-merge "\$@" </dev/null || true$' .git/hooks/post-merge)" "1"
+check "hook: nothing to report" "$(sh .git/hooks/post-merge 2>&1 | head -1)" ""
 echo changed > dr.txt
 check "hook output" "$(sh .git/hooks/post-merge 2>&1 | head -1)" \
   "assetsync: dr.txt: local modifications NOT ALLOWED"
 git checkout -q dr.txt
 check "pre-push hook sees new releases" "$(sh .git/hooks/pre-push 2>&1 | head -1)" \
   "assetsync: dr.txt: upstream pending (v1 -> v2)"
+check "pre-push hook: exit 0" "$(rc sh .git/hooks/pre-push)" "0"
+check "pre-push hook: git-assetsync missing never blocks" \
+  "$(HOME=$T/nohome sh .git/hooks/pre-push >/dev/null 2>&1; echo $?)" "0"
+check "install-hooks: again" "$(git assetsync install-hooks | oneline)" \
+  "pre-push: already installed post-merge: already installed "
+check "status --hook: still there (old hooks)" "$(git assetsync status --hook 2>&1 | head -1)" \
+  "assetsync: dr.txt: upstream pending (v1 -> v2)"
 check "uninstall-hooks" "$(git assetsync uninstall-hooks | oneline)" "pre-push: removed post-merge: removed "
+# hooks of an older version are updated in place
+printf '#!/bin/sh\necho before\n# git-assetsync: remind about new releases to pull (never blocks)\ngit assetsync status --hook </dev/null || true\necho after\n' > .git/hooks/pre-push
+check "install-hooks: old hook updated" "$(git assetsync install-hooks | head -1)" "pre-push: updated"
+check "... in place" "$(grep -v '^#' .git/hooks/pre-push | oneline)" \
+  'echo before git assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1 echo after '
+quiet git assetsync uninstall-hooks
+check "... uninstall keeps the rest" "$(oneline < .git/hooks/pre-push)" "#!/bin/sh echo before echo after "
+rm .git/hooks/pre-push
 printf '#!/bin/sh\necho mine\n' > .git/hooks/post-merge
 check "existing hook: not touched" "$(git assetsync install-hooks | grep -c 'post-merge: hook exists')" "1"
 check "colors: --color=always" "$(git assetsync status -s --color=always | grep -c "$(printf '\033')")" "1"

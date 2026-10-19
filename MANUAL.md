@@ -204,7 +204,7 @@ the command; `git assetsync <command> -h` lists them.
 ### `status`
 
 ```
-git assetsync status [PATH…] [-s] [-v] [--exit-code] [--hook] [--no-fetch]
+git assetsync status [PATH…] [-s] [-v] [--exit-code] [--no-fetch]
 ```
 
 Shows the state of the files and directories (default: all) in sections
@@ -250,7 +250,6 @@ shown as usual. The hints in parentheses follow `advice.statusHints`.
 | `-s`, `--short` | one line per file with something to report, three columns like `git status -s`: upstream (`P` pending, `N` new, `E` error), committed (`A` modified), working tree (`M` modified, `D` deleted, `?` not committed yet) |
 | `-v`, `--verbose` | also list all files with asset, source, release selection and synced release |
 | `--exit-code` | exit with 1 if something is to pull or a file is modified |
-| `--hook` | terse output on stderr, for hooks (see [`install-hooks`](#install-hooks-uninstall-hooks)) |
 | `--no-fetch` | don't ask GitHub or GitLab for new releases: only local modifications are shown, see [Offline operation](#offline-operation) |
 
 Like `git status`, it exits with 0 unless `--exit-code` is given; errors
@@ -692,17 +691,30 @@ nobody changed a file by hand and that the filters are deterministic.
 
 ### `install-hooks`, `uninstall-hooks`
 
-`install-hooks` installs two hooks that never block:
+`install-hooks` installs two hooks that report on stderr:
 
-- `pre-push`: `git assetsync status --hook` – reminds of new releases and
-  local modifications before pushing
-- `post-merge`: `git assetsync status --hook --no-fetch` – reminds of local
-  modifications after `git pull`/`git merge`, without asking GitHub or GitLab
+- `pre-push` – reminds of new releases, local modifications and errors
+  before pushing
+- `post-merge` – reminds of local modifications after `git pull`/`git
+  merge`, without asking GitHub or GitLab
 
-Existing hooks are not changed; `install-hooks` prints the lines to add
-instead. `uninstall-hooks` removes the hooks, or only its lines from hooks
-that contain other commands as well. With `core.hooksPath` set, the hooks
-go there (with a warning, since other repositories may use it).
+```
+assetsync: bin/tool: upstream pending (v1.0 -> v1.1)
+assetsync: run 'git assetsync pull <file>' to update
+```
+
+They never block – not even if git-assetsync itself fails or is missing.
+The hooks run `git assetsync hook pre-push` / `hook post-merge` (like `git
+lfs pre-push`), which are not meant to be run by hand; so later versions
+can change what the hooks do without reinstalling them. Only the exit code
+3 of `hook pre-push` would refuse a push, as in git-filesync; no check of
+git-assetsync does that yet.
+
+Existing hooks of others are not changed; `install-hooks` prints the lines
+to add instead. Hooks installed by an older version are updated in place
+(`updated`). `uninstall-hooks` removes the hooks, or only its lines from
+hooks that contain other commands as well. With `core.hooksPath` set, the
+hooks go there (with a warning, since other repositories may use it).
 
 ## Further topics
 
@@ -986,6 +998,12 @@ Code); proposals of several commands are collected, and git removes the
 file after the commit. If `.git/SQUASH_MSG` is in use by git itself (after
 `git merge --squash`), it is left alone, and the command prints a
 `git commit -F` command with a message file instead.
+
+A copy stays in `.git/ASSETSYNC_SQUASH_MSG` until the next proposal (the
+path is printed along with the hint to commit). It brings the message back
+if `SQUASH_MSG` is gone – after a commit that was aborted with an empty
+message and then made with another one, after `git reset`, or after `git
+commit -m`: `git commit -e -F .git/ASSETSYNC_SQUASH_MSG`.
 
 ### GitHub and GitLab access
 
