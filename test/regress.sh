@@ -1517,6 +1517,8 @@ quiet git assetsync cache prune
 check "cache prune: leftovers" "$(ls -a "$ASSETSYNC_CACHE/sha256" | grep -c tmp)" "0"
 check "cache clear" "$(git assetsync cache clear | tail -1)" "removed 1 file (9 bytes) from the download cache"
 check "cache: empty" "$(git assetsync cache list | grep -c 'is empty')" "1"
+check "cache prune: nothing recent, no hint about it" "$(git assetsync cache prune)" \
+  "removed 0 files (0 bytes) from the download cache"
 check "cache prune --max-size: bad size" "$(git assetsync cache prune --max-size lots 2>&1)" \
   "error: 'lots' is not a size like 500M or 2G"
 check "cache: bad cacheMaxAge" "$(git -c assetsync.cacheMaxAge=soon assetsync cache 2>&1)" \

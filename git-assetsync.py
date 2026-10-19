@@ -3914,9 +3914,11 @@ def cmd_cache(args):
         for item in removed:
             print(f"{verb} {describe_cached(item).lstrip()}")
         size = sum(s for _, s, _, _ in removed)
+        # kept only because they were just used (prune never removes those)
+        recent = action == "prune" and \
+            any(time.time() - used < CACHE_GRACE for _, _, used, _ in cache_files())
         print(f"{verb} {plural(len(removed), 'file')} ({human_size(size)}) from the download "
-              f"cache" + ("" if removed or action == "clear" else
-                          " - files used in the last minutes are kept"))
+              f"cache" + (" - files used in the last minutes are kept" if recent else ""))
         return EXIT_OK
     files = cache_files()
     max_age, max_size = cache_limits()
