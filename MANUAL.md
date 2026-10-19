@@ -392,8 +392,9 @@ git assetsync difftool -d --upstream third_party/zlib
 ```
 
 The directories are temporary copies; files that are the same as in the
-working tree are linked to it where the system allows (as `git difftool
--d` does), so edits to them are kept. Binary files can only be shown as
+working tree are linked to it (as `git difftool -d` does), so edits to
+them are kept – except on Windows, where they are copies (symbolic links
+need a privilege there; `-- --symlinks` to use them anyway). Binary files can only be shown as
 different by most tools.
 
 

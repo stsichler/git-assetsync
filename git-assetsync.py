@@ -2684,7 +2684,11 @@ def cmd_difftool(ctx, repo, args):
     if args.dir_diff:
         left = repo.make_tree([i for _, items, _ in groups for i in items])
         right = repo.make_tree([i for _, _, items in groups for i in items])
-        subprocess.run(["git", "difftool", "-d"] + args.extra + [left, right], cwd=repo.top)
+        # links to working tree files fail on Windows without the privilege
+        # for symbolic links: copies there (--symlinks after -- overrides)
+        copies = ["--no-symlinks"] if os.name == "nt" else []
+        subprocess.run(["git", "difftool", "-d"] + copies + args.extra + [left, right],
+                       cwd=repo.top)
         return rc
     pairs = []          # (state, path, base id or None, other id or None)
     for st, base, other in groups:
