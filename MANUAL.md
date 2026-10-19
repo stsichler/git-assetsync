@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases)
+  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -179,6 +179,7 @@ line endings normalized) is still unmodified.
 | `status [PATH…]` | state of the entries, like `git status` |
 | `pull PATH…`, `pull --all` | update files and directories to the selected release (or once another one) and commit |
 | `diff [PATH…]` | local modifications against what the release gave; what `pull` would bring |
+| `difftool [PATH…]` | the same in your difftool, file by file or (`-d`) as two directories |
 | `add PATH SOURCE` | take a file or directory from release assets |
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `unlink PATH…` | remove entries (the files are kept) |
@@ -353,7 +354,48 @@ what a `pull` command line would do, replace `pull` by `diff --upstream`
 `--exit-code` or `--quiet` after `--`, the exit code is 1 if there are
 differences, like `git diff`; otherwise 0, or 2 on errors.
 
-### `add`
+### `difftool`
+
+```
+git assetsync difftool [PATH…] [--committed | --upstream [--release TAG|PATTERN]]
+                       [-d] [-y | --prompt] [-- OPTS]
+```
+
+The same as [`diff`](#diff), in your difftool (`diff.tool`, e.g. Meld);
+`OPTS` go to `git difftool` (e.g. `-t meld`).
+
+| Option | Effect |
+|---|---|
+| `--committed`, `--upstream`, `--release` | as for `diff` |
+| `-d`, `--dir-diff` | all files at once, as two directories |
+| `-y`, `--no-prompt` | don't ask before each file |
+| `--prompt` | ask even for explicitly given paths |
+
+**File by file** (the default), like `git difftool`: the left side is a
+temporary copy of what the release gave, in a directory named after it
+(`synced-v1.0/`); the right side is the working file itself – so edits
+made in the tool are kept – or with `--upstream` / `--committed` a
+temporary copy (`upstream-v1.1/`, `committed-HEAD/`). A file that is
+missing on one side is compared with an empty file. Without path
+arguments, `difftool` asks before each file (`Viewing (1/3):
+'third_party/zlib/zlib.h'` / `Launch 'meld' [Y/n/q]?`; Enter = yes, `q`
+= stop); `-y` / `--no-prompt` or `difftool.prompt = false` skip the
+questions, `--prompt` asks even for explicitly given paths.
+
+**As two directories** (`-d`), with `git difftool --dir-diff`: one call of
+the tool for all files that differ – useful for directory entries, e.g.
+to see in Meld which files a new release adds, removes or changes before
+pulling it:
+
+```sh
+git assetsync difftool -d --upstream third_party/zlib
+```
+
+The directories are temporary copies; files that are the same as in the
+working tree are linked to it where the system allows (as `git difftool
+-d` does), so edits to them are kept. Binary files can only be shown as
+different by most tools.
+
 
 ```
 git assetsync add PATH SOURCE [--asset PATTERN] [--release TAG|PATTERN] [--prerelease]

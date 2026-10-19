@@ -107,6 +107,17 @@ command.
                                 bring (as with pull: replace `pull` by
                                 `diff --upstream` to see what it would do)
 
+    difftool [PATH...] [-- OPTS]  the same in the difftool (diff.tool), file by
+                                file (asks first if no PATH is given); OPTS go
+                                to `git difftool` (e.g. -t meld); the working
+                                file itself is passed, the other sides as
+                                temporary copies
+        --committed, --upstream, --release  as for diff
+        -d, --dir-diff          all files at once, as two directories (e.g. a
+                                directory entry in Meld; temporary copies)
+        -y, --no-prompt         don't ask before each file
+        --prompt                ask even if PATHs are given
+
     add PATH SOURCE             take the file PATH from an asset of the
                                 release SOURCE selects - or with PATH/ (or
                                 an existing directory) the directory, which
@@ -2576,9 +2587,10 @@ def head_items(repo, entry):
 
 
 def diff_items(ctx, repo, reg, args):
-    """(rc, base items, other items) of all entries that differ: other = the
-    working tree, HEAD (--committed) or what pull would install (--upstream)."""
-    rc, left, right = EXIT_OK, [], []
+    """(rc, [(state, base items, other items)]) of all entries that differ:
+    other = the working tree, HEAD (--committed) or what pull would install
+    (--upstream)."""
+    rc, groups = EXIT_OK, []
     for entry in select_entries(repo, reg, args.paths):
         st = evaluate(ctx, repo, entry)
         if st.error:
@@ -2597,22 +2609,28 @@ def diff_items(ctx, repo, reg, args):
                 other = head_items(repo, entry)
             else:
                 other = repo.worktree_items(entry.rel)
-            left += entry_paths(repo, base_items(repo, entry))
-            right += entry_paths(repo, other)
+            groups.append((st, entry_paths(repo, base_items(repo, entry)),
+                           entry_paths(repo, other)))
         except FsError as e:
             error(f"{entry.shown}: {e}")
             rc = EXIT_ERROR
-    return rc, left, right
+    return rc, groups
+
+
+def diff_groups(ctx, repo, args):
+    """Checks the options of diff / difftool and evaluates the entries."""
+    if args.release and not args.upstream:
+        raise FsError("--release requires --upstream")
+    ctx.fetch, ctx.override = args.upstream, args.release
+    return diff_items(ctx, repo, Registry(repo), args)
 
 
 def cmd_diff(ctx, repo, args):
     """One `git diff <tree> <tree>` over all entries that differ: real paths,
     the repository's diff settings and pager, options after `--`."""
-    if args.release and not args.upstream:
-        raise FsError("--release requires --upstream")
-    ctx.fetch, ctx.override = args.upstream, args.release
-    reg = Registry(repo)
-    rc, left, right = diff_items(ctx, repo, reg, args)
+    rc, groups = diff_groups(ctx, repo, args)
+    left = [i for _, items, _ in groups for i in items]
+    right = [i for _, _, items in groups for i in items]
     if not left and not right:
         return rc
     color = {"always": ["--color=always"], "never": ["--no-color"]}.get(args.color, [])
@@ -2624,6 +2642,91 @@ def cmd_diff(ctx, repo, args):
         rc = EXIT_ERROR
     elif p.returncode == 1 and ("--exit-code" in args.extra or "--quiet" in args.extra):
         rc = max(rc, EXIT_PENDING)      # like `git diff --exit-code`: 1 = differences
+    return rc
+
+
+def difftool_prompting(repo, args):
+    """Ask before each file like `git difftool`: by default only when no paths
+    were given; -y/--no-prompt and difftool.prompt=false turn it off,
+    --prompt turns it on."""
+    if args.prompt:
+        return True
+    if args.no_prompt or args.paths:
+        return False
+    return out(repo.git(["config", "--type=bool", "difftool.prompt"], check=False)) != "false"
+
+
+def difftool_name(repo, extra):
+    for i, a in enumerate(extra):              # -t TOOL / --tool=TOOL passed after --
+        if a.startswith("--tool="):
+            return a.split("=", 1)[1]
+        if a in ("-t", "--tool") and i + 1 < len(extra):
+            return extra[i + 1]
+    for key in ("diff.tool", "merge.tool"):
+        name = out(repo.git(["config", key], check=False))
+        if name:
+            return name
+    return "difftool"
+
+
+def safe_name(text):
+    return re.sub(r"[^A-Za-z0-9._-]", "_", text)
+
+
+def cmd_difftool(ctx, repo, args):
+    """diff in the configured difftool: file by file (temp copies named
+    synced-<tag>, upstream-<tag>, committed-HEAD; without --upstream /
+    --committed the real working file, so edits made in the tool are kept),
+    or with -d both sides as directories (`git difftool -d` of two trees)."""
+    rc, groups = diff_groups(ctx, repo, args)
+    if not groups:
+        return rc
+    if args.dir_diff:
+        left = repo.make_tree([i for _, items, _ in groups for i in items])
+        right = repo.make_tree([i for _, _, items in groups for i in items])
+        subprocess.run(["git", "difftool", "-d"] + args.extra + [left, right], cwd=repo.top)
+        return rc
+    pairs = []          # (state, path, base id or None, other id or None)
+    for st, base, other in groups:
+        old = {path: (m, o) for m, o, path in base}
+        new = {path: (m, o) for m, o, path in other}
+        for path in sorted(set(old) | set(new)):
+            if old.get(path) != new.get(path):
+                pairs.append((st, path, (old.get(path) or (None, None))[1],
+                              (new.get(path) or (None, None))[1]))
+    prompt = difftool_prompting(repo, args)
+    tool = difftool_name(repo, args.extra)
+    with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
+        for n, (st, path, base, other) in enumerate(pairs, 1):
+            if prompt:
+                print(f"\nViewing ({n}/{len(pairs)}): '{shown(repo, path)}'")
+                print(f"Launch '{tool}' [Y/n/q]? ", end="", flush=True)
+                answer = sys.stdin.readline()
+                if not answer or answer.strip().lower().startswith("q"):   # EOF or quit
+                    print()
+                    break
+                if answer.strip().lower().startswith("n"):
+                    continue
+
+            def tmpfile(label, oid):
+                """The blob in working tree form (empty if none), named like
+                the file, in a directory named label."""
+                f = Path(td) / str(n) / safe_name(label) / Path(path).name    # keep the extension
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_bytes(repo.checkout_form(oid, path) if oid else b"")
+                return str(f)
+            synced = st.entry.synced or "none"
+            left = tmpfile(f"synced-{synced}", base)
+            if args.upstream:
+                right = tmpfile(f"upstream-{st.release.tag}", other)
+            elif args.committed:
+                right = tmpfile("committed-HEAD", other)
+            elif other:
+                right = str(repo.top / path)
+            else:
+                right = tmpfile("deleted", None)
+            subprocess.run(["git", "difftool", "--no-index", "-y"] + args.extra + [left, right],
+                           cwd=repo.top)
     return rc
 
 
@@ -3704,17 +3807,26 @@ def main(argv=None):
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="only report what would happen")
 
-    p = sub.add_parser("diff", parents=[colorp],
-                       help="show local modifications against what the release gave",
-                       epilog="Options after '--' are passed to git diff.")
-    p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
-    g = p.add_mutually_exclusive_group()
-    g.add_argument("--upstream", action="store_true",
-                   help="what 'pull' would bring instead (synced -> selected release)")
-    g.add_argument("--committed", action="store_true",
-                   help="only the committed modifications (synced -> HEAD)")
-    p.add_argument("--release", metavar="TAG|PATTERN",
-                   help="with --upstream: what 'pull --release' would bring")
+    for name, hlp in (("diff", "show local modifications against what the release gave"),
+                      ("difftool", "same in the configured difftool")):
+        p = sub.add_parser(name, parents=[colorp], help=hlp,
+                           epilog="Options after '--' are passed to git " + name + ".")
+        p.add_argument("paths", nargs="*", metavar="PATH",
+                       help="files or directories (default: all)")
+        g = p.add_mutually_exclusive_group()
+        g.add_argument("--upstream", action="store_true",
+                       help="what 'pull' would bring instead (synced -> selected release)")
+        g.add_argument("--committed", action="store_true",
+                       help="only the committed modifications (synced -> HEAD)")
+        p.add_argument("--release", metavar="TAG|PATTERN",
+                       help="with --upstream: what 'pull --release' would bring")
+        if name == "difftool":
+            p.add_argument("-d", "--dir-diff", action="store_true",
+                           help="compare all files at once, as two directories")
+            p.add_argument("-y", "--no-prompt", action="store_true",
+                           help="don't ask before launching the tool for each file")
+            p.add_argument("--prompt", action="store_true",
+                           help="ask before each file even if paths are given")
 
     filterp = argparse.ArgumentParser(add_help=False)
     g = filterp.add_argument_group("filter steps (applied in the order given)")
@@ -3893,7 +4005,7 @@ def main(argv=None):
 
     argv = list(sys.argv[1:] if argv is None else argv)
     extra = []
-    if argv and argv[0] == "diff" and "--" in argv:
+    if argv and argv[0] in ("diff", "difftool") and "--" in argv:
         i = argv.index("--")
         argv, extra = argv[:i], argv[i + 1:]
     args = ap.parse_args(argv)
@@ -3915,7 +4027,8 @@ def main(argv=None):
         if args.cmd == "uninstall-hooks":
             return cmd_uninstall_hooks(repo, args)
         ctx = Context(args)
-        return {"status": cmd_status, "pull": cmd_pull, "diff": cmd_diff, "add": cmd_add,
+        return {"status": cmd_status, "pull": cmd_pull, "diff": cmd_diff,
+                "difftool": cmd_difftool, "add": cmd_add,
                 "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv,
                 "source": cmd_source, "filter": cmd_filter,
                 "trust": cmd_trust, "verify": cmd_verify}[args.cmd](ctx, repo, args)

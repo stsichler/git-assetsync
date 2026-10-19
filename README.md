@@ -112,8 +112,9 @@ from other Git repositories see git-filesync.
   none)
 - Commands named like Git commands behave like them (`status`, `pull`,
   `diff`, `mv`); dry runs for `pull`, `add`, `unlink`, `mv`
-- `diff` shows local modifications, or what `pull` would bring (with
-  `--release`: another release, e.g. to go back to an older one once)
+- `diff` / `difftool` show local modifications, or what `pull` would
+  bring (with `--release`: another release, e.g. to go back to an older
+  one once); `difftool -d` compares directories at once (e.g. in Meld)
 - Git LFS and line-ending conversions: files are recorded as `git add`
   stores them; a hint for big binaries not in LFS
 - A download cache, so another filter or a second repository needs no new
@@ -213,7 +214,7 @@ git assetsync add third_party/zlib/ https://github.com/madler/zlib --asset 'zlib
 |---|---|
 | `status [PATH…]` | state of the entries, like `git status`: new releases, local modifications |
 | `pull PATH…`, `pull --all` | update files and directories to the selected release (`--release`: once another one) and commit |
-| `diff [PATH…]` | local modifications; `--upstream`: what `pull` would bring |
+| `diff [PATH…]`, `difftool [PATH…]` | local modifications; `--upstream`: what `pull` would bring – in your difftool also as two directories (`-d`) |
 | `add PATH SOURCE` | take a file or directory from release assets |
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |

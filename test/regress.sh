@@ -46,7 +46,7 @@
 #   22. Filter steps in order, move / copy, named filters
 #   23. Commands in filters: convert, run, trust
 #   24. verify: is the committed state reproducible?
-#   25. diff, and pull --release (once another release)
+#   25. diff, difftool, and pull --release (once another release)
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -1825,7 +1825,7 @@ fi
 
 
 # =============================================================================
-section "25. diff, and pull --release (once another release)"
+section "25. diff, difftool, and pull --release (once another release)"
 # =============================================================================
 cd "$T"
 printf 'one\ntwo\n' > "$F/df.txt"
@@ -1903,6 +1903,39 @@ check "pull --release: unknown tag" "$(git assetsync pull --release v9 f.txt 2>&
   "error: f.txt: no release with tag 'v9' in acme/df"
 pullc f.txt
 check "pull: back to the selected release" "$(reg file.f.txt.synced) $(cat f.txt | oneline)" "v2 one two changed "
+# difftool: a fake tool prints "TOOL <dir of LOCAL> <dir/name of REMOTE>",
+# with -d the files of both directories
+cat > "$T/faketool.sh" <<'EOF2'
+if [ -d "$1" ]; then
+  echo "DIRS $(cd "$1" && find . ! -type d | sort | tr '\n' ' ')| $(cd "$2" && find . ! -type d | sort | tr '\n' ' ')"
+else
+  echo "TOOL $(basename "$(dirname "$1")") $(basename "$(dirname "$2")")/$(basename "$2")"
+fi
+EOF2
+git config difftool.fake.cmd "sh '$T/faketool.sh' \"\$LOCAL\" \"\$REMOTE\""
+git config diff.tool fake
+check "difftool: nothing to show" "$(git assetsync difftool -y)" ""
+printf 'mine\n' > f.txt; printf 'a mine\n' > d/a.txt; printf 'x\n' > d/x.txt
+check "difftool: file by file, the working files" "$(git assetsync difftool -y | oneline)" \
+  "TOOL synced-v2 d/a.txt TOOL synced-v2 d/x.txt TOOL synced-v2 r25/f.txt "
+OUT=$(printf 'n\ny\n' | git assetsync difftool)
+check "difftool prompt: n then y" "$(echo "$OUT" | grep -o 'TOOL .*')" "TOOL synced-v2 d/x.txt"
+check "difftool prompt text" "$(echo "$OUT" | grep -c "Viewing (2/3): 'd/x.txt'")" "1"
+check "difftool prompt names tool" "$(printf 'q\n' | git assetsync difftool | grep -c "Launch 'fake' \[Y/n/q\]?")" "1"
+check "difftool prompt: EOF quits" "$(git assetsync difftool </dev/null | grep -c 'TOOL ')" "0"
+check "difftool prompt: q quits" "$(printf 'q\n' | git assetsync difftool | grep -c 'TOOL ')" "0"
+check "difftool with path: no prompt" "$(git assetsync difftool f.txt </dev/null)" "TOOL synced-v2 r25/f.txt"
+check "difftool --prompt with path" "$(printf 'n\n' | git assetsync difftool --prompt f.txt | grep -c 'TOOL ')" "0"
+check "difftool -d: two directories" "$(git assetsync difftool -d)" \
+  "DIRS ./d/a.txt ./f.txt | ./d/a.txt ./d/x.txt ./f.txt "
+git checkout -q f.txt d && rm d/x.txt
+check "difftool --upstream --release: temp copies" \
+  "$(git assetsync difftool -y --upstream --release v1 2>/dev/null | oneline)" \
+  "TOOL synced-v2 upstream-v1/b.txt TOOL synced-v2 upstream-v1/c.txt TOOL synced-v2 upstream-v1/f.txt "
+check "difftool -d --upstream --release" "$(git assetsync difftool -d --upstream --release v1 d)" \
+  "DIRS ./d/b.txt ./d/c.txt | ./d/b.txt "
+check "difftool --release: requires --upstream" "$(git assetsync difftool --release v1 2>&1)" \
+  "error: --release requires --upstream"
 # LFS: the content is compared, not the pointers
 if git lfs version >/dev/null 2>&1; then
   printf 'lfs one\n' > "$F/lf.dat"
