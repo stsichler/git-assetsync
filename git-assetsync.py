@@ -87,11 +87,24 @@ command.
                                 if modified (committed or not); a directory
                                 is replaced as a whole
         --all                   all files with something to pull
+        --release TAG|PATTERN   this release instead of the selected one (a
+                                pattern: the newest matching), once: the
+                                selection stays, status shows the selected
+                                one as pending (to stay: set --release)
         --force                 discard local modifications
         --no-edit               commit without opening the editor
         --no-commit             only stage; a plain `git commit` offers the
                                 proposed message (via .git/SQUASH_MSG)
         -n, --dry-run           only report what would happen
+
+    diff [PATH...] [-- OPTS]    local modifications: what the release gave
+                                (synced) -> working tree; as one `git diff`
+                                (pager, colors; OPTS such as --stat go to it)
+        --committed             only the committed ones (synced -> HEAD)
+        --upstream              what pull would bring (synced -> what the
+                                selected release gives now, filtered)
+        --release TAG|PATTERN   what pull --release would bring (implies
+                                --upstream)
 
     add PATH SOURCE             take the file PATH from an asset of the
                                 release SOURCE selects - or with PATH/ (or
@@ -1535,17 +1548,19 @@ class Context:
 
     def __init__(self, args):
         self.fetch = not getattr(args, "no_fetch", False)
+        self.override = None      # pull/diff --release: this rule instead of the source's
         self._selected = {}
 
-    def release(self, url, spec):
-        """(origin, selected release) for a source URL and its selection keys."""
-        key = (norm_url(url), spec.get("type"), spec.get("release"),
-               is_true(spec.get("prerelease")))
+    def release(self, url, spec, override=True):
+        """(origin, selected release) for a source URL and its selection keys
+        (with override: the --release rule of pull/diff instead of its own)."""
+        rule = self.override if override and self.override else spec.get("release")
+        key = (norm_url(url), spec.get("type"), rule, is_true(spec.get("prerelease")))
         if key not in self._selected:
             origin = platform_of(url, spec.get("type"))
             try:
                 self._selected[key] = origin, select_release(
-                    origin, spec.get("release"), is_true(spec.get("prerelease")))
+                    origin, rule, is_true(spec.get("prerelease")))
             except FsError as e:
                 self._selected[key] = e
         result = self._selected[key]
@@ -1644,6 +1659,41 @@ class Repo:
                 mode, kind, oid = info.split(" ")
                 result.append((mode, kind, oid, path))
         return result
+
+    def content_id(self, oid, rel):
+        """Blob id of the actual content (differs from oid for an LFS pointer)."""
+        if not lfs_pointer(self.read_blob(oid)):
+            return oid
+        return self.store(self.read_content(oid, rel))
+
+    def head_mode(self, rel):
+        """Mode of the file rel in HEAD, None if HEAD has none."""
+        parent, _, name = rel.rpartition("/")
+        p = self.git(["ls-tree", "-z", f"HEAD:{parent}" if parent else "HEAD"], check=False)
+        for item in p.stdout.decode("utf-8", "replace").split("\0"):
+            info, _, path = item.partition("\t")
+            if path == name and info.split(" ")[1:2] == ["blob"]:
+                return info.split(" ")[0]
+        return None
+
+    def worktree_items(self, rel):
+        """[(mode, id, path)] of the files at rel as `git add -A` would
+        stage them (untracked ones included, ignored ones not), computed with
+        a copy of the index, which stays as it is."""
+        with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
+            index = Path(td) / "index"
+            if self.index_path().exists():
+                shutil.copyfile(self.index_path(), index)
+            env = dict(os.environ, GIT_INDEX_FILE=str(index))
+            self.git(["add", "-A", "--", lit(rel)], env=env, check=False)
+            p = self.git(["ls-files", "-s", "-z", "--", lit(rel)], env=env)
+        items = []
+        for item in p.stdout.decode("utf-8", "replace").split("\0"):
+            if item:
+                info, _, path = item.partition("\t")
+                mode, oid, _ = info.split(" ")
+                items.append((mode, oid, path))
+        return items
 
     def head_object(self, rel):
         """(type, id) of what HEAD has at rel: ('blob' | 'tree', id), or None."""
@@ -2347,19 +2397,23 @@ def print_long(ctx, repo, sts, verbose):
         up = upstream_state(st)
         if up:
             up_rows.append((up[0], st.entry.shown, up[1], "dim"))
-    section("Upstream changes to pull:", ['use "git assetsync pull <file>..." to update'],
+    section("Upstream changes to pull:",
+            ['use "git assetsync diff --upstream <file>..." to see what pull would bring',
+             'use "git assetsync pull <file>..." to update'],
             up_rows, "yellow")
 
     not_allowed = ("NOT ALLOWED", "boldred")
     adapted = [st for st in ok if st.committed == "adapted"]
     section("Locally modified files:",
-            ['use "git assetsync pull --force <file>..." to restore the release asset'],
+            ['use "git assetsync diff --committed <file>..." to see the modifications',
+             'use "git assetsync pull --force <file>..." to restore the release asset'],
             [("modified", st.entry.shown) + not_allowed for st in adapted], "cyan")
 
     labels = {"modified": "modified", "deleted": "deleted", "added": "new file"}
     dirty = [st for st in ok if st.worktree in labels]
     section("Uncommitted changes:",
-            ['use "git restore <file>..." to discard uncommitted changes'],
+            ['use "git assetsync diff <file>..." to see all local changes',
+             'use "git restore <file>..." to discard uncommitted changes'],
             [(labels[st.worktree], st.entry.shown) +
              (not_allowed if st.local != "clean" else (None, None)) for st in dirty], "red")
 
@@ -2491,6 +2545,86 @@ def build_message(st, discarded, unchanged=False, stats=None):
     if discarded:
         lines += ["", "Local modifications of this repository were discarded."]
     return "\n".join(lines) + "\n"
+
+
+def entry_paths(repo, items):
+    """[(mode, id, path)] with LFS pointers resolved, so that diffs show the
+    content (and not pointers)."""
+    return [(m, repo.content_id(o, path), path) for m, o, path in items]
+
+
+def base_items(repo, entry):
+    """[(mode, id, path)] of the base: what the entry was synced with."""
+    if not entry.blob:
+        return []
+    if entry.is_dir:
+        return [(m, o, f"{entry.rel}/{path}") for m, k, o, path in repo.tree_entries(entry.blob)
+                if k == "blob"]
+    return [(repo.head_mode(entry.rel) or "100644", entry.blob, entry.rel)]
+
+
+def head_items(repo, entry):
+    """[(mode, id, path)] of what HEAD has for the entry."""
+    obj = repo.head_object(entry.rel)
+    if not obj:
+        return []
+    if obj[0] == "tree":
+        return [(m, o, f"{entry.rel}/{path}") for m, k, o, path in repo.tree_entries(obj[1])
+                if k == "blob"]
+    return [(repo.head_mode(entry.rel) or "100644", obj[1], entry.rel)]
+
+
+def diff_items(ctx, repo, reg, args):
+    """(rc, base items, other items) of all entries that differ: other = the
+    working tree, HEAD (--committed) or what pull would install (--upstream)."""
+    rc, left, right = EXIT_OK, [], []
+    for entry in select_entries(repo, reg, args.paths):
+        st = evaluate(ctx, repo, entry)
+        if st.error:
+            report_error(st)
+            rc = EXIT_ERROR
+            continue
+        if not (st.changed if args.upstream else st.committed == "adapted" if args.committed
+                else st.local != "clean"):
+            continue
+        try:
+            if args.upstream:
+                for w in st.warnings:
+                    warn(f"{entry.shown}: {w}")
+                _, other = filter_items(repo, reg, entry, st.origin, st.release, st.assets)
+            elif args.committed:
+                other = head_items(repo, entry)
+            else:
+                other = repo.worktree_items(entry.rel)
+            left += entry_paths(repo, base_items(repo, entry))
+            right += entry_paths(repo, other)
+        except FsError as e:
+            error(f"{entry.shown}: {e}")
+            rc = EXIT_ERROR
+    return rc, left, right
+
+
+def cmd_diff(ctx, repo, args):
+    """One `git diff <tree> <tree>` over all entries that differ: real paths,
+    the repository's diff settings and pager, options after `--`."""
+    if args.release and args.committed:
+        raise FsError("--release goes with --upstream, not --committed")
+    args.upstream = args.upstream or bool(args.release)
+    ctx.fetch, ctx.override = args.upstream, args.release
+    reg = Registry(repo)
+    rc, left, right = diff_items(ctx, repo, reg, args)
+    if not left and not right:
+        return rc
+    color = {"always": ["--color=always"], "never": ["--no-color"]}.get(args.color, [])
+    prefixes = ["--src-prefix=synced/", "--dst-prefix=" + (
+        "upstream/" if args.upstream else "committed/" if args.committed else "local/")]
+    p = subprocess.run(["git", "diff"] + color + prefixes + args.extra
+                       + [repo.make_tree(left), repo.make_tree(right)], cwd=repo.top)
+    if p.returncode > 1:
+        rc = EXIT_ERROR
+    elif p.returncode == 1 and ("--exit-code" in args.extra or "--quiet" in args.extra):
+        rc = max(rc, EXIT_PENDING)      # like `git diff --exit-code`: 1 = differences
+    return rc
 
 
 def check_other_entries(reg, rels, args):
@@ -2706,15 +2840,32 @@ def pull_one(repo, reg, st, args):
     return commit_staged(repo, rel, msg, args, "updated and staged", rels=[entry.rel])
 
 
+def one_off_hint(ctx, st):
+    """After pull --release: the source still selects another release, which
+    status shows as pending and a plain pull goes back to."""
+    try:
+        _, selected = ctx.release(st.entry.url, st.entry.spec, override=False)
+    except FsError:
+        return
+    if selected.tag != st.release.tag:
+        rel = cmd_arg(st.entry.shown)
+        print(f"note: {st.entry.shown}: its source still selects {selected.tag} - 'git "
+              f"assetsync pull {rel}' goes back to it; to stay on {st.release.tag}: 'git "
+              f"assetsync set {rel} --release {shlex.quote(st.release.tag)}'")
+
+
 def cmd_pull(ctx, repo, args):
     reg = Registry(repo)
     reg.dry_run = args.dry_run
+    if args.release and args.all:
+        raise FsError("--release needs the files to pull, not --all")
     if args.all:
         entries = reg.entries()
     elif args.paths:
         entries = select_entries(repo, reg, args.paths)
     else:
         raise FsError("specify file(s) or --all")
+    ctx.override = args.release
     rc, done = EXIT_OK, 0
     for entry in entries:
         st = evaluate(ctx, repo, entry)
@@ -2727,6 +2878,8 @@ def cmd_pull(ctx, repo, args):
         done += 1
         try:
             rc = max(rc, pull_one(repo, reg, st, args))
+            if args.release and (st.pending or st.modified):
+                one_off_hint(ctx, st)
         except FsError as e:   # report and carry on with the other files
             error(str(e))
             rc = EXIT_ERROR
@@ -3013,6 +3166,23 @@ def human_size(n):
     return f"{n:.1f} GiB"
 
 
+def filter_items(repo, reg, entry, origin, release, assets):
+    """Filter the assets of release for an entry, without touching the working
+    tree or the index: (digest, [(mode, id, path)]) - the files as `git add`
+    would store them at their paths in the repository."""
+    trusted = ensure_trusted(repo, entry.steps, reg.filters)
+    env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
+           "ASSETSYNC_ENTRY": entry.shown}
+    with Work(entry.shown, repo.top, env, trusted) as work:
+        files, digest = entry_files(origin, release, assets, entry.steps, reg.filters, work)
+        if not entry.is_dir:
+            files = {entry.rel: f for f in one_file(files, entry.shown, entry.rel).values()}
+        else:
+            files = {f"{entry.rel}/{name}": f for name, f in files.items()}
+        return digest, [("100755" if executable else "100644", repo.add_file(src, path), path)
+                        for path, (src, executable) in sorted(files.items())]
+
+
 def verify_one(repo, reg, entry):
     """(ok, text) of filtering the assets an entry was synced with again and
     comparing the result with its recorded base - without touching the
@@ -3027,30 +3197,22 @@ def verify_one(repo, reg, entry):
     if not release:
         raise FsError(f"release {entry.synced} of {origin.label} no longer exists")
     assets = select_assets(release, entry.asset, origin.label, entry.is_dir)
-    trusted = ensure_trusted(repo, entry.steps, reg.filters)
-    env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
-           "ASSETSYNC_ENTRY": entry.shown}
     st = State(entry=entry, rel=entry.rel)
-    with Work(entry.shown, repo.top, env, trusted) as work:
-        files, digest = entry_files(origin, release, assets, entry.steps, reg.filters, work)
-        if digest != (entry.digest or "").lower():
-            return False, (f"the assets of {release.tag} differ from those it was synced with "
-                           "(re-uploaded?)")
-        if not entry.is_dir:
-            (src, _), = one_file(files, entry.shown, entry.rel).values()
-            new = repo.add_file(src, entry.rel)
-            if matches_base(repo, st, new):
-                return True, f"verified ({release.tag})"
-            return False, f"differs from what {release.tag} gives now"
-        items = [("100755" if executable else "100644",
-                  repo.add_file(src, f"{entry.rel}/{name}"), name)
-                 for name, (src, executable) in sorted(files.items())]
-        new = repo.make_tree(items)
-        if tree_matches_base(repo, st, new):
+    digest, items = filter_items(repo, reg, entry, origin, release, assets)
+    if digest != (entry.digest or "").lower():
+        return False, (f"the assets of {release.tag} differ from those it was synced with "
+                       "(re-uploaded?)")
+    if not entry.is_dir:
+        (_, new, _), = items
+        if matches_base(repo, st, new):
             return True, f"verified ({release.tag})"
-        p = repo.git(["diff-tree", "-r", "--no-renames", "--name-status", entry.blob, new])
-        changes = [f"\t{line}" for line in out(p).splitlines()]
-        return False, f"differs from what {release.tag} gives now:\n" + "\n".join(changes)
+        return False, f"differs from what {release.tag} gives now"
+    new = repo.make_tree([(m, o, path[len(entry.rel) + 1:]) for m, o, path in items])
+    if tree_matches_base(repo, st, new):
+        return True, f"verified ({release.tag})"
+    p = repo.git(["diff-tree", "-r", "--no-renames", "--name-status", entry.blob, new])
+    changes = [f"\t{line}" for line in out(p).splitlines()]
+    return False, f"differs from what {release.tag} gives now:\n" + "\n".join(changes)
 
 
 def cmd_verify(ctx, repo, args):
@@ -3532,12 +3694,27 @@ def main(argv=None):
     p = sub.add_parser("pull", parents=[colorp], help="update files to the selected release")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories")
     p.add_argument("--all", action="store_true", help="all files with something to pull")
+    p.add_argument("--release", metavar="TAG|PATTERN",
+                   help="this release instead of the one the source selects (a pattern: the "
+                        "newest matching), once - the selection stays as it is")
     p.add_argument("--force", action="store_true", help="discard local modifications")
     p.add_argument("--no-edit", action="store_true", help="commit without opening the editor")
     p.add_argument("--no-commit", action="store_true",
                    help="only stage; a plain 'git commit' offers the proposed message")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="only report what would happen")
+
+    p = sub.add_parser("diff", parents=[colorp],
+                       help="show local modifications against what the release gave",
+                       epilog="Options after '--' are passed to git diff.")
+    p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--upstream", action="store_true",
+                   help="what 'pull' would bring instead (synced -> selected release)")
+    g.add_argument("--committed", action="store_true",
+                   help="only the committed modifications (synced -> HEAD)")
+    p.add_argument("--release", metavar="TAG|PATTERN",
+                   help="with --upstream (implied): what 'pull --release' would bring")
 
     filterp = argparse.ArgumentParser(add_help=False)
     g = filterp.add_argument_group("filter steps (applied in the order given)")
@@ -3715,9 +3892,14 @@ def main(argv=None):
     sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the reminder hooks again")
 
     argv = list(sys.argv[1:] if argv is None else argv)
+    extra = []
+    if argv and argv[0] == "diff" and "--" in argv:
+        i = argv.index("--")
+        argv, extra = argv[:i], argv[i + 1:]
     args = ap.parse_args(argv)
     if not args.cmd:
         args = ap.parse_args(["status"])
+    args.extra = extra
     try:
         try:
             repo = Repo()
@@ -3733,7 +3915,7 @@ def main(argv=None):
         if args.cmd == "uninstall-hooks":
             return cmd_uninstall_hooks(repo, args)
         ctx = Context(args)
-        return {"status": cmd_status, "pull": cmd_pull, "add": cmd_add,
+        return {"status": cmd_status, "pull": cmd_pull, "diff": cmd_diff, "add": cmd_add,
                 "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv,
                 "source": cmd_source, "filter": cmd_filter,
                 "trust": cmd_trust, "verify": cmd_verify}[args.cmd](ctx, repo, args)

@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases)
+  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -158,8 +158,9 @@ A file taken from an asset must stay exactly what the release gives – a
 binary or a generated file can't be merged with local changes. A file that
 differs – committed or not, also deleted – is reported by `status` as
 **NOT ALLOWED**, `status --exit-code` exits with 1, and `pull` refuses to
-update it. `pull --force` discards the modification and restores what the
-selected release gives (with a warning, and a note in the commit message).
+update it. [`diff`](#diff) shows the modification; `pull --force`
+discards it and restores what the selected release gives (with a warning,
+and a note in the commit message).
 
 In a directory entry, every file git sees counts: a changed, deleted or
 added file – also an untracked one – is a modification. Files that your
@@ -176,7 +177,8 @@ line endings normalized) is still unmodified.
 | Command | Purpose |
 |---|---|
 | `status [PATH…]` | state of the entries, like `git status` |
-| `pull PATH…`, `pull --all` | update files and directories to the selected release and commit |
+| `pull PATH…`, `pull --all` | update files and directories to the selected release (or once another one) and commit |
+| `diff [PATH…]` | local modifications against what the release gave; what `pull` would bring |
 | `add PATH SOURCE` | take a file or directory from release assets |
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `unlink PATH…` | remove entries (the files are kept) |
@@ -209,15 +211,18 @@ like `git status`; directories are shown with a trailing `/`:
 
 ```
 Upstream changes to pull:
+  (use "git assetsync diff --upstream <file>..." to see what pull would bring)
   (use "git assetsync pull <file>..." to update)
 	pending:    bin/tool  (v1.0 -> v1.1)
 	new:        firmware/fw.bin  (release toolA-20261016)
 
 Locally modified files:
+  (use "git assetsync diff --committed <file>..." to see the modifications)
   (use "git assetsync pull --force <file>..." to restore the release asset)
 	modified:   lib/data.bin  (NOT ALLOWED)
 
 Uncommitted changes:
+  (use "git assetsync diff <file>..." to see all local changes)
   (use "git restore <file>..." to discard uncommitted changes)
 	modified:   bin/tool  (NOT ALLOWED)
 ```
@@ -253,7 +258,8 @@ exit with 2.
 ### `pull`
 
 ```
-git assetsync pull (PATH… | --all) [--force] [--no-edit] [--no-commit] [-n]
+git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--force] [--no-edit]
+                   [--no-commit] [-n]
 ```
 
 Updates each given file or directory to what the release its source
@@ -279,6 +285,7 @@ one commit.
 | Option | Meaning |
 |---|---|
 | `--all` | all entries with something to pull (with `--force` also modified ones) |
+| `--release TAG\|PATTERN` | this release instead of the one the source selects, once – see below; a pattern takes the newest matching release; not with `--all` |
 | `--force` | discard local modifications: restore or update the file (directory) anyway; in a directory also untracked files are deleted (ignored ones stay) |
 | `--no-edit` | commit with the proposed message, without opening the editor |
 | `--no-commit` | update and stage only; a plain `git commit` then offers the proposed message (via `.git/SQUASH_MSG`) |
@@ -287,6 +294,62 @@ one commit.
 If the commit is not done (e.g. the editor is closed with an empty
 message, or a hook rejects it), the changes stay staged and `pull` tells
 how to commit them with the proposed message; the exit code is then 1.
+
+**Another release, once:** `pull --release TAG PATH…` updates the files to
+that release instead of the selected one – also an older one, e.g. to go
+back after a broken update. The release selection of the source stays as
+it is, so `status` then shows the selected release as pending, and a plain
+`pull` (or `pull --all`) goes back to it; `pull --release` says so:
+
+```console
+$ git assetsync pull --release v1.0 bin/tool
+[main 7d2e0b1] Update bin/tool to acme/tool v1.0 (was v1.1)
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+note: bin/tool: its source still selects v1.1 - 'git assetsync pull bin/tool' goes back to it; to stay on v1.0: 'git assetsync set bin/tool --release v1.0'
+```
+
+To keep the files on that release, pin them instead: [`set
+--release`](#set) for some files, [`source set-release`](#source) for all
+files of the source. [`diff --release`](#diff) shows beforehand what
+`pull --release` would bring.
+
+### `diff`
+
+```
+git assetsync diff [PATH…] [--committed | --upstream] [--release TAG|PATTERN] [-- OPTS]
+```
+
+Shows the local modifications of the entries (default: all) – the
+difference between what their release gave when they were synced (the
+recorded `blob` / `tree`) and the working tree, which [should be
+none](#no-local-modifications). In a directory, untracked files count as
+added (ignored ones don't). Like `status`, it works offline.
+
+| Option | Shows |
+|---|---|
+| (none) | all local modifications: synced -> working tree |
+| `--committed` | only the committed modifications: synced -> `HEAD` |
+| `--upstream` | what `pull` would bring: synced -> what the selected release gives now, after the filter (also after the filter was changed) |
+| `--release TAG\|PATTERN` | what `pull --release` would bring (implies `--upstream`) |
+
+```sh
+git assetsync diff                      # local changes: synced -> working tree (local/)
+git assetsync diff --committed          # committed ones only: synced -> HEAD (committed/)
+git assetsync diff --upstream           # what `pull` would bring (upstream/)
+git assetsync diff --release v1.0 bin/  # what `pull --release v1.0 bin/` would bring
+git assetsync diff --upstream -- --stat # anything after `--` goes to `git diff`
+```
+
+`diff` runs a single `git diff` over all entries that differ, with their
+paths in the repository: pager, colors, diff drivers and options (after
+`--`, e.g. `--stat`, `--name-status`, `--word-diff`) work as usual. The
+old side is named `synced/`, the new one `local/`, `committed/` or
+`upstream/`. Files in Git LFS are compared by their content, not their
+pointers. With `--upstream`, the assets come from the [download
+cache](#download-cache) if possible – and `pull` then needs no new
+download; filters that run commands must be [trusted](#trust). With
+`--exit-code` or `--quiet` after `--`, the exit code is 1 if there are
+differences, like `git diff`; otherwise 0, or 2 on errors.
 
 ### `add`
 
@@ -629,7 +692,8 @@ To switch a source to another release selection, use
 [`source set-release`](#source) (e.g.
 `git assetsync source set-release acme/tool v2.0`) and pull its files; the
 change is committed with them. For some of its files only, use
-[`set --release`](#set).
+[`set --release`](#set). To take another release only once (the
+selection stays), use [`pull --release`](#pull).
 
 ### Filters
 
@@ -966,7 +1030,8 @@ an asset byte for byte, mark it `-text` (or `binary`) in `.gitattributes`.
 and working tree files (directories) are still what their release gives is
 decided from the recorded `blob` (`tree`). Only the check for new releases
 needs GitHub or GitLab; `--no-fetch` skips it (`new releases not
-checked`). `add` and `pull` always ask the platform which release to take;
+checked`). `diff` and `diff --committed` work offline, too. `add`, `pull`
+and `diff --upstream` always ask the platform which release to take;
 assets already in the [download cache](#download-cache) are not
 downloaded again.
 

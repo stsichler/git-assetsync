@@ -16,6 +16,7 @@ command, in a commit that says where it came from.
 ```console
 $ git assetsync status
 Upstream changes to pull:
+  (use "git assetsync diff --upstream <file>..." to see what pull would bring)
   (use "git assetsync pull <file>..." to update)
 	pending:    bin/tool.bin  (v1.0 -> v1.1)
 
@@ -110,7 +111,9 @@ from other Git repositories see git-filesync.
 - Checks the download against the digest GitHub reports (GitLab reports
   none)
 - Commands named like Git commands behave like them (`status`, `pull`,
-  `mv`); dry runs for `pull`, `add`, `unlink`, `mv`
+  `diff`, `mv`); dry runs for `pull`, `add`, `unlink`, `mv`
+- `diff` shows local modifications, or what `pull` would bring (with
+  `--release`: another release, e.g. to go back to an older one once)
 - Git LFS and line-ending conversions: files are recorded as `git add`
   stores them; a hint for big binaries not in LFS
 - A download cache, so another filter or a second repository needs no new
@@ -209,7 +212,8 @@ git assetsync add third_party/zlib/ https://github.com/madler/zlib --asset 'zlib
 | Command | Purpose |
 |---|---|
 | `status [PATH…]` | state of the entries, like `git status`: new releases, local modifications |
-| `pull PATH…`, `pull --all` | update files and directories to the selected release and commit |
+| `pull PATH…`, `pull --all` | update files and directories to the selected release (`--release`: once another one) and commit |
+| `diff [PATH…]` | local modifications; `--upstream`: what `pull` would bring |
 | `add PATH SOURCE` | take a file or directory from release assets |
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |

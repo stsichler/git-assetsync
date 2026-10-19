@@ -46,6 +46,7 @@
 #   22. Filter steps in order, move / copy, named filters
 #   23. Commands in filters: convert, run, trust
 #   24. verify: is the committed state reproducible?
+#   25. diff, and pull --release (once another release)
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -1821,6 +1822,95 @@ if git lfs version >/dev/null 2>&1; then
   check "verify: moved to LFS since" "$(git assetsync verify vb.bin)" "vb.bin: verified (v1)"
 fi
 
+
+
+# =============================================================================
+section "25. diff, and pull --release (once another release)"
+# =============================================================================
+cd "$T"
+printf 'one\ntwo\n' > "$F/df.txt"
+release acme/df v1 10 "$F/df.txt"
+printf 'one\ntwo changed\n' > "$F/df.txt"
+release acme/df v2 11 "$F/df.txt"
+mkdir -p "$F/dd1" "$F/dd2"
+printf 'a\n' > "$F/dd1/a.txt"; printf 'b\n' > "$F/dd1/b.txt"
+printf 'a\n' > "$F/dd2/a.txt"; printf 'b2\n' > "$F/dd2/b.txt"; printf 'c\n' > "$F/dd2/c.txt"
+mkarchive "$F/dd-1.zip" "$F/dd1"; mkarchive "$F/dd-2.zip" "$F/dd2"
+release acme/dd v1 10 "$F/dd-1.zip"
+release acme/dd v2 11 "$F/dd-2.zip"
+new_repo r25
+filt unzip --extract
+addc f.txt acme/df
+addc d/ acme/dd --release v1 --filter unzip
+quiet git assetsync source set-release acme/dd --unset && git commit -qm latest -- .git-assetsync
+check "diff: nothing to show" "$(git assetsync diff)" ""
+check "diff: exit code 0" "$(rc git assetsync diff -- --exit-code)" "0"
+# local changes: base -> working tree
+printf 'one\nmine\n' > f.txt
+check "diff: local change" "$(git assetsync diff | grep -E '^(---|\+\+\+|[-+][a-z])' | oneline)" \
+  "--- synced/f.txt +++ local/f.txt -two changed +mine "
+check "diff: options after --" "$(git assetsync diff -- --stat | head -1 | tr -s ' ')" " f.txt | 2 +-"
+check "diff: --exit-code" "$(rc git assetsync diff -- --exit-code)" "1"
+check "diff: status hints at it" \
+  "$(git assetsync status | grep -c 'git assetsync diff <file>')" "1"
+git commit -qam "by hand"
+check "diff --committed" "$(git assetsync diff --committed -- --name-only)" "f.txt"
+check "diff: committed changes are local too" "$(git assetsync diff -- --name-only)" "f.txt"
+check "diff: status hints at --committed" \
+  "$(git assetsync status | grep -c 'git assetsync diff --committed')" "1"
+quiet git assetsync pull --force --no-edit f.txt
+check "diff --committed: nothing after --force" "$(git assetsync diff --committed)" ""
+# a directory: changed, deleted and untracked files
+printf 'a mine\n' > d/a.txt; rm d/b.txt; printf 'x\n' > d/x.txt
+check "diff: directory" "$(git assetsync diff d -- --name-status | oneline)" \
+  "M${TAB}d/a.txt D${TAB}d/b.txt A${TAB}d/x.txt "
+check "diff: only the paths given" "$(git assetsync diff f.txt)" ""
+check "diff: nothing changed" "$(git status --porcelain | oneline)" " M d/a.txt  D d/b.txt ?? d/x.txt "
+git checkout -q d && rm d/x.txt
+# what pull would bring
+check "diff --upstream" "$(git assetsync diff --upstream -- --name-status 2>/dev/null | oneline)" \
+  "M${TAB}d/b.txt A${TAB}d/c.txt "
+check "diff --upstream: prefixes" "$(git assetsync diff --upstream | grep -E '^\+\+\+' | oneline)" \
+  "+++ upstream/d/b.txt +++ upstream/d/c.txt "
+check "diff --upstream: pull takes it from the cache" \
+  "$(reset_calls; quiet git assetsync pull --no-edit d; downloads)" "0"
+check "diff --upstream: nothing left" "$(git assetsync diff --upstream)" ""
+check "diff --release: implies --upstream" "$(git assetsync diff --release v1 -- --name-status 2>/dev/null | oneline)" \
+  "M${TAB}d/b.txt D${TAB}d/c.txt M${TAB}f.txt "
+check "diff --release: not with --committed" "$(git assetsync diff --committed --release v1 2>&1)" \
+  "error: --release goes with --upstream, not --committed"
+check "diff --release: unknown tag" "$(git assetsync diff --release v9 f.txt 2>&1)" \
+  "error: f.txt: no release with tag 'v9' in acme/df"
+# pull --release: once another release, the selection stays
+check "pull --release: dry run" "$(git assetsync pull -n --release v1 f.txt | head -1)" \
+  "would: Update f.txt to acme/df v1 (was v2)"
+out=$(git assetsync pull --no-edit --release v1 f.txt)
+check "pull --release: hint" "$(printf '%s\n' "$out" | tail -1)" \
+  "note: f.txt: its source still selects v2 - 'git assetsync pull f.txt' goes back to it; to stay on v1: 'git assetsync set f.txt --release v1'"
+check "pull --release: content" "$(cat f.txt | oneline)" "one two "
+check "pull --release: synced" "$(reg file.f.txt.synced)" "v1"
+check "pull --release: selection unchanged" "$(reg source.acme/df.release)" ""
+check "pull --release: message" "$(git log -1 --format=%s)" "Update f.txt to acme/df v1 (was v2)"
+check "pull --release: status pending" "$(git assetsync status -s f.txt)" "P   f.txt"
+check "pull --release: up to date" "$(git assetsync pull --release v1 f.txt)" "f.txt: up to date"
+check "pull --release: pattern = newest matching" "$(git assetsync pull -n --release 'v*' f.txt | head -1)" \
+  "would: Update f.txt to acme/df v2 (was v1)"
+check "pull --release: not with --all" "$(git assetsync pull --all --release v1 2>&1)" \
+  "error: --release needs the files to pull, not --all"
+check "pull --release: unknown tag" "$(git assetsync pull --release v9 f.txt 2>&1)" \
+  "error: f.txt: no release with tag 'v9' in acme/df"
+pullc f.txt
+check "pull: back to the selected release" "$(reg file.f.txt.synced) $(cat f.txt | oneline)" "v2 one two changed "
+# LFS: the content is compared, not the pointers
+if git lfs version >/dev/null 2>&1; then
+  printf 'lfs one\n' > "$F/lf.dat"
+  release acme/lf v1 10 "$F/lf.dat"
+  printf '*.dat filter=lfs diff=lfs merge=lfs -text\n' > .gitattributes
+  git add .gitattributes && git commit -qm lfs
+  addc lf.dat acme/lf
+  printf 'lfs mine\n' > lf.dat
+  check "diff: LFS content" "$(git assetsync diff lf.dat | grep -E '^[-+][a-z]' | oneline)" "-lfs one +lfs mine "
+fi
 
 # =============================================================================
 echo
