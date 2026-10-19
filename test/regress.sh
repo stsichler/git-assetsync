@@ -47,6 +47,7 @@
 #   23. Commands in filters: convert, run, trust
 #   24. verify: is the committed state reproducible?
 #   25. diff, difftool, and pull --release (once another release)
+#   26. map: releases from a local folder; the pre-push check
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -1967,6 +1968,82 @@ if git lfs version >/dev/null 2>&1; then
   printf 'lfs mine\n' > lf.dat
   check "diff: LFS content" "$(git assetsync diff lf.dat | grep -E '^[-+][a-z]' | oneline)" "-lfs one +lfs mine "
 fi
+
+
+# =============================================================================
+section "26. map: releases from a local folder; the pre-push check"
+# =============================================================================
+cd "$T"
+L=$T/localrel
+mkdir -p "$L/v1" "$L/v2"
+printf 'one\n' > "$L/v1/t.bin"; printf 'two\n' > "$L/v2/t.bin"
+touch -t 202610121200 "$L/v1/t.bin"; touch -t 202610101200 "$L/v2/t.bin"   # v1 is newer
+new_repo r26
+check "map" "$(git assetsync map https://github.com/acme/loc "$L" | tr '\\' /)" \
+  "[local] https://github.com/acme/loc -> $L"
+check "map: in .git/config" "$(git config assetsync.https://github.com/acme/loc.localpath | tr '\\' /)" "$L"
+check "map: list" "$(git assetsync map | tr '\\' /)" "[local] https://github.com/acme/loc -> $L"
+reset_calls
+addc t.bin https://github.com/acme/loc
+check "map: newest by file date, not by name" "$(reg file.t.bin.synced) $(cat t.bin)" "v1 one"
+check "map: nothing asked online" "$(calls)" "0"
+check "map: commit message" "$(git log -1 --format=%B | grep '^Release:')" \
+  "Release: v1 (from a local folder, not published)"
+check "map: not in .git-assetsync" "$(grep -ci 'localrel' .git-assetsync)" "0"
+check "map: status names the folder" "$(git assetsync status | grep -c 'from the local folder')" "1"
+check "map: up to date" "$(git assetsync status -s)" ""
+mkdir -p "$L/v3"; printf 'three\n' > "$L/v3/t.bin"
+check "map: a new release folder" "$(git assetsync status | grep 'pending:' | sed 's/^[[:space:]]*//')" \
+  "pending:    t.bin  (v1 -> v3, local folder)"
+pullc t.bin
+check "map: pulled" "$(reg file.t.bin.synced) $(cat t.bin)" "v3 three"
+printf 'three, rebuilt\n' > "$L/v3/t.bin"
+check "map: rebuilt in place" "$(git assetsync status -s)" "P   t.bin"
+pullc t.bin
+check "map: pulled again" "$(cat t.bin)" "three, rebuilt"
+check "map: releases" "$(git assetsync releases acme/loc | cut -c1-2 | oneline)" "re v3 v1 v2 "
+check "map: no release" "$(git assetsync pull -n --release v9 t.bin 2>&1 | tr '\\' /)" \
+  "error: t.bin: no release with tag 'v9' in acme/loc (local folder $L)"
+check "map: --remote asks the platform" "$(git assetsync status -s --remote 2>/dev/null)" "E   t.bin"
+check "map: verify" "$(git assetsync verify)" "t.bin: verified (v3)"
+# a source given by name
+quiet git assetsync source rename acme/loc loc && git commit -qm rename -- .git-assetsync
+check "map: --unset by source name" "$(git assetsync map loc --unset)" \
+  "removed local mapping for https://github.com/acme/loc"
+check "map: by source name" "$(git assetsync map loc "$L" | cut -d' ' -f1-2)" \
+  "[local] https://github.com/acme/loc"
+check "map: not a directory" "$(git assetsync map loc "$L/v1/t.bin" 2>&1 | grep -c 'is not a directory')" "1"
+# the pre-push check: the release must be on the server, with these assets
+git init -q --bare "$T/r26.git" && git remote add origin "$T/r26.git"
+quiet git assetsync install-hooks
+git config assetsync.pushCheck error
+OUT=$(git push -q origin main 2>&1); RC=$?
+check "push check: refused (error)" "$RC $(git ls-remote origin main | lines)" "1 0"
+check "push check: message" \
+  "$(echo "$OUT" | grep -c "assetsync: t.bin: synced from release v3, which is not on the server (https://github.com/acme/loc) - publish it there first")" "1"
+check "push check: refusal named" "$(echo "$OUT" | grep -c 'push refused (assetsync.pushCheck = error)')" "1"
+check "push check: --no-verify" "$(rc git push -q --dry-run --no-verify origin main)" "0"
+git config assetsync.pushCheck warn
+OUT=$(git push -q origin main 2>&1); RC=$?
+check "push check: warn pushes" "$RC $(echo "$OUT" | grep -c 'pushing anyway')" "0 1"
+check "push check: by hand (HEAD)" "$(git assetsync hook pre-push 2>&1 | grep -c 'not on the server')" "0"
+# published as tested: no warning; other assets on the server: a warning
+cp "$L/v3/t.bin" "$F/t.bin"; release acme/loc v3 13 "$F/t.bin"
+mkdir -p "$L/v4"; printf 'four\n' > "$L/v4/t.bin"
+pullc t.bin
+printf 'four, other build\n' > "$F/t.bin"; release acme/loc v4 14 "$F/t.bin"
+OUT=$(git push -q origin main 2>&1)
+check "push check: other assets on the server" \
+  "$(echo "$OUT" | grep -c 'synced from assets of release v4 that differ from those on the server')" "1"
+printf 'four\n' > "$F/t.bin"; reupload acme/loc v4 "$F/t.bin"
+git commit -q --allow-empty -m next
+check "push check: the same assets: quiet" "$(git push -q origin main 2>&1 | grep -c 'server')" "0"
+check "push check: off" "$(git -c assetsync.pushCheck=off assetsync hook pre-push 2>&1 | grep -c 'pushing anyway')" "0"
+# a server that can't be asked never refuses
+git commit -q --allow-empty -m next2
+sedi 's/^\tsynced = v4$/\tsynced = v5/' .git-assetsync && git commit -qam v5
+OUT=$(ASSETSYNC_GH=false git -c assetsync.pushCheck=error push -q origin main 2>&1); RC=$?
+check "push check: server not reachable" "$RC $(echo "$OUT" | grep -c 'cannot check whether release v5 is on the server')" "0 1"
 
 # =============================================================================
 echo

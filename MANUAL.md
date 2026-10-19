@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases)
+  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -189,6 +189,7 @@ line endings normalized) is still unmodified.
 | `trust [NAME…]` | list the filters that run commands; trust them in this repository |
 | `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
+| `map [URL\|SOURCE [DIR]]` | take the releases of a source from a local folder (local development, tests) |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
 Without a command, `status` runs. `PATH` may be a file or a directory (all
@@ -200,6 +201,7 @@ the command; `git assetsync <command> -h` lists them.
 | Option | Meaning |
 |---|---|
 | `--color[=WHEN]`, `--no-color` | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
+| `--remote` | ignore [mappings to local folders](#map): ask GitHub or GitLab (commands that look at releases: `status`, `pull`, `diff`, `difftool`, `add`, `set`, `verify`, `releases`, `source`, `filter test`) |
 
 ### `status`
 
@@ -703,18 +705,93 @@ assetsync: bin/tool: upstream pending (v1.0 -> v1.1)
 assetsync: run 'git assetsync pull <file>' to update
 ```
 
-They never block – not even if git-assetsync itself fails or is missing.
-The hooks run `git assetsync hook pre-push` / `hook post-merge` (like `git
-lfs pre-push`), which are not meant to be run by hand; so later versions
-can change what the hooks do without reinstalling them. Only the exit code
-3 of `hook pre-push` would refuse a push, as in git-filesync; no check of
-git-assetsync does that yet.
+**Push check:** the `pre-push` hook also looks at the commits being pushed:
+an entry synced from a release that isn't on GitHub or GitLab – typically
+pulled from a [local folder](#map) – or whose assets differ from those of
+the release there is reported:
+
+```
+assetsync: bin/tool: synced from release v1.3-rc1, which is not on the server (https://github.com/acme/tool) - publish it there first
+assetsync: bin/tool: synced from assets of release v1.3 that differ from those on the server (https://github.com/acme/tool) - publish them there first
+```
+
+Others couldn't pull or verify that state. The check always asks the
+platform (mappings don't count), only for entries the remote doesn't have
+yet (in the pushed-over commit or its remote-tracking branches), so usually
+no request at all is needed. Once the tested build is published as that
+release, the warning is gone – no new `pull` needed. GitLab reports no
+digests: there, only the tag is checked. Like Git with submodules, it only
+warns by default; `assetsync.pushCheck` sets what happens:
+
+| `assetsync.pushCheck` | Effect |
+|---|---|
+| `warn` (default) | report, push anyway |
+| `error` | report and refuse the push (`git push --no-verify` skips it) |
+| `off` | no check |
+
+```sh
+git config assetsync.pushCheck error            # this repository
+git config --global assetsync.pushCheck error   # all repositories
+```
+
+A platform that can't be asked is reported, but never refuses the push.
+Apart from `error`, the hooks never block – not even if git-assetsync
+itself fails or is missing. The hooks run `git assetsync hook pre-push` /
+`hook post-merge` (like `git lfs pre-push`), so later versions can change
+what the hooks do without reinstalling them; only exit code 3 of `hook
+pre-push` refuses a push, as in git-filesync. They are not meant to be run
+by hand (from a terminal, `hook pre-push` checks `HEAD`).
 
 Existing hooks of others are not changed; `install-hooks` prints the lines
 to add instead. Hooks installed by an older version are updated in place
 (`updated`). `uninstall-hooks` removes the hooks, or only its lines from
 hooks that contain other commands as well. With `core.hooksPath` set, the
 hooks go there (with a warning, since other repositories may use it).
+
+### `map`
+
+```
+git assetsync map [URL|SOURCE [DIR]] [--global] [--unset]
+```
+
+Takes the releases of a source from the local folder `DIR` instead of
+GitHub or GitLab – to try a new build "the proper way" in another local
+repository before publishing it. The source is given by its URL or the
+name of a `[source]`; the mapping applies to every source with that URL.
+It is kept in this repository's `.git/config`
+(`assetsync.<url>.localpath`), with `--global` in your global Git config
+for all repositories without a mapping of their own – never in
+`.git-assetsync`, which keeps the real URL.
+
+```
+~/build/tool-releases/
+  v1.2/       tool-linux.bin  tool-win.exe
+  v1.3-rc1/   tool-linux.bin  tool-win.exe
+```
+
+```sh
+git assetsync map acme/tool ~/build/tool-releases   # by the name of the [source] (or its URL)
+git assetsync status                                # pending: bin/tool (v1.2 -> v1.3-rc1, local folder)
+git assetsync pull bin/tool                         # takes v1.3-rc1 from the folder
+git assetsync map                                   # list the mappings (scope, overridden ones marked)
+git assetsync map acme/tool --unset                 # remove it again
+```
+
+- Each **subdirectory** is a release, named like its tag; its files are
+  the assets (hidden files are ignored).
+- A release is dated by its **newest file**: the latest release is the one
+  built last, also when a build overwrites the files of an existing
+  folder (then `status` shows its assets as replaced). The [release
+  selection](#selecting-the-release) applies as usual – a pattern takes
+  the newest matching folder, a pinned tag that folder; prereleases and
+  drafts don't exist here, and there are no release notes.
+- The commit message says where it came from: `Release: v1.3-rc1 (from a
+  local folder, not published)`.
+- Everything works offline; nothing goes into the [download
+  cache](#download-cache). `status` names the folder, `releases` lists the
+  folders; `--remote` asks the platform instead, for one command.
+- Before pushing, the [push check](#install-hooks-uninstall-hooks) warns
+  about entries whose release isn't published yet.
 
 ## Further topics
 
@@ -1093,7 +1170,8 @@ an asset byte for byte, mark it `-text` (or `binary`) in `.gitattributes`.
 and working tree files (directories) are still what their release gives is
 decided from the recorded `blob` (`tree`). Only the check for new releases
 needs GitHub or GitLab; `--no-fetch` skips it (`new releases not
-checked`). `diff` and `diff --committed` work offline, too. `add`, `pull`
+checked`). `diff` and `diff --committed` work offline, too, and so does
+everything with a source [mapped to a local folder](#map). `add`, `pull`
 and `diff --upstream` always ask the platform which release to take;
 assets already in the [download cache](#download-cache) are not
 downloaded again.

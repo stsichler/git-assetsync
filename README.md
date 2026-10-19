@@ -119,6 +119,9 @@ from other Git repositories see git-filesync.
   stores them; a hint for big binaries not in LFS
 - A download cache, so another filter or a second repository needs no new
   download
+- Local folders as releases (`map`, like git-filesync's): test a build in
+  another repository before publishing it; the pre-push hook warns about
+  entries whose release isn't published yet
 - Colored output, reminder hooks, CI-friendly exit codes
 - One self-contained Python script, standard library only
 
@@ -223,6 +226,7 @@ git assetsync add third_party/zlib/ https://github.com/madler/zlib --asset 'zlib
 | `trust [NAME…]` | list the filters that run commands; trust them in this repository |
 | `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
+| `map [URL\|SOURCE [DIR]]` | take releases from a local folder, to test a build before publishing it |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
 `git assetsync <command> -h` lists the options of a command. The

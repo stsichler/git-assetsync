@@ -218,14 +218,29 @@ command.
         -n N, --all             the newest N releases (default 10), or all
         --type github|gitlab    platform of the URL's host
 
+    map [URL|SOURCE [DIR]]      take the releases of a source from the local
+                                folder DIR instead (local development and
+                                tests; never committed): one subdirectory
+                                per release, named like its tag, with the
+                                assets; newest = newest file date. Without
+                                DIR: list the mappings
+        --global                for all repositories (default: this one)
+        --unset                 remove the mapping
+
     install-hooks               install pre-push/post-merge hooks (or update
                                 them): reminders about new releases, local
-                                modifications, errors
+                                modifications, errors; pre-push also warns
+                                if a pushed entry's release isn't on the
+                                platform with these assets (e.g. from a
+                                local folder): assetsync.pushCheck = warn |
+                                error (refuses the push) | off
     uninstall-hooks             remove them again
     hook pre-push|post-merge    what the installed hooks run
 
     Common options:
         --color[=WHEN], --no-color  always, never or auto (default)
+        --remote                ignore mappings to local folders (status,
+                                pull, diff, add, set, verify, releases, ...)
 
 Exit codes: 0 ok, 1 unfinished (not committed, --exit-code), 2 error.
 
@@ -260,6 +275,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import zipfile
 import zlib
 from dataclasses import dataclass, field
@@ -272,7 +288,7 @@ from urllib.request import urlopen
 __version__ = "0.10.0"
 REGISTRY = ".git-assetsync"
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
-EXIT_REFUSED = 3          # hook pre-push: refuse the push (none of its checks does yet)
+EXIT_REFUSED = 3          # hook pre-push: refuse the push (assetsync.pushCheck = error)
 HOOK_MARKER = "git-assetsync"
 # What the installed hooks run - an interface, so that later versions need no
 # reinstall. Only EXIT_REFUSED blocks a push; any other failure (e.g.
@@ -457,6 +473,7 @@ class Release:
     draft: bool = False
     assets: list = field(default_factory=list)
     notes: str = ""           # description / changelog (Markdown)
+    local: bool = False       # from a local folder (map), not published
 
 
 class NotFound(FsError):
@@ -482,6 +499,8 @@ class Platform:
 
     def __init__(self, host, project, label):
         self.host, self.project, self.label = host, project, label
+
+    where = property(lambda self: self.label)    # for messages
 
     def api(self, path, headers=(), stdout=None):
         """Raw response of a GET request; NotFound for HTTP 404. The host is
@@ -665,7 +684,86 @@ def http_download(url, dest, what):
         raise FsError(f"{what}: download of {url} failed: {getattr(e, 'reason', e)}")
 
 
+class LocalAsset(Asset):
+    """An asset in a local folder: its digest is computed when needed."""
+
+    @property
+    def digest(self):
+        if self._digest is None:
+            self._digest = sha256_file(self.url)[0]
+        return self._digest
+
+    @digest.setter
+    def digest(self, value):
+        self._digest = value
+
+
+class LocalFolder:
+    """Releases in a local folder a source URL is mapped to (see map), for
+    local development and tests: each subdirectory is a release named like
+    its tag, its files are the assets, and it is dated by the newest of
+    them. No notes, prereleases or drafts; nothing is cached."""
+
+    def __init__(self, folder, url):
+        self.dir = Path(folder)
+        self.host, self.project = parse_url(url)
+        self.label = self.project
+
+    where = property(lambda self: f"{self.label} (local folder {self.dir})")
+
+    def check_project(self):
+        if not self.dir.is_dir():
+            raise FsError(f"local folder {self.dir} of {self.label} not found (see "
+                          "'git assetsync map')")
+
+    def release(self, d):
+        files = sorted((f for f in d.iterdir() if f.is_file() and not f.name.startswith(".")),
+                       key=lambda f: f.name)
+        mtime = max([f.stat().st_mtime for f in files] or [d.stat().st_mtime])
+        date = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(mtime)) + \
+            f".{int(mtime % 1 * 1e6):06d}Z"
+        assets = [LocalAsset(f.name, f.name, f.stat().st_size, url=str(f)) for f in files]
+        return Release(d.name, d.name, date, "", assets=assets, local=True)
+
+    def releases(self, limit=None):
+        self.check_project()
+        return [self.release(d) for d in sorted(self.dir.iterdir())
+                if d.is_dir() and not d.name.startswith(".")]
+
+    def latest(self):
+        rels = self.releases()
+        return max(rels, key=lambda r: r.date) if rels else None
+
+    def by_tag(self, tag):
+        self.check_project()
+        if not tag or tag in (".", "..") or re.search(r"[/\\]", tag):
+            return None
+        d = self.dir / tag
+        return self.release(d) if d.is_dir() else None
+
+
 PLATFORMS = {"github": GitHub, "gitlab": GitLab}
+# source URLs mapped to local folders (see map): normalized URL -> folder;
+# loaded by main() unless --remote is given
+MAPPINGS = {}
+MAP_REGEX = r"^assetsync\..+\.localpath$"
+
+
+def local_mappings(scope=None, cwd=None):
+    """List of (scope, config key, url, folder) from assetsync.<url>.localpath
+    entries, in git's precedence order (system, global, local: last wins)."""
+    args = ["config", "--show-scope"] + ([scope] if scope else []) + ["--get-regexp", MAP_REGEX]
+    result = []
+    for line in out(git(args, cwd=cwd, check=False)).splitlines():
+        sc, _, rest = line.partition("\t")
+        key, _, val = rest.partition(" ")
+        result.append((sc, key, key[len("assetsync."):-len(".localpath")], val))
+    return result
+
+
+def mappings_for(url, scope=None, cwd=None):
+    """local_mappings() for this URL only."""
+    return [m for m in local_mappings(scope, cwd) if norm_url(m[2]) == norm_url(url)]
 
 
 def parse_url(url):
@@ -685,9 +783,11 @@ def source_url(arg):
     return f"{urlparse(arg).scheme}://{host}/{path}"
 
 
-def platform_of(url, kind=None):
-    """Platform client for a source URL; kind: its type key, else derived
-    from the host."""
+def platform_of(url, kind=None, remote=False):
+    """Platform client for a source URL - its local folder if it is mapped
+    to one (unless remote); kind: its type key, else derived from the host."""
+    if not remote and norm_url(url) in MAPPINGS:
+        return LocalFolder(MAPPINGS[norm_url(url)], url)
     host, path = parse_url(url)
     kind = (kind or ("github" if host == "github.com" else
                      "gitlab" if host == "gitlab.com" or "gitlab" in host.split(".")[0]
@@ -718,18 +818,18 @@ def select_release(origin, rule, prerelease):
     if rule and not is_pattern(rule):
         r = origin.by_tag(rule)
         if not r:
-            raise FsError(f"no release with tag '{rule}' in {origin.label}")
+            raise FsError(f"no release with tag '{rule}' in {origin.where}")
         return r
     if not rule and not prerelease:
         r = origin.latest()
         if not r:
-            raise FsError(f"no release in {origin.label}")
+            raise FsError(f"no release in {origin.where}")
         return r
     cands = [r for r in origin.releases() if not r.draft and (prerelease or not r.prerelease)
              and (not rule or fnmatch.fnmatchcase(r.tag, rule))]
     if not cands:
         what = f"with a tag matching '{rule}'" if rule else ""
-        raise FsError(f"no release {what} in {origin.label}".replace("  ", " ")
+        raise FsError(f"no release {what} in {origin.where}".replace("  ", " ")
                       + ("" if prerelease else " (prereleases not counted)"))
     return max(cands, key=lambda r: r.date)
 
@@ -807,7 +907,9 @@ def get_asset(origin, release, asset):
     """(file, digest) of an asset in the download cache, downloaded and
     checked first if it isn't there. Contents are kept by their SHA-256; an
     index maps platform, project, tag and asset to it, for platforms that
-    report no digests (GitLab)."""
+    report no digests (GitLab). Assets in a local folder are not cached."""
+    if isinstance(origin, LocalFolder):
+        return Path(asset.url), asset.digest
     root = cache_root()
     store, index = root / "sha256", root / "index"
     key = "\n".join([type(origin).__name__, origin.host, origin.project, release.tag,
@@ -2414,7 +2516,8 @@ def print_long(ctx, repo, sts, verbose):
     for st in ok:
         up = upstream_state(st)
         if up:
-            up_rows.append((up[0], st.entry.shown, up[1], "dim"))
+            local = ", local folder" if st.release and st.release.local else ""
+            up_rows.append((up[0], st.entry.shown, up[1] + local, "dim"))
     section("Upstream changes to pull:",
             ['use "git assetsync diff --upstream <file>..." to see what pull would bring',
              'use "git assetsync pull <file>..." to update'],
@@ -2442,6 +2545,15 @@ def print_long(ctx, repo, sts, verbose):
             print(f"\t{paint('warning:', 'yellow')} {shown(repo, rel)}: {w}")
         print()
 
+    folders = {}
+    for st in ok:
+        if isinstance(st.origin, LocalFolder):
+            folders.setdefault(st.origin.label, st.origin.dir)
+    for label, folder in sorted(folders.items()):
+        print(paint(f"releases of {label} from the local folder {folder} (git assetsync map; "
+                    "--remote: the platform)", "cyan"))
+    if folders:
+        print()
     if not ctx.fetch:
         print("new releases not checked (--no-fetch)")
     elif not up_rows and len(ok) == len(sts):
@@ -2481,6 +2593,167 @@ def cmd_status(ctx, repo, args):
     return rc
 
 
+def print_mappings(maps, url=None):
+    """Print mappings with their scope; entries shadowed by a later one
+    (e.g. a global mapping overridden by the repository's own) are marked."""
+    effective = {norm_url(u): i for i, (_, _, u, _) in enumerate(maps)}
+    shown = 0
+    for i, (sc, _, u, d) in enumerate(maps):
+        if url and norm_url(u) != norm_url(url):
+            continue
+        note = "" if effective[norm_url(u)] == i else paint("   (overridden)", "dim")
+        print(f"{paint(f'[{sc}]', 'cyan')} {u} -> {d}{note}")
+        shown += 1
+    if not shown:
+        print("no mappings" + (f" for {url}" if url else ""))
+
+
+def map_url(repo, arg):
+    """URL for map's argument: the name of a [source] of this repository, or
+    a URL (owner/repo: github.com)."""
+    if repo and "://" not in arg:
+        sources = Registry(repo).sources
+        if arg in sources:
+            if not sources[arg].get("url"):
+                raise FsError(f"[source \"{arg}\"] in {REGISTRY} has no url")
+            return norm_url(sources[arg]["url"])
+    return norm_url(source_url(arg))
+
+
+def cmd_map(args, repo):
+    """Map a source URL to a local folder with releases, for local
+    development and tests. Default scope is this repository's config, so
+    different repositories can use different folders; --global applies to
+    all repositories. Never in .git-assetsync."""
+    top = repo.top if repo else None
+    url = map_url(repo, args.source) if args.source else None
+    if not args.dir and not args.unset:      # listing: all scopes visible here
+        print_mappings(local_mappings(cwd=top), url)
+        return EXIT_OK
+    if not url:
+        raise FsError("--unset needs the source (URL or name) of the mapping to remove")
+    if args.glob:
+        scope = "--global"
+    elif repo:
+        scope = "--local"
+    else:
+        raise FsError("not inside a Git repository; use --global for a global mapping")
+    name = scope[2:]
+    matching = [k for _, k, _, _ in mappings_for(url, scope, cwd=top)]
+    if args.unset:
+        if not matching:
+            print(f"no {name} mapping for {url}")
+            return EXIT_OK
+        for k in matching:
+            git(["config", scope, "--unset-all", k], cwd=top)
+        print(f"removed {name} mapping for {url}")
+        rest = mappings_for(url, cwd=top)
+        if rest:
+            print(f"now using [{rest[-1][0]}] {rest[-1][3]}")
+        return EXIT_OK
+    base = repo.base if repo else Path.cwd()
+    d = (base / os.path.expanduser(args.dir)).resolve()
+    if not d.is_dir():
+        raise FsError(f"{d} is not a directory")
+    for k in matching:
+        git(["config", scope, "--unset-all", k], cwd=top)
+    git(["config", scope, f"assetsync.{url}.localpath", str(d)], cwd=top)
+    print(f"{paint(f'[{name}]', 'cyan')} {url} -> {d}")
+    if not any(c.is_dir() and not c.name.startswith(".") for c in d.iterdir()):
+        warn(f"{d} has no release folders yet (one subdirectory per release, named like its "
+             "tag, with the assets)")
+    if scope == "--global" and repo:
+        own = mappings_for(url, "--local", cwd=top)
+        if own:
+            warn(f"this repository has its own mapping ({own[-1][3]}), which takes precedence")
+    return EXIT_OK
+
+
+def registry_at(repo, rev):
+    """parse_registry() of .git-assetsync in a commit, None if it has none."""
+    p = repo.git(["config", "--blob", f"{rev}:{REGISTRY}", "--list", "-z"], check=False)
+    return parse_registry(p.stdout) if p.returncode == 0 else None
+
+
+def synced_entries(parsed):
+    """{(url, tag, digest): [(path, values, source)]} of the synced entries
+    of a parsed registry."""
+    result = {}
+    for kind in BASE_KEY:
+        for rel, v in sorted(parsed[kind].items()):
+            src = parsed["source"].get(v.get("source", ""), {})
+            if src.get("url") and v.get("synced"):
+                key = (norm_url(src["url"]), v["synced"], (v.get("digest") or "").lower())
+                result.setdefault(key, []).append((rel + ("/" if kind == "dir" else ""),
+                                                   v, src))
+    return result
+
+
+def pushed_revs(repo, args):
+    """(commits a push sends, commits the remote has): from the pre-push
+    hook's stdin - git always passes the remote's name and URL, so without
+    them the command was run by hand: HEAD. (Not isatty(): on Windows, NUL
+    is a terminal.) What the remote has: the remote side of each ref and its
+    remote-tracking branches."""
+    if not args.hook_args:
+        sent, have, refs = ["HEAD"], [], "refs/remotes/"
+    else:
+        sent, have, refs = [], [], f"refs/remotes/{args.hook_args[0]}/"
+        for line in sys.stdin:
+            parts = line.split()
+            if len(parts) == 4 and parts[1].strip("0"):
+                sent.append(parts[1])
+                if parts[3].strip("0"):
+                    have.append(parts[3])
+    p = repo.git(["for-each-ref", "--format=%(objectname)", refs], check=False)
+    return sent, have + out(p).splitlines()
+
+
+def push_check(repo, args):
+    """pre-push: entries in the pushed commits synced from a release that
+    isn't on the platform, or whose assets differ from those there - e.g.
+    pulled from a local folder (map). Entries the remote already has are
+    not checked again. Warns on stderr; True if such an entry was found."""
+    sent, have = pushed_revs(repo, args)
+    known = set()
+    for rev in have:
+        parsed = registry_at(repo, rev)
+        if parsed:
+            known |= set(synced_entries(parsed))
+    found = {}
+    for rev in sent:
+        parsed = registry_at(repo, rev)
+        for key, items in (synced_entries(parsed) if parsed else {}).items():
+            if key not in known:
+                lst = found.setdefault(key, [])
+                lst += [i for i in items if i not in lst]
+    bad = False
+    for (url, tag, digest), items in sorted(found.items()):
+        what = paint(", ".join(dict.fromkeys(rel for rel, _, _ in items)), "yellow", "err")
+        try:
+            origin = platform_of(url, items[0][2].get("type"), remote=True)
+            release = origin.by_tag(tag)
+            if release:
+                _, v, _ = items[0]
+                assets = select_assets(release, v.get("asset", ""), origin.label,
+                                       any(rel.endswith("/") for rel, _, _ in items))
+                now = assets_digest([(a.name, a.digest) for a in assets])
+                if not (now and digest and now != digest):
+                    continue
+        except FsError as e:
+            print(f"assetsync: {what}: cannot check whether release {tag} is on the server "
+                  f"({url}: {e})", file=sys.stderr)
+            continue
+        if release:
+            print(f"assetsync: {what}: synced from assets of release {tag} that differ from "
+                  f"those on the server ({url}) - publish them there first", file=sys.stderr)
+        else:
+            print(f"assetsync: {what}: synced from release {tag}, which is not on the server "
+                  f"({url}) - publish it there first", file=sys.stderr)
+        bad = True
+    return bad
+
+
 def hook_reminders(sts):
     """Terse notes on stderr about entries needing attention: something to
     pull, local modifications, an error."""
@@ -2496,16 +2769,32 @@ def hook_reminders(sts):
 
 
 def cmd_hook(ctx, repo, args):
-    """Run by the installed hooks (HOOKS): reminders on stderr. Exit code
-    EXIT_REFUSED only to refuse a push (no check does that yet)."""
+    """Run by the installed hooks (HOOKS): reminders on stderr; pre-push also
+    checks the pushed commits (assetsync.pushCheck = warn | error | off).
+    Exit code EXIT_REFUSED only to refuse a push."""
     hook_reminders([evaluate(ctx, repo, e) for e in Registry(repo).entries()])
+    if args.name != "pre-push":
+        return EXIT_OK
+    mode = out(repo.git(["config", "assetsync.pushCheck"], check=False)).lower() or "warn"
+    if mode not in ("warn", "error", "off"):
+        warn(f"assetsync.pushCheck: unknown value '{mode}', using 'warn'")
+        mode = "warn"
+    if mode == "off" or not push_check(repo, args):
+        return EXIT_OK
+    if mode == "error":
+        print(paint("assetsync: push refused (assetsync.pushCheck = error)", "boldred", "err"),
+              file=sys.stderr)
+        return EXIT_REFUSED
+    print("assetsync: pushing anyway (refuse such pushes: git config assetsync.pushCheck error)",
+          file=sys.stderr)
     return EXIT_OK
 
 
 def release_lines(release, assets, filter_name=None, stats=None):
     """Body lines of a commit message naming the release, assets and filter,
     and for a directory what changes in it."""
-    lines = [f"Release: {release.url or release.tag}"]
+    lines = [f"Release: {release.tag} (from a local folder, not published)" if release.local
+             else f"Release: {release.url or release.tag}"]
     if release.title and release.title != release.tag:
         lines.append(f"Title:   {release.title}")
     names = [a.name for a in assets]
@@ -3391,8 +3680,10 @@ def cmd_releases(ctx, repo, args):
                   key=lambda r: r.date, reverse=True)
     if not args.all:
         rels = rels[:args.max_count]
+    if isinstance(origin, LocalFolder):
+        print(paint(f"releases in the local folder {origin.dir} (git assetsync map)", "cyan"))
     if not rels:
-        print(f"no releases in {origin.label}")
+        print(f"no releases in {origin.where}")
         return EXIT_OK
     latest = origin.latest()
     selected = {}
@@ -3818,6 +4109,10 @@ def main(argv=None):
     colorp.add_argument("--no-color", dest="color", action="store_const", const="never",
                         help="same as --color=never")
 
+    remotep = argparse.ArgumentParser(add_help=False)
+    remotep.add_argument("--remote", action="store_true",
+                         help="ignore mappings to local folders (see map): ask the platform")
+
     ap = argparse.ArgumentParser(prog="git assetsync",
                                  description="Keep files in sync with release assets of "
                                              "other projects.",
@@ -3827,7 +4122,7 @@ def main(argv=None):
     ap.add_argument("--version", action="version", version=f"git-assetsync {__version__}")
     sub = ap.add_subparsers(dest="cmd")
 
-    p = sub.add_parser("status", parents=[colorp], help="show the state of the synced files")
+    p = sub.add_parser("status", parents=[colorp, remotep], help="show the state of the synced files")
     p.add_argument("paths", nargs="*", help="files or directories (default: all)")
     p.add_argument("-s", "--short", action="store_true",
                    help="short format: upstream / committed / working tree columns")
@@ -3838,7 +4133,7 @@ def main(argv=None):
     p.add_argument("--no-fetch", action="store_true",
                    help="don't ask the platform for new releases")
 
-    p = sub.add_parser("pull", parents=[colorp], help="update files to the selected release")
+    p = sub.add_parser("pull", parents=[colorp, remotep], help="update files to the selected release")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories")
     p.add_argument("--all", action="store_true", help="all files with something to pull")
     p.add_argument("--release", metavar="TAG|PATTERN",
@@ -3853,7 +4148,7 @@ def main(argv=None):
 
     for name, hlp in (("diff", "show local modifications against what the release gave"),
                       ("difftool", "same in the configured difftool")):
-        p = sub.add_parser(name, parents=[colorp], help=hlp,
+        p = sub.add_parser(name, parents=[colorp, remotep], help=hlp,
                            epilog="Options after '--' are passed to git " + name + ".")
         p.add_argument("paths", nargs="*", metavar="PATH",
                        help="files or directories (default: all)")
@@ -3902,7 +4197,7 @@ def main(argv=None):
                    help="run COMMAND on all files: {in} a directory with them, {out} an empty "
                         "directory for the result, which replaces them")
 
-    p = sub.add_parser("add", parents=[colorp],
+    p = sub.add_parser("add", parents=[colorp, remotep],
                        help="take a file or directory from release assets")
     p.add_argument("--filter", metavar="NAME",
                    help="the named filter (see 'filter add') to apply to the assets")
@@ -3924,7 +4219,7 @@ def main(argv=None):
     p.add_argument("--force", action="store_true", help="replace an existing entry or file")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
-    p = sub.add_parser("set", parents=[colorp],
+    p = sub.add_parser("set", parents=[colorp, remotep],
                        help="change entries: source, release selection, asset or filter")
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
     p.add_argument("--source", metavar="URL|SOURCE",
@@ -3947,11 +4242,11 @@ def main(argv=None):
     g.add_argument("--no-filter", action="store_true", help="use no filter")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
-    p = sub.add_parser("verify", parents=[colorp],
+    p = sub.add_parser("verify", parents=[colorp, remotep],
                        help="filter the synced assets again and compare with what is committed")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
 
-    p = sub.add_parser("releases", parents=[colorp],
+    p = sub.add_parser("releases", parents=[colorp, remotep],
                        help="list the releases of a source (and their assets)")
     p.add_argument("source", metavar="SOURCE|URL",
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
@@ -3972,7 +4267,7 @@ def main(argv=None):
     p.add_argument("dst", metavar="NEW", help="new path or existing directory")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
-    p = sub.add_parser("source", parents=[colorp],
+    p = sub.add_parser("source", parents=[colorp, remotep],
                        help="list or change the [source]s (like 'git remote')")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="list with URL, release selection, the release it selects now and "
@@ -4015,7 +4310,7 @@ def main(argv=None):
     a = actions.add_parser("set", parents=[colorp, filterp],
                            help="replace the steps of a filter (in the order given)")
     a.add_argument("name", metavar="NAME")
-    a = actions.add_parser("test", parents=[colorp],
+    a = actions.add_parser("test", parents=[colorp, remotep],
                            help="apply a filter to local files or to the assets of a release, "
                                 "and list or write the result (nothing else changes)")
     a.add_argument("name", metavar="NAME")
@@ -4043,6 +4338,18 @@ def main(argv=None):
     p.add_argument("--all", action="store_true", help="trust all filters that run commands")
     p.add_argument("--revoke", action="store_true", help="no longer trust the filters NAME")
 
+    p = sub.add_parser("map", parents=[colorp],
+                       help="take the releases of a source from a local folder (local "
+                            "development, tests); this repository's config, --global: all")
+    p.add_argument("source", nargs="?", metavar="URL|SOURCE",
+                   help="source URL, or the name of a [source] (without DIR: list its mappings)")
+    p.add_argument("dir", nargs="?", metavar="DIR",
+                   help="local folder: one subdirectory per release, named like its tag, "
+                        "with the assets")
+    p.add_argument("--unset", action="store_true", help="remove the mapping")
+    p.add_argument("--global", dest="glob", action="store_true",
+                   help="in the global git config, for all repositories")
+
     sub.add_parser("install-hooks", parents=[colorp], help="install the pre-push/post-merge hooks")
     sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the hooks again")
     p = sub.add_parser("hook", parents=[colorp], help="what the installed hooks run")
@@ -4064,6 +4371,11 @@ def main(argv=None):
         except FsError:
             repo = None
         setup_colors(args.color, repo.top if repo else None)
+        if args.cmd == "map":                 # --global also outside a repository
+            return cmd_map(args, repo)
+        if not getattr(args, "remote", False):
+            MAPPINGS.update((norm_url(u), d) for _, _, u, d in
+                            local_mappings(cwd=repo.top if repo else None))
         if args.cmd == "releases":            # also outside a repository
             return cmd_releases(Context(args), repo, args)
         if repo is None:
