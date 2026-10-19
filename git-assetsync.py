@@ -298,6 +298,7 @@ import zlib
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
+from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
@@ -478,9 +479,9 @@ def lfs_smudge(run, data, path, where):
 class Asset:
     name: str
     id: str
-    size: int = None
-    digest: str = None        # 'sha256:<hex>' if the platform reports it
-    url: str = None           # where to download it (GitLab: the link's URL)
+    size: Optional[int] = None
+    digest: Optional[str] = None   # 'sha256:<hex>' if the platform reports it
+    url: Optional[str] = None      # where to download it (GitLab: the link's URL)
 
 
 @dataclass
@@ -516,6 +517,15 @@ class Platform:
 
     PER_PAGE = 100
     CLI = CLI_VAR = CLI_NAME = CLI_URL = KIND = ""
+    # API paths, and a release from the API's answer: given by the subclasses
+    project_path = list_path = latest_path = property(lambda self: "")
+
+    def tag_path(self, tag):
+        raise NotImplementedError
+
+    @staticmethod
+    def release(d) -> Release:
+        raise NotImplementedError
 
     def __init__(self, host, project, label):
         self.host, self.project, self.label = host, project, label
@@ -707,14 +717,15 @@ def http_download(url, dest, what):
 class LocalAsset(Asset):
     """An asset in a local folder: its digest is computed when needed."""
 
+    # a property where Asset has a field: fine at runtime, not for type checkers
     @property
-    def digest(self):
+    def digest(self):  # pyright: ignore[reportIncompatibleVariableOverride]
         if self._digest is None:
             self._digest = sha256_file(self.url)[0]
         return self._digest
 
     @digest.setter
-    def digest(self, value):
+    def digest(self, value):  # pyright: ignore[reportIncompatibleVariableOverride]
         self._digest = value
 
 
@@ -1259,13 +1270,14 @@ def extract_7z(path, name, files, work):
     valid names). The executable bit comes from the listing, so all
     platforms get the same."""
     what = f"{work.what}: {name}"
-    text = run_7z(what, "l", ["-slt", "--", str(path)], ["-sccUTF-8"])
-    text = text.decode("utf-8", "replace").replace("\r\n", "\n")
+    listing = run_7z(what, "l", ["-slt", "--", str(path)], ["-sccUTF-8"])
+    text = listing.decode("utf-8", "replace").replace("\r\n", "\n")
     if "\n----------\n" not in text:
         raise FsError(f"{what}: unexpected listing from 7-Zip")
     executable, size, count = {}, 0, 0
     for block in text.split("\n----------\n", 1)[1].split("\n\n"):
-        info = dict(line.partition(" = ")[::2] for line in block.splitlines() if " = " in line)
+        info = {k: v for k, sep, v in (line.partition(" = ") for line in block.splitlines())
+                if sep}
         member = info.get("Path")
         if member is None:
             continue
@@ -1640,7 +1652,8 @@ def ensure_trusted(repo, steps, filters):
 
 def run_steps(files, steps, work, filters=None, chain=()):
     """Apply the filter steps to {path: (file, executable)}; filters: the
-    named filters {name: steps}, for 'filter' steps."""
+    named filters {name: steps}, for 'apply' steps."""
+    filters = filters or {}
     for step in steps:
         name, args = parse_step(step)
         if name in ("move", "copy"):
@@ -1705,7 +1718,7 @@ def run_steps(files, steps, work, filters=None, chain=()):
                 values = path_values(r)
                 into_dir = target.endswith("/")
                 t = fill(target.rstrip("/") if into_dir else target, values).lstrip("/")
-                t = safe_path(t, what) or "" if into_dir else safe_path(t, what)
+                t = safe_path(t, what) or ""
                 if not into_dir and not t:
                     raise FsError(f"{what}: '{r}' gets no file name from '{target}'")
                 # {in} and {out}: names in the command's working directory
@@ -2352,26 +2365,26 @@ def select_entries(repo, reg, paths):
 @dataclass
 class State:
     """What evaluate() finds out about an entry."""
-    entry: object
+    entry: Any
     rel: str
-    error: str = None
+    error: Optional[str] = None
     warnings: list = field(default_factory=list)
     fetched: bool = False     # upstream checked
-    origin: object = None
-    release: object = None    # the release the source selects now
-    assets: list = None       # its assets the entry takes
-    asset: object = None      # the first of them (the one of a file)
-    committed: str = None     # see evaluate()
+    origin: Any = None
+    release: Any = None       # the release the source selects now
+    assets: list = field(default_factory=list)   # its assets the entry takes
+    asset: Optional[Asset] = None   # the first of them (the one of a file)
+    committed: Optional[str] = None   # see evaluate()
     worktree: str = "clean"
     local: str = "clean"
-    head_blob: str = None     # committed blob of a file, tree of a directory
+    head_blob: Optional[str] = None   # committed blob of a file, tree of a directory
     changed: bool = False     # what pull would take differs from the base:
     tag_changed: bool = False     # another release,
     digest_changed: bool = False  # other assets in the same release,
     filter_changed: bool = False  # or another filter
     pending: bool = False     # something for pull to do
     modified: bool = False    # local modifications (not allowed)
-    base_now: str = None      # base as it would be stored now
+    base_now: Optional[str] = None    # base as it would be stored now
 
 
 def base_unavailable(st, e):
@@ -3897,19 +3910,20 @@ def cmd_cache(args):
         if not files:
             print(f"the download cache is empty ({root})")
         return EXIT_OK
-    if action == "clear":
-        removed = prune_cache(None, 0, args.dry_run, grace=False)
-    elif action == "prune":
-        max_age, max_size = cache_limits()
-        if args.older_than is not None:
-            max_age = args.older_than
-        if args.max_size is not None:
-            max_size = parse_size(args.max_size)
-        if max_age is None and max_size is None:
-            print("no limits set (assetsync.cacheMaxAge, assetsync.cacheMaxSize) - nothing to do")
-            return EXIT_OK
-        removed = prune_cache(max_age, max_size, args.dry_run)
     if action in ("prune", "clear"):
+        if action == "clear":
+            removed = prune_cache(None, 0, args.dry_run, grace=False)
+        else:
+            max_age, max_size = cache_limits()
+            if args.older_than is not None:
+                max_age = args.older_than
+            if args.max_size is not None:
+                max_size = parse_size(args.max_size)
+            if max_age is None and max_size is None:
+                print("no limits set (assetsync.cacheMaxAge, assetsync.cacheMaxSize) - "
+                      "nothing to do")
+                return EXIT_OK
+            removed = prune_cache(max_age, max_size, args.dry_run)
         verb = "would remove" if args.dry_run else "removed"
         for item in removed:
             print(f"{verb} {describe_cached(item).lstrip()}")
@@ -4363,11 +4377,11 @@ def cmd_uninstall_hooks(repo, args):
 
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
-        try:
-            # LF line ends like git's output, also on Windows (no CRLF translation)
-            stream.reconfigure(errors="replace", newline="\n")
-        except AttributeError:
-            pass
+        # LF line ends like git's output, also on Windows (no CRLF translation);
+        # not for streams replaced by something else (no reconfigure)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(errors="replace", newline="\n")
 
     colorp = argparse.ArgumentParser(add_help=False)
     colorp.add_argument("--color", nargs="?", const="always", default="auto",
