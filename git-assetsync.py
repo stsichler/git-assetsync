@@ -157,6 +157,11 @@ command.
         --filter NAME, --no-filter  another filter, or none
         -n, --dry-run           only show what would change
 
+    edit                        open .git-assetsync in the editor (like `git
+                                config --edit`), then check it (warnings
+                                about gaps) and stage it; for usual changes
+                                set, source, filter, unlink and mv are safer
+
     unlink PATH...              remove entries (the files are kept); also
                                 broken ones, by their name
     mv OLD NEW                  move a file or directory (git mv), keeping its
@@ -3469,6 +3474,82 @@ def cmd_add(ctx, repo, args):
     return EXIT_OK
 
 
+def registry_problems(reg):
+    """Gaps in the registry that status (or pull) would report, as text."""
+    problems = []
+    used = {v.get("source") for v in reg.files.values()}
+    for name, src in sorted(reg.sources.items()):
+        if not src.get("url"):
+            problems.append(f'[source "{name}"] has no url')
+        else:
+            try:
+                platform_of(src["url"], src.get("type"), remote=True)
+            except FsError as e:
+                problems.append(f'[source "{name}"]: {e}')
+        if name not in used:
+            problems.append(f'[source "{name}"] is not used by any file')
+    for name in sorted(reg.filters):
+        try:
+            expand_steps([shlex.join(["apply", "*", name])], reg.filters)
+        except FsError as e:
+            problems.append(f'[filter "{name}"]: {e}')
+    reported = set()
+    for rel in sorted(reg.files):
+        v, kind = reg.files[rel], reg.section(rel)
+        sect = f'[{kind} "{rel}"]'
+        problem = path_problem(rel)
+        if problem:
+            problems.append(f"{sect}: {problem}")
+            continue
+        if reg.kinds.get(rel) == "both":
+            problems.append(f'[file "{rel}"] and [dir "{rel}"] both exist')
+        for other in reg.overlapping(rel, exclude=rel):
+            if (other, rel) not in reported:
+                reported.add((rel, other))
+                problems.append(f"{sect} overlaps with the entry for {other}")
+        if not v.get("source"):
+            problems.append(f"{sect} has no source")
+        elif v["source"] not in reg.sources:
+            problems.append(f'{sect}: no [source "{v["source"]}"]')
+        if "step" in v:
+            problems.append(f"{sect}: filter steps belong to a named [filter]")
+        if v.get("filter") and v["filter"] not in reg.filters:
+            problems.append(f'{sect}: no [filter "{v["filter"]}"]')
+        if not v.get("synced") or not v.get(BASE_KEY[kind]):
+            problems.append(f"{sect} lacks synced or {BASE_KEY[kind]} (what it was synced "
+                            "with) - pull takes the release")
+    return problems
+
+
+def cmd_edit(ctx, repo, args):
+    """Open .git-assetsync in the editor (git's: GIT_EDITOR, core.editor,
+    VISUAL, EDITOR), then check it and stage it."""
+    path = repo.top / REGISTRY
+    if not path.exists():
+        raise FsError(f"no {REGISTRY} yet - take files from release assets with "
+                      "'git assetsync add'")
+    before = path.read_bytes()
+    # run like git runs its editor ('git config --edit' exits with 0 even if
+    # the editor fails): GIT_EDITOR, core.editor, VISUAL, EDITOR, via sh
+    editor = out(repo.git(["var", "GIT_EDITOR"]))
+    if subprocess.run(shell_command() + ["-c", f'{editor} "$@"', editor, REGISTRY],
+                      cwd=repo.top).returncode:
+        raise FsError("the editor failed; nothing staged")
+    if path.exists() and path.read_bytes() == before:
+        print(f"{REGISTRY}: no changes")
+        return EXIT_OK
+    try:
+        reg = Registry(repo)
+    except FsError as e:
+        raise FsError(f"{e} - not staged; fix it with 'git assetsync edit'")
+    for problem in registry_problems(reg):
+        warn(f"{REGISTRY}: {problem}")
+    reg.finish()
+    print(f'{REGISTRY} staged (use "git assetsync status" to see what changes, '
+          '"git assetsync pull <file>..." to update)')
+    return EXIT_OK
+
+
 def move_to_source(reg, name, entries, url, spec, named=None):
     """Point entries of [source] name at the source with url and spec - or
     exactly at [source] named. If they are all files of the source and no
@@ -4242,6 +4323,9 @@ def main(argv=None):
     g.add_argument("--no-filter", action="store_true", help="use no filter")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
+    sub.add_parser("edit", parents=[colorp],
+                   help=f"open {REGISTRY} in the editor, then check and stage it")
+
     p = sub.add_parser("verify", parents=[colorp, remotep],
                        help="filter the synced assets again and compare with what is committed")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
@@ -4388,7 +4472,7 @@ def main(argv=None):
             args.no_fetch = args.name == "post-merge"    # pre-push: online anyway
         ctx = Context(args)
         return {"hook": cmd_hook, "status": cmd_status, "pull": cmd_pull, "diff": cmd_diff,
-                "difftool": cmd_difftool, "add": cmd_add,
+                "difftool": cmd_difftool, "add": cmd_add, "edit": cmd_edit,
                 "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv,
                 "source": cmd_source, "filter": cmd_filter,
                 "trust": cmd_trust, "verify": cmd_verify}[args.cmd](ctx, repo, args)

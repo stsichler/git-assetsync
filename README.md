@@ -221,6 +221,7 @@ git assetsync add third_party/zlib/ https://github.com/madler/zlib --asset 'zlib
 | `add PATH SOURCE` | take a file or directory from release assets |
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `unlink PATH…`, `mv OLD NEW` | remove or move entries |
+| `edit` | open `.git-assetsync` in the editor, then check and stage it |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
 | `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
 | `trust [NAME…]` | list the filters that run commands; trust them in this repository |

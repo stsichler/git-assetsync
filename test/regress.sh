@@ -48,6 +48,7 @@
 #   24. verify: is the committed state reproducible?
 #   25. diff, difftool, and pull --release (once another release)
 #   26. map: releases from a local folder; the pre-push check
+#   27. edit: .git-assetsync in the editor
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -2044,6 +2045,40 @@ git commit -q --allow-empty -m next2
 sedi 's/^\tsynced = v4$/\tsynced = v5/' .git-assetsync && git commit -qam v5
 OUT=$(ASSETSYNC_GH=false git -c assetsync.pushCheck=error push -q origin main 2>&1); RC=$?
 check "push check: server not reachable" "$RC $(echo "$OUT" | grep -c 'cannot check whether release v5 is on the server')" "0 1"
+
+
+# =============================================================================
+section "27. edit: .git-assetsync in the editor"
+# =============================================================================
+cd "$T"
+new_repo r27
+check "edit: no registry" "$(git assetsync edit 2>&1)" \
+  "error: no .git-assetsync yet - take files from release assets with 'git assetsync add'"
+asset e.txt "e 1"
+release acme/e v1 10 "$F/e.txt"
+addc e.txt acme/e
+check "edit: unchanged" "$(git assetsync edit)" ".git-assetsync: no changes"
+# "editors": scripts that change the file they get
+printf 'git config -f "$1" source.acme/e.release v1\n' > "$T/ed-pin.sh"
+check "edit: staged" "$(GIT_EDITOR="sh '$T/ed-pin.sh'" git assetsync edit)" \
+  '.git-assetsync staged (use "git assetsync status" to see what changes, "git assetsync pull <file>..." to update)'
+check "edit: the change" "$(reg source.acme/e.release) $(git status --porcelain | oneline)" "v1 M  .git-assetsync "
+git commit -qm pinned
+printf 'git config -f "$1" source.other.url https://github.com/acme/other\ngit config -f "$1" file.x.txt.source nosuch\ngit config -f "$1" dir.e.txt/sub.source acme/e\n' > "$T/ed-gaps.sh"
+OUT=$(GIT_EDITOR="sh '$T/ed-gaps.sh'" git assetsync edit 2>&1)
+check "edit: warnings" "$(echo "$OUT" | grep '^warning:' | oneline)" \
+  "warning: .git-assetsync: [source \"other\"] is not used by any file warning: .git-assetsync: [file \"e.txt\"] overlaps with the entry for e.txt/sub warning: .git-assetsync: [dir \"e.txt/sub\"] lacks synced or tree (what it was synced with) - pull takes the release warning: .git-assetsync: [file \"x.txt\"]: no [source \"nosuch\"] warning: .git-assetsync: [file \"x.txt\"] lacks synced or blob (what it was synced with) - pull takes the release "
+check "edit: staged despite warnings" "$(git status --porcelain | oneline)" "M  .git-assetsync "
+git reset -q --hard
+printf 'printf "[file\\n" >> "$1"\n' > "$T/ed-broken.sh"
+OUT=$(GIT_EDITOR="sh '$T/ed-broken.sh'" git assetsync edit 2>&1); RC=$?
+check "edit: broken file" "$RC $(echo "$OUT" | grep -c "not staged; fix it with 'git assetsync edit'")" "2 1"
+check "edit: broken: nothing staged" "$(git diff --cached --name-only)" ""
+git checkout -q .git-assetsync
+check "edit: editor fails" "$(GIT_EDITOR=false git assetsync edit 2>&1)" "error: the editor failed; nothing staged"
+printf ': > "$1"\n' > "$T/ed-empty.sh"
+GIT_EDITOR="sh '$T/ed-empty.sh'" git assetsync edit >/dev/null 2>&1
+check "edit: emptied: removal staged" "$(git status --porcelain | oneline)" "D  .git-assetsync "
 
 # =============================================================================
 echo

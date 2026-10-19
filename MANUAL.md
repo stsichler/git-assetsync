@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map)
+  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -142,8 +142,9 @@ differs).
 
 The commands maintain the file: `add`, `set`, `unlink` and `mv` for the
 `[file]` and `[dir]` entries, [`source`](#source) for the `[source]`
-sections. It can also be edited by hand (or with `git config -f
-.git-assetsync …`), but that is never needed; `synced`, `digest`,
+sections. It can also be edited by hand – with [`edit`](#edit), which
+checks and stages it afterwards, or with `git config -f .git-assetsync
+…` – but that is never needed; `synced`, `digest`,
 `filterhash`, `blob` and `tree` should be left to git-assetsync. An entry
 written by hand without them is fetched by the next `pull` (an existing
 file at its path is only replaced if it is the same, a directory with
@@ -182,6 +183,7 @@ line endings normalized) is still unmodified.
 | `difftool [PATH…]` | the same in your difftool, file by file or (`-d`) as two directories |
 | `add PATH SOURCE` | take a file or directory from release assets |
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
+| `edit` | open `.git-assetsync` in the editor, then check and stage it |
 | `unlink PATH…` | remove entries (the files are kept) |
 | `mv OLD NEW` | move a file or directory, keeping its entry |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
@@ -512,6 +514,32 @@ git assetsync set firmware/ --source https://gitlab.com/me/fw-fork
 git assetsync set bin/tool --asset 'tool-*-linux-arm64'
 git assetsync set third_party/zlib --filter zlib-all       # another named filter
 ```
+
+### `edit`
+
+```
+git assetsync edit
+```
+
+Opens `.git-assetsync` in your editor – the one Git uses (`GIT_EDITOR`,
+`core.editor`, `VISUAL`, `EDITOR`), like `git config --edit` – and
+afterwards checks and stages it. A file that can't be parsed is not
+staged (`… - not staged; fix it with 'git assetsync edit'`); gaps that
+`status` would report are shown as warnings, e.g.:
+
+```
+warning: .git-assetsync: [source "acme/old"] is not used by any file
+warning: .git-assetsync: [file "bin/tool"]: no [source "acme/tol"]
+warning: .git-assetsync: [file "lib/x.bin"] lacks synced or blob (what it was synced with) - pull takes the release
+```
+
+Unchanged, nothing happens; if the editor fails, nothing is staged; an
+emptied file is removed (and that staged). For the usual changes the
+dedicated commands are safer – [`set`](#set), [`source`](#source),
+[`filter`](#filter), [`unlink`](#unlink), [`mv`](#mv) – since `edit` keeps
+whatever you write: a changed `blob` or `tree` changes what counts as a
+local modification, a removed `synced` makes `pull` take the release
+again.
 
 ### `unlink`
 
