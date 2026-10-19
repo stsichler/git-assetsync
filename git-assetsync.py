@@ -267,7 +267,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 REGISTRY = ".git-assetsync"
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
 HOOK_MARKER = "git-assetsync"
