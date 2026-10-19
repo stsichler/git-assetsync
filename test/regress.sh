@@ -1489,6 +1489,51 @@ rm -rf "$ASSETSYNC_CACHE"
 check "cache: deleted cache is filled again" "$(asd add e.txt acme/cache >/dev/null 2>&1; ls "$ASSETSYNC_CACHE/sha256" | lines)" "1"
 check "cache: unusable" "$(ASSETSYNC_CACHE=$T/r20/a.txt/x asd add f.txt acme/cache 2>&1 | sed 's/ (.*) / /' | tr '\\' /)" \
   "error: cannot create the download cache $T/r20/a.txt/x - set ASSETSYNC_CACHE to another directory"
+# cache: list, prune, clear (with a cache of its own here)
+check "cache list: what it is" "$(git assetsync cache list | grep -c '  github.com/acme/cache  v1  c.txt$')" "1"
+SAVED_CACHE=$ASSETSYNC_CACHE; export ASSETSYNC_CACHE=$T/cache20
+printf 'content1\n' > "$F/x1.txt"; printf 'content2\n' > "$F/x2.txt"
+release acme/cache2 v1 10 "$F/x1.txt" "$F/x2.txt"
+quiet asd add x1.txt acme/cache2 --asset x1.txt
+quiet asd add x2.txt acme/cache2 --asset x2.txt
+check "cache: summary" "$(git assetsync cache | head -1 | sed 's/^.*: //')" "2 files, 18 bytes"
+check "cache: limits" "$(git assetsync cache | tail -1)" \
+  "cleaned up automatically: files unused for 90 days (assetsync.cacheMaxAge, assetsync.cacheMaxSize)"
+check "cache dir" "$(git assetsync cache dir | tr '\\' /)" "$T/cache20"
+C1=$ASSETSYNC_CACHE/sha256/$(sha "$F/x1.txt"); C2=$ASSETSYNC_CACHE/sha256/$(sha "$F/x2.txt")
+touch -t 202501011200 "$C1"; touch -t 202506011200 "$C2"
+check "cache list: last used, newest first" "$(git assetsync cache list | sed 's/^ *//' | oneline)" \
+  "9 bytes  2025-06-01  github.com/acme/cache2  v1  x2.txt 9 bytes  2025-01-01  github.com/acme/cache2  v1  x1.txt "
+check "cache prune -n" "$(git assetsync cache prune -n | tail -1)" "would remove 2 files (18 bytes) from the download cache"
+check "cache prune -n: nothing removed" "$(ls "$ASSETSYNC_CACHE/sha256" | lines)" "2"
+check "cache prune --max-size: least recently used" \
+  "$(git assetsync cache prune --older-than 100000 --max-size 10 | head -1 | sed 's/  */ /g')" \
+  "removed 9 bytes 2025-01-01 github.com/acme/cache2 v1 x1.txt"
+check "cache prune: its index entry too" "$(ls "$ASSETSYNC_CACHE/sha256" | lines) $(ls "$ASSETSYNC_CACHE/index" | lines)" "1 1"
+check "cache: used again = kept" "$(asd add x1b.txt acme/cache2 --asset x2.txt >/dev/null 2>&1; git assetsync cache prune | tail -1)" \
+  "removed 0 files (0 bytes) from the download cache - files used in the last minutes are kept"
+touch -t 202501011200 "$ASSETSYNC_CACHE/sha256/.tmp-1-abc"
+quiet git assetsync cache prune
+check "cache prune: leftovers" "$(ls -a "$ASSETSYNC_CACHE/sha256" | grep -c tmp)" "0"
+check "cache clear" "$(git assetsync cache clear | tail -1)" "removed 1 file (9 bytes) from the download cache"
+check "cache: empty" "$(git assetsync cache list | grep -c 'is empty')" "1"
+check "cache prune --max-size: bad size" "$(git assetsync cache prune --max-size lots 2>&1)" \
+  "error: 'lots' is not a size like 500M or 2G"
+check "cache: bad cacheMaxAge" "$(git -c assetsync.cacheMaxAge=soon assetsync cache 2>&1)" \
+  "error: assetsync.cacheMaxAge: 'soon' is not a number of days"
+check "cache: no limits" "$(git -c assetsync.cacheMaxAge=off assetsync cache prune)" \
+  "no limits set (assetsync.cacheMaxAge, assetsync.cacheMaxSize) - nothing to do"
+# automatically after a download, at most once a day
+git config assetsync.cacheMaxAge 30
+quiet git assetsync pull --force --no-edit x1.txt          # downloads x1 again
+touch -t 202501011200 "$C1"
+echo x > x2.txt; git commit -qam x; quiet git assetsync pull --force --no-edit x2.txt
+check "cache: automatic, not twice a day" "$(ls "$ASSETSYNC_CACHE/sha256" | lines)" "2"
+touch -t 202501011200 "$ASSETSYNC_CACHE/last-prune"; rm "$C2"
+echo y > x2.txt; git commit -qam y; quiet git assetsync pull --force --no-edit x2.txt
+check "cache: automatic after a download" "$(ls "$ASSETSYNC_CACHE/sha256" | grep -c "$(sha "$F/x1.txt")")" "0"
+git config --unset assetsync.cacheMaxAge
+export ASSETSYNC_CACHE=$SAVED_CACHE
 
 
 # =============================================================================

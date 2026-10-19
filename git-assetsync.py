@@ -64,7 +64,7 @@ scripts: {root}/tools/x.py). Placeholders are filled in quoted, also as
 ASSETSYNC_* variables. Commands run only in filters trusted in this
 repository (see trust; CI: ASSETSYNC_TRUST=all). Filters are named; the
 steps come from the options of filter add / set, in the order given. Downloads are kept in a cache (ASSETSYNC_CACHE; default
-~/.cache/git-assetsync, %LOCALAPPDATA%\\git-assetsync).
+~/.cache/git-assetsync, %LOCALAPPDATA%\\git-assetsync; see cache).
 
 Commands (run inside the repository; without a command: status). PATH may
 be a file or a directory (= all entries below it); options follow the
@@ -232,6 +232,18 @@ command.
         --global                for all repositories (default: this one)
         --unset                 remove the mapping
 
+    cache                       the download cache: where, how big, the limits
+    cache list                  its files, most recently used first
+    cache prune                 remove what wasn't used for 90 days (or as
+                                configured: assetsync.cacheMaxAge DAYS,
+                                assetsync.cacheMaxSize SIZE; 0/off: none) -
+                                also done automatically after a download, at
+                                most once a day
+        --older-than DAYS, --max-size SIZE  other limits (SIZE: 500M, 2G)
+        -n, --dry-run           only show what would be removed
+    cache clear [-n]            remove everything
+    cache dir                   print its directory (e.g. for CI caching)
+
     install-hooks               install pre-push/post-merge hooks (or update
                                 them): reminders about new releases, local
                                 modifications, errors; pre-push also warns
@@ -313,6 +325,9 @@ NOTES_LINES, NOTES_WIDTH = 20, 200
 MAX_EXTRACT_SIZE, MAX_EXTRACT_FILES = 2 << 30, 100000
 # all assets of a release for a directory (add without --asset): more needs --force
 MAX_ALL_ASSETS, MAX_ALL_SIZE = 10, 100 << 20
+# download cache: files unused for this many days are removed (assetsync.cacheMaxAge),
+# automatically at most once a day; files used in the last minutes are never removed
+CACHE_MAX_AGE, CACHE_PRUNE_EVERY, CACHE_GRACE = 90, 86400, 600
 
 
 class FsError(Exception):
@@ -922,8 +937,12 @@ def get_asset(origin, release, asset):
     entry = index / hashlib.sha256(key.encode("utf-8")).hexdigest()
     known = asset.digest.lower() if (asset.digest or "").lower().startswith("sha256:") else None
     if not known and entry.is_file():
-        known = entry.read_text(encoding="ascii", errors="replace").strip()
+        known = entry.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0].strip()
     if known and (store / known[7:]).is_file():
+        try:
+            os.utime(store / known[7:])       # last used: for cleaning up the cache
+        except OSError:
+            pass
         return store / known[7:], known
     try:
         store.mkdir(parents=True, exist_ok=True)
@@ -947,9 +966,118 @@ def get_asset(origin, release, asset):
         if tmp.exists():
             tmp.unlink()
     part = entry.with_name(f"{entry.name}.tmp{os.getpid()}")
-    part.write_text(digest + "\n", encoding="ascii")
+    # the digest; then what it is, for 'cache list'
+    part.write_text(f"{digest}\n{origin.host}/{origin.project}\t{release.tag}\t{asset.name}\n",
+                    encoding="utf-8")
     os.replace(part, entry)
+    auto_prune()
     return store / digest[7:], digest
+
+
+def cache_files():
+    """[(file, size, last used, [descriptions])] of the files in the cache,
+    most recently used first. A description: 'host/project  tag  asset'."""
+    root = cache_root()
+    names = {}
+    for f in (root / "index").glob("*") if (root / "index").is_dir() else []:
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        if lines and lines[0].startswith("sha256:") and len(lines) > 1:
+            names.setdefault(lines[0][7:], []).append("  ".join(lines[1].split("\t")))
+    result = []
+    for f in (root / "sha256").glob("*") if (root / "sha256").is_dir() else []:
+        if f.is_file() and not f.name.startswith("."):
+            st = f.stat()
+            result.append((f, st.st_size, st.st_mtime, sorted(names.get(f.name, []))))
+    return sorted(result, key=lambda x: x[2], reverse=True)
+
+
+def parse_size(text):
+    """Bytes of '500M', '2G', '1.5GiB', '100k', '1000' (1024-based)."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([kmgt]?)(?:i?b)?\s*", text or "", re.I)
+    if not m:
+        raise FsError(f"'{text}' is not a size like 500M or 2G")
+    return int(float(m.group(1)) * 1024 ** " kmgt".index(m.group(2).lower() or " "))
+
+
+def cache_limits():
+    """(max age in days, max size in bytes) from assetsync.cacheMaxAge
+    (default CACHE_MAX_AGE) and assetsync.cacheMaxSize (default none);
+    None = no limit ('0' or 'off')."""
+    off = ("0", "off", "false", "no", "never")
+    age, size = (out(git(["config", f"assetsync.{key}"], check=False)).strip()
+                 for key in ("cacheMaxAge", "cacheMaxSize"))
+    if not age:
+        max_age = CACHE_MAX_AGE
+    elif age.lower() in off:
+        max_age = None
+    elif age.isdigit():
+        max_age = int(age)
+    else:
+        raise FsError(f"assetsync.cacheMaxAge: '{age}' is not a number of days")
+    return max_age, None if not size or size.lower() in off else parse_size(size)
+
+
+def prune_cache(max_age, max_size, dry_run=False, grace=True):
+    """Remove from the cache what wasn't used for max_age days, then the
+    least recently used until it is at most max_size - with grace never what
+    was used in the last minutes; also leftovers (unfinished downloads, index entries
+    without their file). Returns the removed [(file, size, last used,
+    descriptions)]."""
+    now, removed = time.time(), []
+    files = cache_files()
+    total = sum(size for _, size, _, _ in files)
+    for item in reversed(files):                  # least recently used first
+        f, size, used, _ = item
+        if grace and now - used < CACHE_GRACE:
+            continue
+        if (max_age is not None and now - used > max_age * 86400) or \
+                (max_size is not None and total > max_size):
+            if not dry_run:
+                try:
+                    f.unlink()
+                except OSError:
+                    continue
+            removed.append(item)
+            total -= size
+    if not dry_run:
+        root = cache_root()
+        gone = {f.name for f, _, _, _ in removed}
+        for f in (root / "index").glob("*") if (root / "index").is_dir() else []:
+            try:
+                if ".tmp" in f.name:
+                    stale = now - f.stat().st_mtime > 86400
+                else:
+                    first = f.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0]
+                    stale = first[7:] in gone or not (root / "sha256" / first[7:]).is_file()
+                if stale:
+                    f.unlink()
+            except OSError:
+                pass
+        for f in (root / "sha256").glob(".tmp-*") if (root / "sha256").is_dir() else []:
+            try:
+                if now - f.stat().st_mtime > 86400:
+                    f.unlink()
+            except OSError:
+                pass
+    return removed
+
+
+def auto_prune():
+    """After a download: clean up the cache by the configured limits, at most
+    once a day. Never fails a command."""
+    marker = cache_root() / "last-prune"
+    try:
+        if marker.is_file() and time.time() - marker.stat().st_mtime < CACHE_PRUNE_EVERY:
+            return
+        max_age, max_size = cache_limits()
+        marker.write_text("", encoding="ascii")
+        if max_age is not None or max_size is not None:
+            prune_cache(max_age, max_size)
+    except (FsError, OSError) as e:
+        warn(f"download cache not cleaned up: {e}")
 
 
 # --------------------------------------------------------------------------
@@ -3747,6 +3875,61 @@ def cmd_verify(ctx, repo, args):
     return rc
 
 
+def describe_cached(item):
+    _, size, used, names = item
+    what = names[0] + (f" (+{len(names) - 1} more)" if len(names) > 1 else "") if names else \
+        paint("(no details: downloaded before 0.12)", "dim")
+    return f"{human_size(size):>10}  {time.strftime('%Y-%m-%d', time.localtime(used))}  {what}"
+
+
+def cmd_cache(args):
+    """Show, list and clean up the download cache (shared by all
+    repositories of this user)."""
+    root = cache_root()
+    action = args.action
+    if action == "dir":
+        print(root)
+        return EXIT_OK
+    if action == "list":
+        files = cache_files()
+        for item in files:
+            print(describe_cached(item))
+        if not files:
+            print(f"the download cache is empty ({root})")
+        return EXIT_OK
+    if action == "clear":
+        removed = prune_cache(None, 0, args.dry_run, grace=False)
+    elif action == "prune":
+        max_age, max_size = cache_limits()
+        if args.older_than is not None:
+            max_age = args.older_than
+        if args.max_size is not None:
+            max_size = parse_size(args.max_size)
+        if max_age is None and max_size is None:
+            print("no limits set (assetsync.cacheMaxAge, assetsync.cacheMaxSize) - nothing to do")
+            return EXIT_OK
+        removed = prune_cache(max_age, max_size, args.dry_run)
+    if action in ("prune", "clear"):
+        verb = "would remove" if args.dry_run else "removed"
+        for item in removed:
+            print(f"{verb} {describe_cached(item).lstrip()}")
+        size = sum(s for _, s, _, _ in removed)
+        print(f"{verb} {plural(len(removed), 'file')} ({human_size(size)}) from the download "
+              f"cache" + ("" if removed or action == "clear" else
+                          " - files used in the last minutes are kept"))
+        return EXIT_OK
+    files = cache_files()
+    max_age, max_size = cache_limits()
+    print(f"{root}: {plural(len(files), 'file')}, {human_size(sum(s for _, s, _, _ in files))}")
+    limits = ([f"files unused for {max_age} days" if max_age is not None else ""] +
+              [f"the least recently used above {human_size(max_size)}"
+               if max_size is not None else ""])
+    limits = [x for x in limits if x]
+    print("cleaned up automatically: " + (" and ".join(limits) if limits else "never")
+          + " (assetsync.cacheMaxAge, assetsync.cacheMaxSize)")
+    return EXIT_OK
+
+
 def cmd_releases(ctx, repo, args):
     """List releases newest first, marked: latest (as the platform says),
     prerelease, draft, and which sources of this repository select them -
@@ -4434,6 +4617,23 @@ def main(argv=None):
     p.add_argument("--global", dest="glob", action="store_true",
                    help="in the global git config, for all repositories")
 
+    p = sub.add_parser("cache", parents=[colorp],
+                       help="show, list or clean up the download cache")
+    actions = p.add_subparsers(dest="action", metavar="ACTION")
+    actions.add_parser("list", parents=[colorp],
+                       help="the files, most recently used first: size, last used, what it is")
+    a = actions.add_parser("prune", parents=[colorp],
+                           help="remove what wasn't used for a while (default: the configured "
+                                "limits, assetsync.cacheMaxAge / cacheMaxSize)")
+    a.add_argument("--older-than", type=int, metavar="DAYS",
+                   help="what wasn't used for DAYS days")
+    a.add_argument("--max-size", metavar="SIZE",
+                   help="then the least recently used, down to SIZE (e.g. 500M, 2G)")
+    a.add_argument("-n", "--dry-run", action="store_true", help="only show what would be removed")
+    a = actions.add_parser("clear", parents=[colorp], help="remove everything")
+    a.add_argument("-n", "--dry-run", action="store_true", help="only show what would be removed")
+    actions.add_parser("dir", parents=[colorp], help="print the cache's directory")
+
     sub.add_parser("install-hooks", parents=[colorp], help="install the pre-push/post-merge hooks")
     sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the hooks again")
     p = sub.add_parser("hook", parents=[colorp], help="what the installed hooks run")
@@ -4455,6 +4655,8 @@ def main(argv=None):
         except FsError:
             repo = None
         setup_colors(args.color, repo.top if repo else None)
+        if args.cmd == "cache":               # also outside a repository
+            return cmd_cache(args)
         if args.cmd == "map":                 # --global also outside a repository
             return cmd_map(args, repo)
         if not getattr(args, "remote", False):

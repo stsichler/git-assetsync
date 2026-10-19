@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map)
+  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map) · [`cache`](#cache)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -192,6 +192,7 @@ line endings normalized) is still unmodified.
 | `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `map [URL\|SOURCE [DIR]]` | take the releases of a source from a local folder (local development, tests) |
+| `cache [ACTION]` | the download cache: show, list, prune, clear |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
 Without a command, `status` runs. `PATH` may be a file or a directory (all
@@ -821,6 +822,53 @@ git assetsync map acme/tool --unset                 # remove it again
 - Before pushing, the [push check](#install-hooks-uninstall-hooks) warns
   about entries whose release isn't published yet.
 
+### `cache`
+
+```
+git assetsync cache [list | prune [--older-than DAYS] [--max-size SIZE] [-n] | clear [-n] | dir]
+```
+
+The [download cache](#download-cache), shared by all repositories of your
+user account:
+
+```console
+$ git assetsync cache
+/home/me/.cache/git-assetsync: 37 files, 1.2 GiB
+cleaned up automatically: files unused for 90 days (assetsync.cacheMaxAge, assetsync.cacheMaxSize)
+$ git assetsync cache list
+  12.3 MiB  2026-10-19  github.com/madler/zlib  v1.3.2  zlib-1.3.2.tar.gz
+ 340.0 MiB  2026-08-02  gitlab.com/acme/fw  fw-2026.07  fw.zip
+```
+
+| Action | Effect |
+|---|---|
+| (none) | where the cache is, how big, and its limits |
+| `list` | its files, most recently used first: size, last used, where it came from (`+N more` if several assets have the same content) |
+| `prune` | remove what wasn't used for `assetsync.cacheMaxAge` days, then the least recently used beyond `assetsync.cacheMaxSize`; `--older-than DAYS` and `--max-size SIZE` (e.g. `500M`, `2G`) set other limits for this run; `-n` only shows what would be removed |
+| `clear` | remove everything (`-n`: only show) |
+| `dir` | print the directory, e.g. for caching it between CI runs |
+
+What counts is when a file was **last used**, not when it was
+downloaded. Files used in the last ten minutes are never removed by
+`prune`, so that another git-assetsync running at the same time keeps
+them; leftovers of interrupted downloads go too. Nothing is lost by
+removing: a file needed again is downloaded again.
+
+**Automatically**, after a download and at most once a day, the cache is
+cleaned up by the limits:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `assetsync.cacheMaxAge` | `90` | remove files unused for that many days; `0` or `off`: never |
+| `assetsync.cacheMaxSize` | (none) | then remove the least recently used files until the cache is at most this big, e.g. `2G`; `0` or `off`: no limit |
+
+```sh
+git config --global assetsync.cacheMaxSize 5G
+git config --global assetsync.cacheMaxAge off
+```
+
+Commands that download nothing (like `status`) never remove anything.
+
 ## Further topics
 
 ### Selecting the release
@@ -1166,8 +1214,10 @@ or a second repository with the same asset need no new download:
 `~/.cache/git-assetsync` (or `$XDG_CACHE_HOME/git-assetsync`), on Windows
 `%LOCALAPPDATA%\git-assetsync`; `ASSETSYNC_CACHE` sets another directory.
 Contents are kept by their SHA-256 (`sha256/`), with an index for
-platforms that report no digests (`index/`, GitLab). The cache is never
-cleaned up by git-assetsync; delete it (or parts of it) whenever you like.
+platforms that report no digests (`index/`, GitLab), which also says
+where each file came from. Files unused for 90 days are removed
+automatically; [`cache`](#cache) shows, lists and cleans it up, and sets
+other limits. Deleting it (or parts of it) by hand does no harm either.
 
 ### Git LFS
 
