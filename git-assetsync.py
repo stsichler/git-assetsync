@@ -103,8 +103,9 @@ command.
         --committed             only the committed ones (synced -> HEAD)
         --upstream              what pull would bring (synced -> what the
                                 selected release gives now, filtered)
-        --release TAG|PATTERN   what pull --release would bring (implies
-                                --upstream)
+        --release TAG|PATTERN   with --upstream: what pull --release would
+                                bring (as with pull: replace `pull` by
+                                `diff --upstream` to see what it would do)
 
     add PATH SOURCE             take the file PATH from an asset of the
                                 release SOURCE selects - or with PATH/ (or
@@ -2607,9 +2608,8 @@ def diff_items(ctx, repo, reg, args):
 def cmd_diff(ctx, repo, args):
     """One `git diff <tree> <tree>` over all entries that differ: real paths,
     the repository's diff settings and pager, options after `--`."""
-    if args.release and args.committed:
-        raise FsError("--release goes with --upstream, not --committed")
-    args.upstream = args.upstream or bool(args.release)
+    if args.release and not args.upstream:
+        raise FsError("--release requires --upstream")
     ctx.fetch, ctx.override = args.upstream, args.release
     reg = Registry(repo)
     rc, left, right = diff_items(ctx, repo, reg, args)
@@ -3714,7 +3714,7 @@ def main(argv=None):
     g.add_argument("--committed", action="store_true",
                    help="only the committed modifications (synced -> HEAD)")
     p.add_argument("--release", metavar="TAG|PATTERN",
-                   help="with --upstream (implied): what 'pull --release' would bring")
+                   help="with --upstream: what 'pull --release' would bring")
 
     filterp = argparse.ArgumentParser(add_help=False)
     g = filterp.add_argument_group("filter steps (applied in the order given)")

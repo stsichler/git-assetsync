@@ -310,13 +310,13 @@ note: bin/tool: its source still selects v1.1 - 'git assetsync pull bin/tool' go
 
 To keep the files on that release, pin them instead: [`set
 --release`](#set) for some files, [`source set-release`](#source) for all
-files of the source. [`diff --release`](#diff) shows beforehand what
-`pull --release` would bring.
+files of the source. [`diff --upstream --release TAG PATH…`](#diff)
+shows beforehand what `pull --release` would bring.
 
 ### `diff`
 
 ```
-git assetsync diff [PATH…] [--committed | --upstream] [--release TAG|PATTERN] [-- OPTS]
+git assetsync diff [PATH…] [--committed | --upstream [--release TAG|PATTERN]] [-- OPTS]
 ```
 
 Shows the local modifications of the entries (default: all) – the
@@ -330,13 +330,13 @@ added (ignored ones don't). Like `status`, it works offline.
 | (none) | all local modifications: synced -> working tree |
 | `--committed` | only the committed modifications: synced -> `HEAD` |
 | `--upstream` | what `pull` would bring: synced -> what the selected release gives now, after the filter (also after the filter was changed) |
-| `--release TAG\|PATTERN` | what `pull --release` would bring (implies `--upstream`) |
+| `--upstream --release TAG\|PATTERN` | what `pull --release` would bring; `--release` requires `--upstream` |
 
 ```sh
 git assetsync diff                      # local changes: synced -> working tree (local/)
 git assetsync diff --committed          # committed ones only: synced -> HEAD (committed/)
 git assetsync diff --upstream           # what `pull` would bring (upstream/)
-git assetsync diff --release v1.0 bin/  # what `pull --release v1.0 bin/` would bring
+git assetsync diff --upstream --release v1.0 bin/  # what `pull --release v1.0 bin/` would bring
 git assetsync diff --upstream -- --stat # anything after `--` goes to `git diff`
 ```
 
@@ -347,7 +347,9 @@ old side is named `synced/`, the new one `local/`, `committed/` or
 `upstream/`. Files in Git LFS are compared by their content, not their
 pointers. With `--upstream`, the assets come from the [download
 cache](#download-cache) if possible – and `pull` then needs no new
-download; filters that run commands must be [trusted](#trust). With
+download; filters that run commands must be [trusted](#trust). To see
+what a `pull` command line would do, replace `pull` by `diff --upstream`
+(with the same `--release` and paths), as in git-filesync. With
 `--exit-code` or `--quiet` after `--`, the exit code is 1 if there are
 differences, like `git diff`; otherwise 0, or 2 on errors.
 

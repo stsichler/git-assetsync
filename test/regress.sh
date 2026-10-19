@@ -1875,11 +1875,13 @@ check "diff --upstream: prefixes" "$(git assetsync diff --upstream | grep -E '^\
 check "diff --upstream: pull takes it from the cache" \
   "$(reset_calls; quiet git assetsync pull --no-edit d; downloads)" "0"
 check "diff --upstream: nothing left" "$(git assetsync diff --upstream)" ""
-check "diff --release: implies --upstream" "$(git assetsync diff --release v1 -- --name-status 2>/dev/null | oneline)" \
+check "diff --upstream --release" "$(git assetsync diff --upstream --release v1 -- --name-status 2>/dev/null | oneline)" \
   "M${TAB}d/b.txt D${TAB}d/c.txt M${TAB}f.txt "
+check "diff --release: requires --upstream" "$(git assetsync diff --release v1 2>&1)" \
+  "error: --release requires --upstream"
 check "diff --release: not with --committed" "$(git assetsync diff --committed --release v1 2>&1)" \
-  "error: --release goes with --upstream, not --committed"
-check "diff --release: unknown tag" "$(git assetsync diff --release v9 f.txt 2>&1)" \
+  "error: --release requires --upstream"
+check "diff --release: unknown tag" "$(git assetsync diff --upstream --release v9 f.txt 2>&1)" \
   "error: f.txt: no release with tag 'v9' in acme/df"
 # pull --release: once another release, the selection stays
 check "pull --release: dry run" "$(git assetsync pull -n --release v1 f.txt | head -1)" \
