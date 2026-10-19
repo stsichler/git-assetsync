@@ -1142,8 +1142,43 @@ characters (cut lines end in `[...]`, a cut text with a hint at the
 release page), HTML comments (left over from templates) and repeated blank
 lines dropped. They are indented by two spaces – otherwise `git commit`
 would take Markdown headings like `## What's Changed` for comment lines and
-remove them when the editor opens. Only the notes of the new release are
-included, not those of releases in between.
+remove them when the editor opens.
+
+**Skipped releases:** when the update skips releases – newer than the
+synced one, older than the new one, selected by the same rule as the
+source (its tag pattern; prereleases only if it takes them; no drafts) –
+`Since:` lists them, and their notes follow those of the new release,
+newest first:
+
+```
+Update bin/tool to acme/tool v1.3 (was v1.0)
+
+Release: https://github.com/acme/tool/releases/tag/v1.3
+Asset:   tool-1.3-linux-x64
+Since:   v1.2, v1.1
+
+Release notes v1.3:
+  ...
+Release notes v1.2:
+  ...
+Release notes v1.1:
+  ...
+```
+
+At most 60 lines of notes in all; the notes of older releases beyond that
+are only referred to (`[... notes of v1.1 and older: see the release
+pages]`). Going back to an older release (e.g. with `pull --release`),
+`Reverted:` lists the releases undone, without notes.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `assetsync.notesLines` | `20` | lines of notes per release; `0`: no notes at all (the link and `Since:` stay) |
+| `assetsync.notesTotalLines` | `60` | lines of notes in all |
+
+```sh
+git config assetsync.notesLines 40
+git config --global assetsync.notesTotalLines 200
+```
 
 `add` and `pull --no-commit` stage only and put the proposal into
 `.git/SQUASH_MSG`, which a plain `git commit` offers (as do IDEs like VS

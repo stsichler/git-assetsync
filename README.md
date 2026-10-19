@@ -103,7 +103,8 @@ from other Git repositories see git-filesync.
   repository), or is pinned to one release; tags are taken as they are,
   without assuming a versioning scheme
 - Proposed commit message names the release (and the one before), its page,
-  the assets and the filter, and includes the release notes, shortened
+  the assets and the filter, and includes the release notes, shortened -
+  also those of releases skipped by the update
 - `status` works offline for local changes; only the check for new releases
   asks the platform
 - Files must stay exactly what the release gives: local modifications are

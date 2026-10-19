@@ -49,6 +49,7 @@
 #   25. diff, difftool, and pull --release (once another release)
 #   26. map: releases from a local folder; the pre-push check
 #   27. edit: .git-assetsync in the editor
+#   28. Release notes of skipped releases
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -2126,6 +2127,42 @@ check "edit: editor fails" "$(GIT_EDITOR=false git assetsync edit 2>&1)" "error:
 printf ': > "$1"\n' > "$T/ed-empty.sh"
 GIT_EDITOR="sh '$T/ed-empty.sh'" git assetsync edit >/dev/null 2>&1
 check "edit: emptied: removal staged" "$(git status --porcelain | oneline)" "D  .git-assetsync "
+
+
+# =============================================================================
+section "28. Release notes of skipped releases"
+# =============================================================================
+cd "$T"
+for v in 1 2 3 4; do printf 'sk %s\n' $v > "$F/sk.txt"; printf 'Notes of v%s.\n' $v > "$F/sk-notes.md"
+  case $v in
+    3) release --pre --notes "$F/sk-notes.md" acme/sk v$v 1$v "$F/sk.txt" ;;
+    *) release --notes "$F/sk-notes.md" acme/sk v$v 1$v "$F/sk.txt" ;;
+  esac
+done
+printf 'x\n' > "$F/sk.txt"; release --notes "$F/sk-notes.md" acme/sk other-1 12T18:00:00Z "$F/sk.txt"
+new_repo r28
+addc s.txt acme/sk --release v1
+quiet git assetsync source set-release acme/sk 'v*' && git commit -qm pattern -- .git-assetsync
+pullc s.txt
+check "skipped: listed (pattern, no prerelease)" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v2"
+check "skipped: their notes too, newest first" \
+  "$(git log -1 --format=%B | grep -E '^(Release notes|  Notes)' | oneline)" \
+  "Release notes v4:   Notes of v4. Release notes v2:   Notes of v2. "
+check "going back: reverted, no notes" "$(git assetsync pull --no-edit --release v1 s.txt >/dev/null 2>&1; git log -1 --format=%B | grep -cE '^Reverted: v4, v2$|^Release notes|Notes of')" "1"
+quiet git -c assetsync.notesTotalLines=1 assetsync pull --no-edit s.txt
+check "notesTotalLines: the rest only linked" "$(git log -1 --format=%B | grep -E '^(Release notes|  Notes|\[)' | oneline)" \
+  "Release notes v4:   Notes of v4. [... notes of v2 and older: see the release pages] "
+quiet git assetsync pull --no-edit --release v1 s.txt
+quiet git -c assetsync.notesLines=0 assetsync pull --no-edit s.txt
+check "notesLines=0: no notes, still the list" "$(git log -1 --format=%B | grep -cE '^Since:   v2$|Notes of')" "1"
+check "notesLines: not a number" "$(git -c assetsync.notesLines=many assetsync pull --no-edit --release v1 s.txt 2>&1 | grep -c "assetsync.notesLines: 'many' is not a number of lines")" "1"
+# prereleases count when the source takes them; one release forward: as before
+quiet git assetsync pull --no-edit --release v1 s.txt
+quiet git assetsync source set-release acme/sk --unset --prerelease && git commit -qm pre -- .git-assetsync
+pullc s.txt
+check "skipped: prereleases when taken" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v3, other-1, v2"
+quiet git assetsync pull --no-edit --release v3 s.txt; pullc s.txt
+check "one release forward: no list" "$(git log -1 --format=%B | grep -cE '^Since:|^Release notes:$')" "1"
 
 # =============================================================================
 echo

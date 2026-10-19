@@ -82,7 +82,10 @@ command.
 
     pull PATH... | --all        update the files (directories) to the selected
                                 release and commit with a message naming it
-                                (with its release notes, shortened); refused
+                                (with its release notes and those of skipped
+                                releases, shortened: assetsync.notesLines per
+                                release, default 20, assetsync.notesTotalLines
+                                in all, default 60); refused
                                 if modified (committed or not); a directory
                                 is replaced as a whole
         --all                   all files with something to pull
@@ -320,8 +323,11 @@ REGISTRY_HEADER = ("# git-assetsync: files and directories of this repository th
                    "# synced/digest/blob/tree record what each one comes from.\n")
 # add warns about binary files at least this big that are not stored in LFS
 LFS_HINT_SIZE = 1 << 20
-# release notes in a commit message: at most this many lines of this length
-NOTES_LINES, NOTES_WIDTH = 20, 200
+# release notes in a commit message: at most this many lines of this length per
+# release (assetsync.notesLines), this many in all (assetsync.notesTotalLines)
+NOTES_LINES, NOTES_WIDTH, NOTES_TOTAL_LINES = 20, 200, 60
+# releases skipped (or reverted) by a pull, listed in its commit message: at most
+LIST_RELEASES = 10
 # unpacking archives: at most this much and this many files (zip bombs)
 MAX_EXTRACT_SIZE, MAX_EXTRACT_FILES = 2 << 30, 100000
 # all assets of a release for a directory (add without --asset): more needs --force
@@ -2958,7 +2964,43 @@ def release_lines(release, assets, filter_name=None, stats=None):
     return lines
 
 
-def notes_lines(notes):
+def notes_limits(repo):
+    """(lines per release, lines in all) of release notes in commit
+    messages: assetsync.notesLines, assetsync.notesTotalLines."""
+    result = []
+    for key, default in (("notesLines", NOTES_LINES), ("notesTotalLines", NOTES_TOTAL_LINES)):
+        v = out(repo.git(["config", f"assetsync.{key}"], check=False)).strip()
+        if v and not v.isdigit():
+            raise FsError(f"assetsync.{key}: '{v}' is not a number of lines")
+        result.append(int(v) if v else default)
+    return tuple(result)
+
+
+def releases_between(st):
+    """('Since', [releases]) skipped by updating to st.release - newer than
+    the synced one, older than the new one, selected by the source's rule
+    (its pattern, prereleases only if it takes them, no drafts) - or
+    ('Reverted', [releases]) when going back to an older one: the synced one
+    and those in between. Newest first; None if unknown."""
+    entry, new = st.entry, st.release
+    try:
+        old = st.origin.by_tag(entry.synced)
+        if not old or not old.date or not new.date:
+            return None
+        rule, pre = entry.spec.get("release"), is_true(entry.spec.get("prerelease"))
+        others = [r for r in st.origin.releases() if r.tag not in (old.tag, new.tag)
+                  and not r.draft and (pre or not r.prerelease)
+                  and (not rule or not is_pattern(rule) or fnmatch.fnmatchcase(r.tag, rule))]
+    except FsError:
+        return None
+    if old.date < new.date:
+        skipped = [r for r in others if old.date < r.date < new.date]
+        return "Since", sorted(skipped, key=lambda r: r.date, reverse=True)
+    reverted = [old] + [r for r in others if new.date < r.date < old.date]
+    return "Reverted", sorted(reverted, key=lambda r: r.date, reverse=True)
+
+
+def notes_lines(notes, max_lines=NOTES_LINES):
     """Release notes shortened for a commit message: HTML comments (left
     over from templates) and repeated blank lines dropped, at most
     NOTES_LINES lines of NOTES_WIDTH characters. Indented, so that lines
@@ -2973,8 +3015,8 @@ def notes_lines(notes):
             lines.append(line if len(line) <= NOTES_WIDTH else line[:NOTES_WIDTH - 5] + "[...]")
     while lines and not lines[-1]:
         lines.pop()
-    more = len(lines) > NOTES_LINES
-    lines = lines[:NOTES_LINES]
+    more = len(lines) > max_lines
+    lines = lines[:max_lines]
     while lines and not lines[-1]:
         lines.pop()
     if more:
@@ -2982,9 +3024,11 @@ def notes_lines(notes):
     return [f"  {line}" if line else "" for line in lines]
 
 
-def build_message(st, discarded, unchanged=False, stats=None):
+def build_message(st, discarded, unchanged=False, stats=None, between=None,
+                  limits=(NOTES_LINES, NOTES_TOTAL_LINES)):
     """Commit message for pull: what the file (directory) is updated to, or
-    restored. unchanged: it stays the same (only its entry changes)."""
+    restored. unchanged: it stays the same (only its entry changes).
+    between: releases_between(); limits: notes_limits()."""
     entry, release = st.entry, st.release
     rel, name, tag, old = entry.shown, entry.name, release.tag, entry.synced
     what = "directory" if entry.is_dir else "file"
@@ -3003,9 +3047,27 @@ def build_message(st, discarded, unchanged=False, stats=None):
     else:
         subject = f"Restore {rel} from {name} {tag}"
     lines = [subject, ""] + release_lines(release, st.assets, entry.filter, stats)
-    notes = notes_lines(release.notes) if old and tag != old else []
-    if notes:
-        lines += ["", "Release notes:"] + notes
+    kind, others = between or ("", [])
+    if others:
+        tags = [r.tag for r in others]
+        lines.append(f"{kind + ':':<8} {', '.join(tags[:LIST_RELEASES])}"
+                     + (f" and {len(tags) - LIST_RELEASES} more" if len(tags) > LIST_RELEASES
+                        else ""))
+    # notes of the new release, then of those skipped; none when going back
+    with_notes = [release] + others if old and tag != old and kind != "Reverted" else []
+    per, remaining = limits
+    sections = []
+    for n, r in enumerate(with_notes if per and remaining else []):
+        if remaining <= 0:
+            if any(x.notes.strip() for x in with_notes[n:]):
+                sections += ["", f"[... notes of {r.tag} and older: see the release pages]"]
+            break
+        notes = notes_lines(r.notes, min(per, remaining))
+        if notes:
+            heading = "Release notes:" if len(with_notes) == 1 else f"Release notes {r.tag}:"
+            sections += ["", heading] + notes
+            remaining -= len(notes)
+    lines += sections
     if discarded:
         lines += ["", "Local modifications of this repository were discarded."]
     return "\n".join(lines) + "\n"
@@ -3398,11 +3460,16 @@ def pull_one(repo, reg, st, args):
         msg = build_message(st, discard).splitlines()[0]
         print(f"would: {msg}" + (" - discarding local modifications" if discard else ""))
         return EXIT_OK
+    # before anything changes: the releases in between, and the limits of the notes
+    limits = notes_limits(repo)
+    between = releases_between(st) if entry.synced and st.release.tag != entry.synced \
+        else None
     if discard:
         warn(f"{rel}: discarding local modifications")
     digest, base, stats = install(repo, st, st.origin, st.release, st.assets, entry.steps,
                                   reg.filters, force=args.force or bool(entry.blob))
-    msg = build_message(st, discard, unchanged=base == entry.blob, stats=stats)
+    msg = build_message(st, discard, unchanged=base == entry.blob, stats=stats,
+                        between=between, limits=limits)
     entry.set("synced", st.release.tag)
     entry.set("digest", digest)
     entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
