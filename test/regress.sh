@@ -2062,6 +2062,34 @@ check "map: --unset by source name" "$(git assetsync map loc --unset)" \
 check "map: by source name" "$(git assetsync map loc "$L" | cut -d' ' -f1-2)" \
   "[local] https://github.com/acme/loc"
 check "map: not a directory" "$(git assetsync map loc "$L/v1/t.bin" 2>&1 | grep -c 'is not a directory')" "1"
+# flat: the files of all releases in one folder, rel20260410.7z -> rel20260410
+FL=$T/flatrel
+mkdir -p "$FL/sub" && printf 'ignored\n' > "$FL/sub/x.xml"
+for d in 20260213 20260410; do
+  printf 'data %s\n' $d > "$FL/rel$d.7z"; printf '<v>%s</v>\n' $d > "$FL/rel$d.xml"
+done
+printf 'old\n' > "$FL/rel20250101.tar.gz"; printf 'hidden\n' > "$FL/.rel20991231.xml"
+touch -t 202501011200 "$FL/rel20250101.tar.gz"
+touch -t 202602131200 "$FL/rel20260213.7z" "$FL/rel20260213.xml"
+touch -t 202604101200 "$FL/rel20260410.7z" "$FL/rel20260410.xml"
+cd "$T"; new_repo r26f
+check "map --flat" "$(git assetsync map --flat https://github.com/acme/flat "$FL" | tr '\\' / | sed 's/^.* -> //')" "$FL (flat)"
+check "map --flat: list" "$(git assetsync map | grep -c '(flat)$')" "1"
+check "flat: releases by file name" "$(git assetsync releases acme/flat --assets | sed 1d | awk '{print $1}' | oneline)" \
+  "rel20260410 rel20260410.7z rel20260410.xml rel20260213 rel20260213.7z rel20260213.xml rel20250101 rel20250101.tar.gz "
+check "flat: one asset of two" "$(git assetsync add v.xml https://github.com/acme/flat 2>&1 | grep -c 'assets')" "1"
+addc v.xml https://github.com/acme/flat --asset '*.xml'
+check "flat: newest release, the asset chosen" "$(reg file.v.xml.synced) $(cat v.xml)" "rel20260410 <v>20260410</v>"
+check "flat: pinned tag" "$(git assetsync pull -n --release rel20260213 v.xml | head -1)" \
+  "would: Update v.xml to acme/flat rel20260213 (was rel20260410)"
+check "flat: .tar.gz is one extension" "$(git assetsync releases acme/flat | grep -c '^rel20250101 ')" "1"
+check "map --flat: only with DIR" "$(git assetsync map --flat acme/flat 2>&1)" \
+  "error: --flat goes with the folder: map --flat URL|SOURCE DIR"
+quiet git assetsync map https://github.com/acme/flat "$FL"
+check "map again without --flat: folders" "$(git config assetsync.https://github.com/acme/flat.layout; git assetsync releases acme/flat | sed -n 2p | cut -d' ' -f1)" "sub"
+quiet git assetsync map https://github.com/acme/flat --unset
+check "map --unset: layout too" "$(git config --get-regexp 'assetsync\..*flat' | lines)" "0"
+cd "$T/r26"
 # the pre-push check: the release must be on the server, with these assets
 git init -q --bare "$T/r26.git" && git remote add origin "$T/r26.git"
 quiet git assetsync install-hooks

@@ -780,7 +780,7 @@ hooks go there (with a warning, since other repositories may use it).
 ### `map`
 
 ```
-git assetsync map [URL|SOURCE [DIR]] [--global] [--unset]
+git assetsync map [URL|SOURCE [DIR]] [--flat] [--global] [--unset]
 ```
 
 Takes the releases of a source from the local folder `DIR` instead of
@@ -808,6 +808,24 @@ git assetsync map acme/tool --unset                 # remove it again
 
 - Each **subdirectory** is a release, named like its tag; its files are
   the assets (hidden files are ignored).
+- With **`--flat`**, the folder itself holds the assets of all releases
+  as files – e.g. a build's output folder. A file belongs to the release
+  named like the file without its extension (`.tar.gz`, `.tar.xz` and
+  the like count as one); the asset keeps the full file name, so
+  `--asset '*.xml'` chooses as usual. Subdirectories are ignored.
+
+  ```
+  ~/build/fw-out/
+    rel20260213.7z  rel20260213.xml     -> release rel20260213 (2 assets)
+    rel20260410.7z  rel20260410.xml     -> release rel20260410 (2 assets)
+  ```
+
+  ```sh
+  git assetsync map --flat acme/fw ~/build/fw-out
+  ```
+
+  The layout is kept with the mapping (`assetsync.<url>.layout = flat`);
+  `map` without `--flat` switches back to subdirectories.
 - A release is dated by its **newest file**: the latest release is the one
   built last, also when a build overwrites the files of an existing
   folder (then `status` shows its assets as replaced). The [release

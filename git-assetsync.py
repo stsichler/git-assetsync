@@ -232,6 +232,10 @@ command.
                                 per release, named like its tag, with the
                                 assets; newest = newest file date. Without
                                 DIR: list the mappings
+        --flat                  DIR holds the assets of all releases as files;
+                                a file belongs to the release named like it
+                                without its extension (.tar.gz etc. count as
+                                one): rel1.7z, rel1.xml -> release rel1
         --global                for all repositories (default: this one)
         --unset                 remove the mapping
 
@@ -735,14 +739,27 @@ class LocalAsset(Asset):
         self._digest = value
 
 
+def flat_tag(name):
+    """Tag of a file in a flat local folder: its name without the extension
+    ('.tar.gz' and the like count as one): rel1.7z, rel1.tar.gz -> rel1."""
+    stem, dot, _ = name.rpartition(".")
+    if not dot or not stem:
+        return name
+    if stem.lower().endswith(".tar") and len(stem) > 4:
+        stem = stem[:-4]
+    return stem
+
+
 class LocalFolder:
     """Releases in a local folder a source URL is mapped to (see map), for
     local development and tests: each subdirectory is a release named like
-    its tag, its files are the assets, and it is dated by the newest of
-    them. No notes, prereleases or drafts; nothing is cached."""
+    its tag, its files are the assets - or, flat, its files are the assets,
+    grouped into releases by their names without extension. A release is
+    dated by its newest file. No notes, prereleases or drafts; nothing is
+    cached."""
 
-    def __init__(self, folder, url):
-        self.dir = Path(folder)
+    def __init__(self, folder, url, flat=False):
+        self.dir, self.flat = Path(folder), flat
         self.host, self.project = parse_url(url)
         self.label = self.project
 
@@ -753,18 +770,28 @@ class LocalFolder:
             raise FsError(f"local folder {self.dir} of {self.label} not found (see "
                           "'git assetsync map')")
 
-    def release(self, d):
-        files = sorted((f for f in d.iterdir() if f.is_file() and not f.name.startswith(".")),
-                       key=lambda f: f.name)
+    @staticmethod
+    def files_in(d):
+        return sorted((f for f in d.iterdir() if f.is_file() and not f.name.startswith(".")),
+                      key=lambda f: f.name)
+
+    @staticmethod
+    def release(tag, files, d):
+        """The release tag with these files as assets (none: dated by d)."""
         mtime = max([f.stat().st_mtime for f in files] or [d.stat().st_mtime])
         date = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(mtime)) + \
             f".{int(mtime % 1 * 1e6):06d}Z"
         assets = [LocalAsset(f.name, f.name, f.stat().st_size, url=str(f)) for f in files]
-        return Release(d.name, d.name, date, "", assets=assets, local=True)
+        return Release(tag, tag, date, "", assets=assets, local=True)
 
     def releases(self, limit=None):
         self.check_project()
-        return [self.release(d) for d in sorted(self.dir.iterdir())
+        if self.flat:
+            groups = {}
+            for f in self.files_in(self.dir):
+                groups.setdefault(flat_tag(f.name), []).append(f)
+            return [self.release(tag, files, self.dir) for tag, files in sorted(groups.items())]
+        return [self.release(d.name, self.files_in(d), d) for d in sorted(self.dir.iterdir())
                 if d.is_dir() and not d.name.startswith(".")]
 
     def latest(self):
@@ -775,27 +802,35 @@ class LocalFolder:
         self.check_project()
         if not tag or tag in (".", "..") or re.search(r"[/\\]", tag):
             return None
+        if self.flat:
+            files = [f for f in self.files_in(self.dir) if flat_tag(f.name) == tag]
+            return self.release(tag, files, self.dir) if files else None
         d = self.dir / tag
-        return self.release(d) if d.is_dir() else None
+        return self.release(tag, self.files_in(d), d) if d.is_dir() else None
 
 
 PLATFORMS = {"github": GitHub, "gitlab": GitLab}
-# source URLs mapped to local folders (see map): normalized URL -> folder;
-# loaded by main() unless --remote is given
+# source URLs mapped to local folders (see map): normalized URL -> (folder,
+# flat); loaded by main() unless --remote is given
 MAPPINGS = {}
-MAP_REGEX = r"^assetsync\..+\.localpath$"
+MAP_REGEX = r"^assetsync\..+\.(localpath|layout)$"
 
 
 def local_mappings(scope=None, cwd=None):
-    """List of (scope, config key, url, folder) from assetsync.<url>.localpath
-    entries, in git's precedence order (system, global, local: last wins)."""
+    """List of (scope, config key, url, folder, flat) from assetsync.<url>.
+    localpath entries (and their layout = flat in the same scope), in git's
+    precedence order (system, global, local: last wins)."""
     args = ["config", "--show-scope"] + ([scope] if scope else []) + ["--get-regexp", MAP_REGEX]
-    result = []
+    paths, flat = [], set()
     for line in out(git(args, cwd=cwd, check=False)).splitlines():
         sc, _, rest = line.partition("\t")
         key, _, val = rest.partition(" ")
-        result.append((sc, key, key[len("assetsync."):-len(".localpath")], val))
-    return result
+        url, _, var = key[len("assetsync."):].rpartition(".")
+        if var == "localpath":
+            paths.append((sc, key, url, val))
+        elif val.strip().lower() == "flat":
+            flat.add((sc, url))
+    return [(sc, key, url, d, (sc, url) in flat) for sc, key, url, d in paths]
 
 
 def mappings_for(url, scope=None, cwd=None):
@@ -824,7 +859,8 @@ def platform_of(url, kind=None, remote=False):
     """Platform client for a source URL - its local folder if it is mapped
     to one (unless remote); kind: its type key, else derived from the host."""
     if not remote and norm_url(url) in MAPPINGS:
-        return LocalFolder(MAPPINGS[norm_url(url)], url)
+        folder, flat = MAPPINGS[norm_url(url)]
+        return LocalFolder(folder, url, flat)
     host, path = parse_url(url)
     kind = (kind or ("github" if host == "github.com" else
                      "gitlab" if host == "gitlab.com" or "gitlab" in host.split(".")[0]
@@ -2748,13 +2784,13 @@ def cmd_status(ctx, repo, args):
 def print_mappings(maps, url=None):
     """Print mappings with their scope; entries shadowed by a later one
     (e.g. a global mapping overridden by the repository's own) are marked."""
-    effective = {norm_url(u): i for i, (_, _, u, _) in enumerate(maps)}
+    effective = {norm_url(u): i for i, (_, _, u, _, _) in enumerate(maps)}
     shown = 0
-    for i, (sc, _, u, d) in enumerate(maps):
+    for i, (sc, _, u, d, flat) in enumerate(maps):
         if url and norm_url(u) != norm_url(url):
             continue
         note = "" if effective[norm_url(u)] == i else paint("   (overridden)", "dim")
-        print(f"{paint(f'[{sc}]', 'cyan')} {u} -> {d}{note}")
+        print(f"{paint(f'[{sc}]', 'cyan')} {u} -> {d}{' (flat)' if flat else ''}{note}")
         shown += 1
     if not shown:
         print("no mappings" + (f" for {url}" if url else ""))
@@ -2779,6 +2815,8 @@ def cmd_map(args, repo):
     all repositories. Never in .git-assetsync."""
     top = repo.top if repo else None
     url = map_url(repo, args.source) if args.source else None
+    if args.flat and not args.dir:
+        raise FsError("--flat goes with the folder: map --flat URL|SOURCE DIR")
     if not args.dir and not args.unset:      # listing: all scopes visible here
         print_mappings(local_mappings(cwd=top), url)
         return EXIT_OK
@@ -2791,29 +2829,39 @@ def cmd_map(args, repo):
     else:
         raise FsError("not inside a Git repository; use --global for a global mapping")
     name = scope[2:]
-    matching = [k for _, k, _, _ in mappings_for(url, scope, cwd=top)]
+    matching = [k for _, k, _, _, _ in mappings_for(url, scope, cwd=top)]
+
+    def remove():
+        for k in matching:
+            git(["config", scope, "--unset-all", k], cwd=top)
+            git(["config", scope, "--unset-all", k[:-len("localpath")] + "layout"], cwd=top,
+                check=False)
     if args.unset:
         if not matching:
             print(f"no {name} mapping for {url}")
             return EXIT_OK
-        for k in matching:
-            git(["config", scope, "--unset-all", k], cwd=top)
+        remove()
         print(f"removed {name} mapping for {url}")
         rest = mappings_for(url, cwd=top)
         if rest:
-            print(f"now using [{rest[-1][0]}] {rest[-1][3]}")
+            print(f"now using [{rest[-1][0]}] {rest[-1][3]}" + (" (flat)" if rest[-1][4] else ""))
         return EXIT_OK
     base = repo.base if repo else Path.cwd()
     d = (base / os.path.expanduser(args.dir)).resolve()
     if not d.is_dir():
         raise FsError(f"{d} is not a directory")
-    for k in matching:
-        git(["config", scope, "--unset-all", k], cwd=top)
+    remove()
     git(["config", scope, f"assetsync.{url}.localpath", str(d)], cwd=top)
-    print(f"{paint(f'[{name}]', 'cyan')} {url} -> {d}")
-    if not any(c.is_dir() and not c.name.startswith(".") for c in d.iterdir()):
+    if args.flat:
+        git(["config", scope, f"assetsync.{url}.layout", "flat"], cwd=top)
+    print(f"{paint(f'[{name}]', 'cyan')} {url} -> {d}" + (" (flat)" if args.flat else ""))
+    if args.flat and not LocalFolder.files_in(d):
+        warn(f"{d} has no files yet (flat: each file is an asset of the release named like "
+             "the file without its extension)")
+    elif not args.flat and not any(c.is_dir() and not c.name.startswith(".")
+                                   for c in d.iterdir()):
         warn(f"{d} has no release folders yet (one subdirectory per release, named like its "
-             "tag, with the assets)")
+             "tag, with the assets; or use --flat)")
     if scope == "--global" and repo:
         own = mappings_for(url, "--local", cwd=top)
         if own:
@@ -4696,6 +4744,9 @@ def main(argv=None):
     p.add_argument("dir", nargs="?", metavar="DIR",
                    help="local folder: one subdirectory per release, named like its tag, "
                         "with the assets")
+    p.add_argument("--flat", action="store_true",
+                   help="DIR has the assets of all releases as files: a release is named like "
+                        "the file without its extension (rel1.7z, rel1.xml -> rel1)")
     p.add_argument("--unset", action="store_true", help="remove the mapping")
     p.add_argument("--global", dest="glob", action="store_true",
                    help="in the global git config, for all repositories")
@@ -4743,7 +4794,7 @@ def main(argv=None):
         if args.cmd == "map":                 # --global also outside a repository
             return cmd_map(args, repo)
         if not getattr(args, "remote", False):
-            MAPPINGS.update((norm_url(u), d) for _, _, u, d in
+            MAPPINGS.update((norm_url(u), (d, flat)) for _, _, u, d, flat in
                             local_mappings(cwd=repo.top if repo else None))
         if args.cmd == "releases":            # also outside a repository
             return cmd_releases(Context(args), repo, args)
