@@ -44,7 +44,7 @@ An entry records what the committed file (directory) comes from, so the
 local state is known offline; only the check for new releases asks the
 platform. It must stay exactly what its release gives: pull refuses local
 modifications (in a directory: also untracked files; ignored ones don't
-count), --force discards them.
+count), --overwrite discards them.
 
 Filter steps (no code is run): extract (unpack zip, tar, tar.gz/bz2/xz,
 .gz/.bz2/.xz, and 7z with an external 7-Zip - 7zz/7z on the PATH or
@@ -93,7 +93,7 @@ command.
                                 pattern: the newest matching), once: the
                                 selection stays, status shows the selected
                                 one as pending (to stay: set --release)
-        --force                 discard local modifications
+        --overwrite             discard local modifications
         --no-edit               commit without opening the editor
         --no-commit             only stage; a plain `git commit` offers the
                                 proposed message (via .git/SQUASH_MSG)
@@ -142,8 +142,11 @@ command.
                                 instead of the latest)
         --type github|gitlab    platform of the URL's host (default: derived
                                 from it: github.com, gitlab.com, gitlab.*)
-        --force                 replace an existing entry or file; take over a
-                                directory that isn't empty
+        --force                 replace an existing entry (unless modified)
+        --overwrite             replace an existing file, or files in an
+                                existing directory (they become the
+                                entry's), or local modifications of an
+                                entry replaced with --force
         -n, --dry-run           only show what would be done
 
     set PATH... OPTIONS         change entries, like source does for sources:
@@ -2742,7 +2745,7 @@ def print_long(ctx, repo, sts, verbose):
     adapted = [st for st in ok if st.committed == "adapted"]
     section("Locally modified files:",
             ['use "git assetsync diff --committed <file>..." to see the modifications',
-             'use "git assetsync pull --force <file>..." to restore the release asset'],
+             'use "git assetsync pull --overwrite <file>..." to restore the release asset'],
             [("modified", st.entry.shown) + not_allowed for st in adapted], "cyan")
 
     labels = {"modified": "modified", "deleted": "deleted", "added": "new file"}
@@ -3451,15 +3454,15 @@ def commit_paths(repo, rels, msgfile, edit):
         return subprocess.run(cmd, cwd=repo.top, env=env).returncode == 0
 
 
-def install_file(repo, rel, target, files, force=False):
+def install_file(repo, rel, target, files, overwrite=False):
     """Store the one file of files as `git add` would at rel, write it to
     the working tree as `git checkout` would and stage it. A file already
-    there that differs is only overwritten with force. Returns its blob."""
+    there that differs is only replaced with overwrite. Returns its blob."""
     (name, (src, executable)), = files.items()
     blob = repo.add_file(src, rel)
     cur = repo.worktree_blob(target)
-    if cur and cur != blob and not force:
-        raise FsError(f"'{rel}' exists and differs from {name} - use --force to overwrite it")
+    if cur and cur != blob and not overwrite:
+        raise FsError(f"'{rel}' exists and differs from {name} - use --overwrite to replace it")
     if target.is_dir():
         raise FsError(f"'{rel}' is a directory")
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -3532,7 +3535,7 @@ def one_file(files, entry_shown, rel):
     return files
 
 
-def install(repo, st, origin, release, assets, steps, filters, force):
+def install(repo, st, origin, release, assets, steps, filters, overwrite):
     """Fetch, filter and install what an entry gets; staged. Returns
     (digest, base, stats)."""
     entry = st.entry
@@ -3545,7 +3548,7 @@ def install(repo, st, origin, release, assets, steps, filters, force):
             tree = install_dir(repo, entry.rel, entry.target, files)
             return digest, tree, tree_stats(repo, st.head_blob, tree)
         one_file(files, entry.shown, entry.rel)
-        return digest, install_file(repo, entry.rel, entry.target, files, force), None
+        return digest, install_file(repo, entry.rel, entry.target, files, overwrite), None
 
 
 def pull_one(repo, reg, st, args):
@@ -3555,18 +3558,18 @@ def pull_one(repo, reg, st, args):
         return EXIT_OK
     # like `git pull` with no merge possible: local modifications are never
     # overwritten silently
-    if st.modified and not args.force:
+    if st.modified and not args.overwrite:
         what = ("committed modifications" if st.committed == "adapted" else
                 "uncommitted changes")
         raise FsError(f"{rel}: {what} NOT ALLOWED - it must stay what its release "
-                      f"gives; discard them with 'git assetsync pull --force "
+                      f"gives; discard them with 'git assetsync pull --overwrite "
                       f"{path_arg(repo, rel)}'" + ("" if st.committed == "adapted" else
                                                    f" or 'git restore {path_arg(repo, rel)}'"))
     # an entry without a base (written by hand): a directory with files is
-    # only taken over with --force (a file: only if it is the same)
-    if entry.is_dir and not entry.blob and not args.force and repo.dir_files(entry.rel):
-        raise FsError(f"'{rel}' is not empty - with --force it becomes the entry's (files there "
-                      "the release doesn't give are deleted)")
+    # only taken over with --overwrite (a file: only if it is the same)
+    if entry.is_dir and not entry.blob and not args.overwrite and repo.dir_files(entry.rel):
+        raise FsError(f"'{rel}' is not empty - with --overwrite it becomes the entry's (files "
+                      "there the release doesn't give are deleted)")
     check_other_entries(reg, [entry.rel], args)
     for w in st.warnings:
         warn(f"{rel}: {w}")
@@ -3582,7 +3585,7 @@ def pull_one(repo, reg, st, args):
     if discard:
         warn(f"{rel}: discarding local modifications")
     digest, base, stats = install(repo, st, st.origin, st.release, st.assets, entry.steps,
-                                  reg.filters, force=args.force or bool(entry.blob))
+                                  reg.filters, overwrite=args.overwrite or bool(entry.blob))
     msg = build_message(st, discard, unchanged=base == entry.blob, stats=stats,
                         between=between, limits=limits)
     entry.set("synced", st.release.tag)
@@ -3626,7 +3629,7 @@ def cmd_pull(ctx, repo, args):
             report_error(st)
             rc = EXIT_ERROR
             continue
-        if args.all and not st.pending and not (args.force and st.modified):
+        if args.all and not st.pending and not (args.overwrite and st.modified):
             continue
         done += 1
         try:
@@ -3764,9 +3767,19 @@ def cmd_add(ctx, repo, args):
         if (len(assets) > MAX_ALL_ASSETS or total > MAX_ALL_SIZE) and not args.force:
             raise FsError(f"that is more than {MAX_ALL_ASSETS} assets or {MAX_ALL_SIZE >> 20} MiB"
                           " - choose some with --asset PATTERN, or take all with --force")
-    if is_dir and rel not in reg.files and not args.force and repo.dir_files(rel):
-        raise FsError(f"'{shown_rel}' is not empty - with --force it becomes the entry's (files "
-                      "there the release doesn't give are deleted; ignored ones stay)")
+    # what an entry being replaced has from its release may go; anything else (a file
+    # or directory of the user, local modifications) only with --overwrite
+    overwrite = args.overwrite
+    if rel in reg.files and not overwrite and Entry(reg, rel).blob:
+        old = State(entry=Entry(reg, rel), rel=rel)
+        (local_state_dir if is_dir else local_state_file)(repo, old)
+        if old.local == "modified":
+            raise FsError(f"'{shown_rel}' has local modifications - use --overwrite to "
+                          "discard them")
+        overwrite = True
+    if is_dir and not overwrite and repo.dir_files(rel):
+        raise FsError(f"'{shown_rel}' is not empty - with --overwrite it becomes the entry's "
+                      "(files there the release doesn't give are deleted; ignored ones stay)")
     if args.dry_run:
         print(f"would add {shown_rel} from {name} {release.tag} "
               f"({', '.join(a.name for a in assets)}, {spec_text(spec)}"
@@ -3776,7 +3789,7 @@ def cmd_add(ctx, repo, args):
     st = State(entry=SimpleNamespace(shown=shown_rel, rel=rel, target=target, is_dir=is_dir),
                rel=rel, head_blob=obj[1] if obj and obj[0] == "tree" else None)
     digest, base, stats = install(repo, st, origin, release, assets, steps, reg.filters,
-                                  args.force)
+                                  overwrite)
     if rel in reg.files:
         reg.remove_file(rel, keep_source=named)
     name = named or reg.add_source(url, spec)
@@ -4632,7 +4645,7 @@ def main(argv=None):
     p.add_argument("--release", metavar="TAG|PATTERN",
                    help="this release instead of the one the source selects (a pattern: the "
                         "newest matching), once - the selection stays as it is")
-    p.add_argument("--force", action="store_true", help="discard local modifications")
+    p.add_argument("--overwrite", action="store_true", help="discard local modifications")
     p.add_argument("--no-edit", action="store_true", help="commit without opening the editor")
     p.add_argument("--no-commit", action="store_true",
                    help="only stage; a plain 'git commit' offers the proposed message")
@@ -4709,7 +4722,11 @@ def main(argv=None):
     p.add_argument("--prerelease", action="store_true", help="prereleases count too")
     p.add_argument("--type", choices=sorted(PLATFORMS),
                    help="platform of the URL's host (default: derived from it)")
-    p.add_argument("--force", action="store_true", help="replace an existing entry or file")
+    p.add_argument("--force", action="store_true",
+                   help="replace an existing entry; take more than 10 assets or 100 MiB")
+    p.add_argument("--overwrite", action="store_true",
+                   help="replace an existing file (directory content) with what the release "
+                        "gives")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
     p = sub.add_parser("set", parents=[colorp, remotep],

@@ -25,7 +25,7 @@
 #    1. Basic workflow: add, status, pull
 #    2. Release selection: latest, patterns, pinned tags, prereleases, drafts
 #    3. Asset selection and integrity
-#    4. Local modifications: refused by pull, discarded with --force
+#    4. Local modifications: refused by pull, discarded with --overwrite
 #    5. .git-assetsync registry: sources, unlink, mv, commit consistency
 #    6. Commit proposals: --no-commit, SQUASH_MSG
 #    7. Offline: --no-fetch, one API request per source
@@ -562,7 +562,7 @@ check "no digest in the API: computed" "$(reg file.nod.bin.digest)" "sha256:$(sh
 
 
 # =============================================================================
-section "4. Local modifications: refused by pull, discarded with --force"
+section "4. Local modifications: refused by pull, discarded with --overwrite"
 # =============================================================================
 cd "$T"
 asset lm.txt "lm 1"
@@ -581,10 +581,10 @@ check "... file unchanged" "$(cat lm.txt)" "changed"
 mkdir -p sub
 check "... the proposed command fits the current directory" \
   "$(cd sub && git assetsync pull ../lm.txt 2>&1 | grep -o "discard them with '[^']*'")" \
-  "discard them with 'git assetsync pull --force ../lm.txt'"
-pullc --force lm.txt
-check "pull --force restores" "$(cat lm.txt)" "lm 1"
-check "pull --force: message" "$(msg)" \
+  "discard them with 'git assetsync pull --overwrite ../lm.txt'"
+pullc --overwrite lm.txt
+check "pull --overwrite restores" "$(cat lm.txt)" "lm 1"
+check "pull --overwrite: message" "$(msg)" \
   "[assetsync] Restore lm.txt from acme/lm v1 Release: https://github.com/acme/lm/releases/tag/v1 Asset:   lm.txt Local modifications of this repository were discarded. "
 check "after restore: clean" "$(st)" ""
 
@@ -597,8 +597,8 @@ release acme/lm v2 11 "$F/lm.txt"
 check "pending + uncommitted" "$(st)" "P M"
 check "pull refused" "$(git assetsync pull lm.txt 2>&1 | grep -c "uncommitted changes NOT ALLOWED.*git restore lm.txt")" "1"
 check "... file unchanged" "$(cat lm.txt)" "dirty"
-check "pull --all --force: discards and updates" \
-  "$(git assetsync pull --all --force --no-edit 2>&1 | grep -c 'warning: lm.txt: discarding local modifications')" "1"
+check "pull --all --overwrite: discards and updates" \
+  "$(git assetsync pull --all --overwrite --no-edit 2>&1 | grep -c 'warning: lm.txt: discarding local modifications')" "1"
 check "... content" "$(cat lm.txt)" "lm 2"
 check "... message" "$(git log -1 --format=%s)" "[assetsync] Update lm.txt to acme/lm v2 (was v1)"
 
@@ -606,8 +606,8 @@ check "... message" "$(git log -1 --format=%s)" "[assetsync] Update lm.txt to ac
 rm lm.txt
 check "deleted: D" "$(st)" "  D"
 check "deleted: pull refused" "$(rc git assetsync pull lm.txt)" "2"
-pullc --force lm.txt
-check "deleted: pull --force restores" "$(cat lm.txt)" "lm 2"
+pullc --overwrite lm.txt
+check "deleted: pull --overwrite restores" "$(cat lm.txt)" "lm 2"
 
 # a change back to the asset version is no modification
 echo changed > lm.txt && git commit -qam "local change"
@@ -630,7 +630,7 @@ check "hand-written entry: -v" "$(git assetsync status -v | grep -cE "^${TAB}not
 check "hand-written entry: note" "$(git assetsync status | grep -cE "^${TAB}new:[[:space:]]+hand\.txt  \(release v1\)")" "1"
 echo mine > hand.txt
 check "existing other file: refused" "$(git assetsync pull hand.txt 2>&1 | tail -1)" \
-  "error: 'hand.txt' exists and differs from hand.txt - use --force to overwrite it"
+  "error: 'hand.txt' exists and differs from hand.txt - use --overwrite to replace it"
 rm hand.txt
 pullc hand.txt
 check "hand-written entry: pulled" "$(cat hand.txt) $(git log -1 --format=%s)" "hand [assetsync] Add hand.txt from h v1"
@@ -658,10 +658,21 @@ check "already synced: refused" "$(asd add one.bin acme/pair --asset two.bin 2>&
 quiet asd add --force one.bin acme/pair --asset two.bin
 check "add --force: replaced" "$(cat one.bin) $(reg file.one.bin.asset)" "two two.bin"
 git reset -q --hard
+echo changed > one.bin
+check "add --force: local modifications kept" "$(asd add --force one.bin acme/pair --asset two.bin 2>&1 | oneline; cat one.bin)" \
+  "error: 'one.bin' has local modifications - use --overwrite to discard them changed"
+quiet asd add --force --overwrite one.bin acme/pair --asset two.bin
+check "... discarded with --overwrite" "$(cat one.bin) $(reg file.one.bin.asset)" "two two.bin"
+git reset -q --hard
 echo mine > mine.bin
 check "existing different file: refused" "$(asd add mine.bin acme/pair --asset one.bin 2>&1 | tail -1)" \
-  "error: 'mine.bin' exists and differs from one.bin - use --force to overwrite it"
+  "error: 'mine.bin' exists and differs from one.bin - use --overwrite to replace it"
 check "... file kept" "$(cat mine.bin)" "mine"
+check "--force doesn't overwrite it" "$(asd add --force mine.bin acme/pair --asset one.bin 2>&1 | tail -1 | oneline; cat mine.bin)" \
+  "error: 'mine.bin' exists and differs from one.bin - use --overwrite to replace it mine"
+quiet asd add --overwrite mine.bin acme/pair --asset one.bin
+check "add --overwrite: replaced" "$(cat mine.bin) $(git status --porcelain mine.bin)" "one A  mine.bin"
+git reset -q --hard; rm -f mine.bin; echo mine > mine.bin
 cp "$F/one.bin" same.bin
 check "existing identical file: fine" "$(rc asd add same.bin acme/pair --asset one.bin)" "0"
 git reset -q --hard; rm -f mine.bin same.bin
@@ -1342,9 +1353,9 @@ check "dir: pull refused" "$(rc git assetsync pull --no-edit lib/zlib)" "2"
 git commit -qam "local change"
 check "dir: committed modification" "$(st)" " A"
 echo mine > lib/zlib/mine.h
-pullc --force lib/zlib
-check "dir: --force restores" "$(cat lib/zlib/include/zlib.h) $(git log -1 --format=%s)" "zlib 1.3.1 [assetsync] Restore lib/zlib/ from madler/zlib v1.3.1"
-check "dir: --force: untracked deleted, ignored kept" "$(ls lib/zlib | oneline)" "build.log include lib "
+pullc --overwrite lib/zlib
+check "dir: --overwrite restores" "$(cat lib/zlib/include/zlib.h) $(git log -1 --format=%s)" "zlib 1.3.1 [assetsync] Restore lib/zlib/ from madler/zlib v1.3.1"
+check "dir: --overwrite: untracked deleted, ignored kept" "$(ls lib/zlib | oneline)" "build.log include lib "
 check "dir: clean after restore" "$(st) $(git status --porcelain)" " "
 
 # another filter (set): pending, pulled from the cache
@@ -1408,12 +1419,14 @@ check "dir --asset with several matches" "$(asd add -n m1/ acme/eleven --asset '
   "would add m1/ from acme/eleven v1 (..., latest release)"
 git reset -q --hard; rm -rf many
 
-# an existing directory with files becomes the entry's only with --force
+# an existing directory with files becomes the entry's only with --overwrite
 mkdir -p own && echo mine > own/mine.txt && echo old > own/a1.txt
 check "non-empty dir: refused" "$(asd add own/ acme/many-assets 2>&1 >/dev/null)" \
-  "error: 'own/' is not empty - with --force it becomes the entry's (files there the release doesn't give are deleted; ignored ones stay)"
-quiet asd add --force own/ acme/many-assets
-check "non-empty dir with --force" "$(ls own | oneline)$(cat own/a1.txt)" "a1.txt a2.txt a1"
+  "error: 'own/' is not empty - with --overwrite it becomes the entry's (files there the release doesn't give are deleted; ignored ones stay)"
+check "... also with --force" "$(asd add --force own/ acme/many-assets 2>&1 >/dev/null | tail -1)" \
+  "error: 'own/' is not empty - with --overwrite it becomes the entry's (files there the release doesn't give are deleted; ignored ones stay)"
+quiet asd add --overwrite own/ acme/many-assets
+check "non-empty dir with --overwrite" "$(ls own | oneline)$(cat own/a1.txt)" "a1.txt a2.txt a1"
 git reset -q --hard; rm -rf own
 
 # a hand-written [dir] entry: pull fetches it
@@ -1557,7 +1570,7 @@ check "cache: GitLab file deleted by hand, asset re-uploaded" \
   "$(asd add g2.txt https://gitlab.com/grp/cache3 2>&1 | grep -c '^error'; cat g2.txt)" "0
 gitlab3, re-uploaded"
 reset_calls
-check "cache: pull --force from the cache" "$(echo x > a.txt; git commit -qam x; git assetsync pull --force --no-edit a.txt >/dev/null 2>&1; cat a.txt) $(downloads)" "cached 0"
+check "cache: pull --overwrite from the cache" "$(echo x > a.txt; git commit -qam x; git assetsync pull --overwrite --no-edit a.txt >/dev/null 2>&1; cat a.txt) $(downloads)" "cached 0"
 rm -rf "$ASSETSYNC_CACHE"
 check "cache: deleted cache is filled again" "$(asd add e.txt acme/cache >/dev/null 2>&1; ls "$ASSETSYNC_CACHE/sha256" | lines)" "1"
 check "cache: unusable" "$(ASSETSYNC_CACHE=$T/r20/a.txt/x asd add f.txt acme/cache 2>&1 | sed 's/ (.*) / /' | tr '\\' /)" \
@@ -1600,12 +1613,12 @@ check "cache: no limits" "$(git -c assetsync.cacheMaxAge=off assetsync cache pru
   "no limits set (assetsync.cacheMaxAge, assetsync.cacheMaxSize) - nothing to do"
 # automatically after a download, at most once a day
 git config assetsync.cacheMaxAge 30
-quiet git assetsync pull --force --no-edit x1.txt          # downloads x1 again
+quiet git assetsync pull --overwrite --no-edit x1.txt          # downloads x1 again
 touch -t 202501011200 "$C1"
-echo x > x2.txt; git commit -qam x; quiet git assetsync pull --force --no-edit x2.txt
+echo x > x2.txt; git commit -qam x; quiet git assetsync pull --overwrite --no-edit x2.txt
 check "cache: automatic, not twice a day" "$(ls "$ASSETSYNC_CACHE/sha256" | lines)" "2"
 touch -t 202501011200 "$ASSETSYNC_CACHE/last-prune"; rm "$C2"
-echo y > x2.txt; git commit -qam y; quiet git assetsync pull --force --no-edit x2.txt
+echo y > x2.txt; git commit -qam y; quiet git assetsync pull --overwrite --no-edit x2.txt
 check "cache: automatic after a download" "$(ls "$ASSETSYNC_CACHE/sha256" | grep -c "$(sha "$F/x1.txt")")" "0"
 git config --unset assetsync.cacheMaxAge
 export ASSETSYNC_CACHE=$SAVED_CACHE
@@ -2001,8 +2014,8 @@ check "diff --committed" "$(git assetsync diff --committed -- --name-only)" "f.t
 check "diff: committed changes are local too" "$(git assetsync diff -- --name-only)" "f.txt"
 check "diff: status hints at --committed" \
   "$(git assetsync status | grep -c 'git assetsync diff --committed')" "1"
-quiet git assetsync pull --force --no-edit f.txt
-check "diff --committed: nothing after --force" "$(git assetsync diff --committed)" ""
+quiet git assetsync pull --overwrite --no-edit f.txt
+check "diff --committed: nothing after --overwrite" "$(git assetsync diff --committed)" ""
 # a directory: changed, deleted and untracked files
 printf 'a mine\n' > d/a.txt; rm d/b.txt; printf 'x\n' > d/x.txt
 check "diff: directory" "$(git assetsync diff d -- --name-status | oneline)" \

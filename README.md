@@ -73,7 +73,7 @@ them.
 | Converting with tools of your own | yes (e.g. bin2c), in filters you trust | – | – |
 | What's new | `status` like `git status`: new releases, local modifications (those offline) | – (`sync` fetches and writes) | `st` |
 | Updating | `pull` commits, with a message naming the release and its notes | writes the files and a lock file | stages the changes |
-| Local modifications | reported; `pull` refuses them, `--force` discards | overwritten | discarded |
+| Local modifications | reported; `pull` refuses them, `--overwrite` discards | overwritten | discarded |
 | Form | one Python script, standard library only | Go binary | Python script |
 
 vendir is the closest: it vendors many kinds of sources declaratively into
@@ -108,7 +108,7 @@ from other Git repositories see git-filesync.
 - `status` works offline for local changes; only the check for new releases
   asks the platform
 - Files must stay exactly what the release gives: local modifications are
-  reported, `pull` refuses them, `--force` restores them
+  reported, `pull` refuses them, `--overwrite` restores them
 - Checks the download against the digest GitHub reports (GitLab reports
   none)
 - Commands named like Git commands behave like them (`status`, `pull`,

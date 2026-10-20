@@ -148,7 +148,7 @@ checks and stages it afterwards, or with `git config -f .git-assetsync
 `filterhash`, `blob` and `tree` should be left to git-assetsync. An entry
 written by hand without them is fetched by the next `pull` (an existing
 file at its path is only replaced if it is the same, a directory with
-files only with `--force`). Changes to
+files only with `--overwrite`). Changes to
 the file are committed along with the next `pull` – or, if they concern
 other files' entries, that `pull` refuses until they are committed (see
 [`pull`](#pull)).
@@ -159,14 +159,14 @@ A file taken from an asset must stay exactly what the release gives – a
 binary or a generated file can't be merged with local changes. A file that
 differs – committed or not, also deleted – is reported by `status` as
 **NOT ALLOWED**, `status --exit-code` exits with 1, and `pull` refuses to
-update it. [`diff`](#diff) shows the modification; `pull --force`
+update it. [`diff`](#diff) shows the modification; `pull --overwrite`
 discards it and restores what the selected release gives (with a warning,
 and a note in the commit message).
 
 In a directory entry, every file git sees counts: a changed, deleted or
 added file – also an untracked one – is a modification. Files that your
 `.gitignore` ignores (e.g. build output) don't count; `pull` and `pull
---force` leave them alone. Files the entry itself gets are always
+--overwrite` leave them alone. Files the entry itself gets are always
 committed, also if `.gitignore` would ignore them (e.g. `*.lib`).
 
 What counts is the content, not how it is stored: a file that is
@@ -199,6 +199,12 @@ Without a command, `status` runs. `PATH` may be a file or a directory (all
 entries below it) and is relative to the current directory. Options follow
 the command; `git assetsync <command> -h` lists them.
 
+Two options mean the same in all commands (and in git-filesync):
+**`--overwrite`** lets a command replace local content – a file of yours,
+local modifications – with what the release gives; **`--force`** lets it
+do something it refuses by default, without losing local content (replace
+an entry, take many assets).
+
 ### Common options
 
 | Option | Meaning |
@@ -224,7 +230,7 @@ Upstream changes to pull:
 
 Locally modified files:
   (use "git assetsync diff --committed <file>..." to see the modifications)
-  (use "git assetsync pull --force <file>..." to restore the release asset)
+  (use "git assetsync pull --overwrite <file>..." to restore the release asset)
 	modified:   lib/data.bin  (NOT ALLOWED)
 
 Uncommitted changes:
@@ -263,7 +269,7 @@ exit with 2.
 ### `pull`
 
 ```
-git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--force] [--no-edit]
+git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [--no-edit]
                    [--no-commit] [-n]
 ```
 
@@ -292,9 +298,9 @@ one commit.
 
 | Option | Meaning |
 |---|---|
-| `--all` | all entries with something to pull (with `--force` also modified ones) |
+| `--all` | all entries with something to pull (with `--overwrite` also modified ones) |
 | `--release TAG\|PATTERN` | this release instead of the one the source selects, once – see below; a pattern takes the newest matching release; not with `--all` |
-| `--force` | discard local modifications: restore or update the file (directory) anyway; in a directory also untracked files are deleted (ignored ones stay) |
+| `--overwrite` | discard local modifications: restore or update the file (directory) anyway; in a directory also untracked files are deleted (ignored ones stay) |
 | `--no-edit` | commit with the proposed message, without opening the editor |
 | `--no-commit` | update and stage only; a plain `git commit` then offers the proposed message (via `.git/SQUASH_MSG`) |
 | `-n`, `--dry-run` | only report what would happen; nothing is downloaded or changed |
@@ -409,7 +415,7 @@ different by most tools.
 
 ```
 git assetsync add PATH SOURCE [--asset PATTERN] [--release TAG|PATTERN] [--prerelease]
-                  [--type github|gitlab] [--filter NAME] [--force] [-n]
+                  [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-n]
 ```
 
 The arguments are in the same order as for `git filesync add`. Takes the
@@ -452,13 +458,17 @@ commit --no-edit` takes it as it is).
 | `--prerelease` | prereleases count too (with a pattern, or instead of the latest release) |
 | `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
 | `--filter NAME` | the named [filter](#filters) to apply to the assets |
-| `--force` | replace an existing entry for `PATH`; overwrite an existing file that differs; take over a directory that isn't empty; take more than 10 assets or 100 MiB |
+| `--force` | replace an existing entry for `PATH` (its file or directory too, unless it has local modifications); take more than 10 assets or 100 MiB |
+| `--overwrite` | replace an existing file that differs, or the files of a directory that isn't empty; with `--force` also local modifications of the entry replaced |
 | `-n`, `--dry-run` | only show which release, assets and filter would be taken; nothing is downloaded |
 
-An existing file at `PATH` is only overwritten with `--force`, unless it is
-already what the release gives. An existing directory with files in it
-becomes the entry's only with `--force` – then files there that the
-release doesn't give are deleted (ignored ones stay). For big binary files
+An existing file at `PATH` is only replaced with `--overwrite`, unless it
+is already what the release gives. An existing directory with files in it
+becomes the entry's only with `--overwrite` – then files there that the
+release doesn't give are deleted (ignored ones stay). An entry that exists
+already is replaced only with `--force`; its file (directory) as well, as
+long as it is what its release gave – local modifications need
+`--overwrite` too. For big binary files
 (1 MiB or more) that are not stored in Git LFS, `add` warns and suggests
 `git lfs track`: each update adds another copy to the repository's
 history.
@@ -1151,7 +1161,7 @@ the source and the release –
 `Add …` for a new entry, `Update … to … (was …)` for another release,
 `Update … (asset replaced)` when the asset of the same release changed,
 `Update … (filter changed)` after another filter, `Restore …` when `pull
---force` brought back what the release gives after local modifications.
+--overwrite` brought back what the release gives after local modifications.
 The body links the release page and names its title (if it differs from
 the tag), the assets and the filter; for a directory it adds what changes
 in it:
@@ -1275,7 +1285,7 @@ a re-uploaded asset of the same release is not noticed.
 
 ### Download cache
 
-Downloaded assets are kept in a cache, so another filter, `pull --force`
+Downloaded assets are kept in a cache, so another filter, `pull --overwrite`
 or a second repository with the same asset need no new download:
 `~/.cache/git-assetsync` (or `$XDG_CACHE_HOME/git-assetsync`), on Windows
 `%LOCALAPPDATA%\git-assetsync`; `ASSETSYNC_CACHE` sets another directory.
