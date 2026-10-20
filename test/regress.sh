@@ -965,7 +965,7 @@ check "uninstall-hooks" "$(git assetsync uninstall-hooks | oneline)" "pre-push: 
 printf '#!/bin/sh\necho before\n# git-assetsync: remind about new releases to pull (never blocks)\ngit assetsync status --hook </dev/null || true\necho after\n' > .git/hooks/pre-push
 check "install-hooks: old hook updated" "$(git assetsync install-hooks | head -1)" "pre-push: updated"
 check "... in place" "$(grep -v '^#' .git/hooks/pre-push | oneline)" \
-  'echo before [ $# -eq 0 ] || git_assetsync_refs=$(cat) printf '"'%s\\n'"' "$git_assetsync_refs" | git assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1 [ -z "$git_assetsync_refs" ] || exec <<git_assetsync_refs_end $git_assetsync_refs git_assetsync_refs_end echo after '
+  'echo before git_assetsync_refs=$([ $# -eq 0 ] || cat) printf '"'%s\\n'"' "$git_assetsync_refs" | git assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1 [ -z "$git_assetsync_refs" ] || exec <<git_assetsync_refs_end $git_assetsync_refs git_assetsync_refs_end echo after '
 quiet git assetsync uninstall-hooks
 check "... uninstall keeps the rest" "$(oneline < .git/hooks/pre-push)" "#!/bin/sh echo before echo after "
 # a hook of our own from before 0.13.1: rewritten, without its 'exit 0' (lines
@@ -2165,6 +2165,9 @@ check "pre-push: stdin kept for later commands" \
   "$(grep -c "^refs/heads/main $(git rev-parse HEAD) refs/heads/main " "$T/after.log")" "1"
 check "pre-push: nothing pushed: EOF for later commands, no blank line" \
   "$(sh .git/hooks/pre-push origin "$T/r26.git" </dev/null >/dev/null 2>&1; wc -c < "$T/after.log" | tr -d ' ')" "0"
+check "pre-push: by hand, a variable of that name in the environment isn't passed on" \
+  "$(echo 'refs/heads/x 1 refs/heads/x 0' | git_assetsync_refs=junk sh .git/hooks/pre-push >/dev/null 2>&1; cat "$T/after.log")" \
+  "refs/heads/x 1 refs/heads/x 0"
 rm .git/hooks/pre-push; quiet git assetsync install-hooks
 check "push check: by hand (HEAD)" "$(git assetsync hook pre-push 2>&1 | grep -c 'not on the server')" "0"
 # published as tested: no warning; other assets on the server: a warning

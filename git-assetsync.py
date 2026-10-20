@@ -325,7 +325,7 @@ HOOK_MARKER = "git-assetsync"
 # both blocks can follow each other in one hook.
 HOOKS = {
     "pre-push": "\n".join([
-        '[ $# -eq 0 ] || git_assetsync_refs=$(cat)',
+        'git_assetsync_refs=$([ $# -eq 0 ] || cat)',
         f'''printf '%s\\n' "$git_assetsync_refs" | git assetsync hook pre-push "$@" || '''
         f'[ $? -ne {EXIT_REFUSED} ] || exit 1',
         '[ -z "$git_assetsync_refs" ] || exec <<git_assetsync_refs_end',
