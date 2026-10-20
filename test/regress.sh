@@ -51,6 +51,7 @@
 #   27. edit: .git-assetsync in the editor
 #   28. Release notes of skipped releases
 #   29. restore: back to what the release gave
+#   30. rm: remove entries and their files
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -2351,6 +2352,40 @@ check "restore: base not available" \
 git checkout -q .git-assetsync
 check "restore: a path inside a directory entry" "$(rc git assetsync restore d/a.txt)" "2"
 
+
+# =============================================================================
+section "30. rm: remove entries and their files"
+# =============================================================================
+cd "$T/r29"
+git reset -q --hard && git clean -qfd
+addc g.txt acme/rs --asset rf.txt
+check "rm -n" "$(git assetsync rm -n g.txt; git status --porcelain)" "would remove g.txt"
+check "rm: file and entry, staged" "$(git assetsync rm g.txt) $(ls g.txt 2>&1 >/dev/null | grep -c 'No such') $(git status --porcelain | oneline)$(reg file.g.txt.source)" \
+  "removed g.txt 1 M  .git-assetsync D  g.txt "
+git commit -qm "rm g"
+# uncommitted changes: refused, also for the others given; -f removes anyway
+addc g.txt acme/rs --asset rf.txt
+echo changed > g.txt
+check "rm: refused with uncommitted changes" "$( (git assetsync rm f.txt g.txt 2>&1; cat g.txt; reg file.f.txt.source) | oneline)" \
+  "error: g.txt: has uncommitted changes - use -f to remove it anyway changed acme/rs "
+check "rm -f" "$(git assetsync rm -f g.txt) $(ls g.txt 2>/dev/null)$(reg file.g.txt.source)" "removed g.txt "
+git commit -qm "rm g"
+# a committed modification doesn't count; a file already deleted is fine
+addc g.txt acme/rs --asset rf.txt
+echo changed > g.txt && git commit -qam change
+check "rm: a committed modification is fine" "$(git assetsync rm g.txt)" "removed g.txt"
+git reset -q --hard HEAD
+rm g.txt && git commit -qam "deleted"
+check "rm: file already deleted" "$(git assetsync rm g.txt) $(git status --porcelain | oneline)" "removed g.txt M  .git-assetsync "
+git commit -qm "rm g"
+# a directory: untracked files count, ignored ones stay; from a subdirectory
+echo new > d/new.txt; mkdir -p d/build && echo out > d/build/o.log
+check "rm dir: untracked file refused" "$(git assetsync rm d 2>&1)" "error: d/: has uncommitted changes - use -f to remove it anyway"
+mkdir -p s2
+check "rm -f dir, from a subdirectory" "$(cd s2 && git assetsync rm -f ../d) $(cd d && find . -type f | oneline)$(git ls-files d | lines)" \
+  "removed d/ ./build/o.log 0"
+check "... the source stays while used" "$(reg dir.d.source)$(reg source.acme/rs.url)" "https://github.com/acme/rs"
+check "rm: a path inside an entry" "$(rc git assetsync rm d/a.txt)" "2"
 
 # =============================================================================
 echo

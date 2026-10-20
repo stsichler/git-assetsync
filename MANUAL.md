@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`restore`](#restore) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map) · [`cache`](#cache)
+  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`restore`](#restore) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map) · [`cache`](#cache)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -186,6 +186,7 @@ line endings normalized) is still unmodified.
 | `add PATH SOURCE` | take a file or directory from release assets |
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `edit` | open `.git-assetsync` in the editor, then check and stage it |
+| `rm PATH…` | remove entries and their files, like `git rm` |
 | `unlink PATH…` | remove entries (the files are kept) |
 | `mv OLD NEW` | move a file or directory, keeping its entry |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
@@ -590,6 +591,25 @@ was never committed in this clone), `restore` says so, and `pull
 |---|---|
 | `-S`, `--staged` | restore the index instead of the working tree |
 | `-W`, `--worktree` | restore the working tree (the default; with `-S`: both) |
+
+### `rm`
+
+```
+git assetsync rm PATH… [-f] [-n]
+```
+
+Like `git rm`: removes the entries from `.git-assetsync` together with
+their files and stages both (commit when you like). It refuses – for all
+paths given – if one has uncommitted changes (in a directory also
+untracked files); `-f` removes them anyway, and the changes are lost. A
+committed modification doesn't count, and a file already deleted is
+fine. Ignored files in a directory stay. To keep the files and only
+remove the entries, use [`unlink`](#unlink).
+
+| Option | Meaning |
+|---|---|
+| `-f`, `--force` | remove them anyway, also with uncommitted changes |
+| `-n`, `--dry-run` | only show what would be removed |
 
 ### `unlink`
 

@@ -177,6 +177,12 @@ command.
                                 about gaps) and stage it; for usual changes
                                 set, source, filter, unlink and mv are safer
 
+    rm PATH...                  remove entries and their files, staged (like
+                                `git rm`; refused with uncommitted changes -
+                                in a directory also untracked files - unless
+                                -f; ignored files stay)
+        -f, --force             remove them anyway (the changes are lost)
+        -n, --dry-run           only show what would be removed
     unlink PATH...              remove entries (the files are kept); also
                                 broken ones, by their name
     mv OLD NEW                  move a file or directory (git mv), keeping its
@@ -4315,6 +4321,46 @@ def cmd_unlink(ctx, repo, args):
     return EXIT_OK
 
 
+def cmd_rm(ctx, repo, args):
+    """Like `git rm`: remove entries and their files, staged. Refused for
+    all if one has uncommitted changes (in a directory: also untracked
+    files), unless -f; committed modifications don't count."""
+    reg = Registry(repo)
+    entries = select_entries(repo, reg, args.paths)
+    for entry in entries:
+        problem = path_problem(entry.rel)
+        if problem:
+            raise FsError(f"{entry.shown}: {problem} - remove its entry with 'git assetsync "
+                          f"unlink {shlex.quote(entry.rel)}'")
+        changes = repo.git(["status", "--porcelain", "-z", "--untracked-files=all", "--",
+                            lit(entry.rel)]).stdout.strip(b"\0")
+        if changes and not args.force:
+            raise FsError(f"{entry.shown}: has uncommitted changes - use -f to remove it anyway")
+    for entry in entries:
+        if args.dry_run:
+            print(f"would remove {entry.shown}")
+            continue
+        repo.git(["rm", "-r", "-q", "-f", "--ignore-unmatch", "--", lit(entry.rel)])
+        if entry.is_dir and entry.target.is_dir():      # untracked files (not ignored ones)
+            for path in repo.dir_files(entry.rel):
+                (repo.top / path).unlink()
+            for d in sorted((d for d in entry.target.rglob("*") if d.is_dir()), reverse=True):
+                try:
+                    d.rmdir()               # only empty ones
+                except OSError:
+                    pass
+            try:
+                entry.target.rmdir()
+            except OSError:
+                pass
+        shown_rel = entry.shown
+        reg.remove_file(entry.rel)
+        print(f"{paint('removed', 'green')} {shown_rel}")
+    if not args.dry_run:
+        reg.finish()
+    return EXIT_OK
+
+
 def cmd_mv(ctx, repo, args):
     reg = Registry(repo)
     old = repo.rel(repo.user_path(args.src))
@@ -4882,6 +4928,13 @@ def main(argv=None):
     p.add_argument("--type", choices=sorted(PLATFORMS),
                    help="platform of the URL's host (default: derived from it)")
 
+    p = sub.add_parser("rm", parents=[colorp],
+                       help="remove entries and their files (like 'git rm'; staged)")
+    p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
+    p.add_argument("-f", "--force", action="store_true",
+                   help="also with uncommitted changes (they are lost)")
+    p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
+
     p = sub.add_parser("unlink", parents=[colorp], help="remove entries (the files are kept)")
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
@@ -5036,7 +5089,7 @@ def main(argv=None):
         ctx = Context(args)
         return {"hook": cmd_hook, "status": cmd_status, "pull": cmd_pull, "diff": cmd_diff,
                 "difftool": cmd_difftool, "add": cmd_add, "edit": cmd_edit,
-                "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv, "restore": cmd_restore,
+                "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv, "restore": cmd_restore, "rm": cmd_rm,
                 "source": cmd_source, "filter": cmd_filter,
                 "trust": cmd_trust, "verify": cmd_verify}[args.cmd](ctx, repo, args)
     except FsError as e:
