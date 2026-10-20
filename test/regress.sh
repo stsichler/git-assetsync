@@ -50,6 +50,7 @@
 #   26. map: releases from a local folder; the pre-push check
 #   27. edit: .git-assetsync in the editor
 #   28. Release notes of skipped releases
+#   29. restore: back to what the release gave
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -581,7 +582,7 @@ check "... file unchanged" "$(cat lm.txt)" "changed"
 mkdir -p sub
 check "... the proposed command fits the current directory" \
   "$(cd sub && git assetsync pull ../lm.txt 2>&1 | grep -o "discard them with '[^']*'")" \
-  "discard them with 'git assetsync pull --overwrite ../lm.txt'"
+  "discard them with 'git assetsync restore -SW ../lm.txt'"
 pullc --overwrite lm.txt
 check "pull --overwrite restores" "$(cat lm.txt)" "lm 1"
 check "pull --overwrite: message" "$(msg)" \
@@ -595,7 +596,7 @@ check "status: NOT ALLOWED" "$(git assetsync status | grep -cE "^${TAB}modified:
 asset lm.txt "lm 2"
 release acme/lm v2 11 "$F/lm.txt"
 check "pending + uncommitted" "$(st)" "P M"
-check "pull refused" "$(git assetsync pull lm.txt 2>&1 | grep -c "uncommitted changes NOT ALLOWED.*git restore lm.txt")" "1"
+check "pull refused" "$(git assetsync pull lm.txt 2>&1 | grep -c "uncommitted changes NOT ALLOWED.*git assetsync restore -SW lm.txt")" "1"
 check "... file unchanged" "$(cat lm.txt)" "dirty"
 check "pull --all --overwrite: discards and updates" \
   "$(git assetsync pull --all --overwrite --no-edit 2>&1 | grep -c 'warning: lm.txt: discarding local modifications')" "1"
@@ -2287,6 +2288,69 @@ pullc s.txt
 check "skipped: prereleases when taken" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v3, other-1, v2"
 quiet git assetsync pull --no-edit --release v3 s.txt; pullc s.txt
 check "one release forward: no list" "$(git log -1 --format=%B | grep -cE '^Since:|^Release notes:$')" "1"
+
+# =============================================================================
+section "29. restore: back to what the release gave"
+# =============================================================================
+cd "$T"
+mkdir -p rs/sub && echo one > rs/a.txt && echo two > rs/sub/b.txt && printf '#!/bin/sh\n' > rs/run.sh
+mkarchive "$F/rs.tar.gz" rs
+asset rf.txt "rf 1"
+release acme/rs v1 10 "$F/rs.tar.gz" "$F/rf.txt"
+new_repo r29
+printf 'build/\n' > .gitignore && git add .gitignore && git commit -qm ignore
+quiet git assetsync filter add unpack --extract && git commit -qm filter
+addc d/ acme/rs --asset rs.tar.gz --filter unpack
+addc f.txt acme/rs --asset rf.txt
+# a file: the working tree by default
+echo changed > f.txt
+check "restore: file" "$(git assetsync restore f.txt) $(cat f.txt) $(st f.txt)" "f.txt: restored (acme/rs v1) rf 1 "
+check "restore: nothing to restore" "$(git assetsync restore f.txt)" "f.txt: nothing to restore"
+# staged changes: -S restores the index only, -SW both
+echo changed > f.txt && git add f.txt
+check "restore -S: the index only" "$(git assetsync restore -S f.txt) $(git diff --cached --quiet; echo $?) $(cat f.txt)" \
+  "f.txt: restored in the index (acme/rs v1) 0 changed"
+git add f.txt
+check "restore -SW: both" "$(git assetsync restore -SW f.txt) $(git status --porcelain f.txt)$(cat f.txt)" \
+  "f.txt: restored and staged (acme/rs v1) rf 1"
+# a committed modification: restore -SW, then commit
+echo changed > f.txt && git commit -qam change
+check "committed modification: status names restore" \
+  "$(git assetsync status | grep -c 'use "git assetsync restore -SW <file>..." to restore the release asset')" "1"
+check "... and so does pull" "$(git assetsync pull f.txt 2>&1 | grep -o "discard them with '[^']*'")" \
+  "discard them with 'git assetsync restore -SW f.txt'"
+check "restore without -S: still to commit" "$(git assetsync restore f.txt >/dev/null; st f.txt)" " AM"
+quiet git assetsync restore -SW f.txt && git commit -qm "back"
+check "... -SW and committed: clean" "$(st f.txt)" ""
+rm f.txt
+check "restore: a deleted file" "$(git assetsync restore f.txt >/dev/null; cat f.txt) $(st f.txt)" "rf 1 "
+# line endings as .gitattributes says now
+printf '*.txt text eol=crlf\n' > .gitattributes && git add .gitattributes && git commit -qm crlf
+echo changed > f.txt
+check "restore: line endings as configured now" "$(git assetsync restore f.txt >/dev/null; tr -cd '\r' < f.txt | wc -c | tr -d ' ') $(st f.txt)" "1 "
+git rm -q .gitattributes && git commit -qm "no crlf" && git checkout -q -- . && rm -f f.txt && git checkout -q -- f.txt
+# from a subdirectory
+mkdir -p s2 && echo changed > f.txt
+check "restore: from a subdirectory" "$(cd s2 && git assetsync restore ../f.txt) $(cat f.txt)" "f.txt: restored (acme/rs v1) rf 1"
+# a directory: changed, deleted and new files; ignored ones stay; modes as synced
+echo x > d/a.txt; rm d/sub/b.txt; echo new > d/new.txt; mkdir -p d/build && echo out > d/build/o.log
+git rm -q --cached d/run.sh
+check "restore dir: the working tree" "$(git assetsync restore d) $(cd d && find . -type f | sort | oneline)$(cat d/a.txt d/sub/b.txt | oneline)" \
+  "d/: restored (acme/rs v1) ./a.txt ./build/o.log ./run.sh ./sub/b.txt one two "
+check "... the index not" "$(git status --porcelain d | oneline)" "D  d/run.sh ?? d/run.sh "
+echo x > d/a.txt
+check "restore -SW dir" "$(git assetsync restore -SW d) $(git status --porcelain d)$(git ls-files -s d/run.sh | cut -d' ' -f1) $(st d)" \
+  "d/: restored and staged (acme/rs v1) 100755 "
+# errors: not synced yet, base not available
+git config -f .git-assetsync file.h.txt.source acme/rs
+check "restore: not synced yet" "$(git assetsync restore h.txt 2>&1)" "error: h.txt: not synced yet - use 'git assetsync pull h.txt'"
+git checkout -q .git-assetsync
+git config -f .git-assetsync file.f.txt.blob 0123456789012345678901234567890123456789
+check "restore: base not available" \
+  "$(git assetsync restore f.txt 2>&1 | grep -c "error: f.txt: its synced version is not available (.*) - get it again with 'git assetsync pull --overwrite f.txt'")" "1"
+git checkout -q .git-assetsync
+check "restore: a path inside a directory entry" "$(rc git assetsync restore d/a.txt)" "2"
+
 
 # =============================================================================
 echo

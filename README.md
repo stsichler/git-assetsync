@@ -108,11 +108,11 @@ from other Git repositories see git-filesync.
 - `status` works offline for local changes; only the check for new releases
   asks the platform
 - Files must stay exactly what the release gives: local modifications are
-  reported, `pull` refuses them, `--overwrite` restores them
+  reported, `pull` refuses them, `restore` discards them
 - Checks the download against the digest GitHub reports (GitLab reports
   none)
 - Commands named like Git commands behave like them (`status`, `pull`,
-  `diff`, `mv`); dry runs for `pull`, `add`, `unlink`, `mv`
+  `diff`, `restore`, `mv`); dry runs for `pull`, `add`, `unlink`, `mv`
 - `diff` / `difftool` show local modifications, or what `pull` would
   bring (with `--release`: another release, e.g. to go back to an older
   one once); `difftool -d` compares directories at once (e.g. in Meld)

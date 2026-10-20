@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map) · [`cache`](#cache)
+  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`restore`](#restore) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map) · [`cache`](#cache)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -159,9 +159,10 @@ A file taken from an asset must stay exactly what the release gives – a
 binary or a generated file can't be merged with local changes. A file that
 differs – committed or not, also deleted – is reported by `status` as
 **NOT ALLOWED**, `status --exit-code` exits with 1, and `pull` refuses to
-update it. [`diff`](#diff) shows the modification; `pull --overwrite`
-discards it and restores what the selected release gives (with a warning,
-and a note in the commit message).
+update it. [`diff`](#diff) shows the modification; [`restore`](#restore)
+discards it and brings back what the release gave, `pull --overwrite`
+discards it and updates to what the selected release gives (with a
+warning, and a note in the commit message).
 
 In a directory entry, every file git sees counts: a changed, deleted or
 added file – also an untracked one – is a modification. Files that your
@@ -181,6 +182,7 @@ line endings normalized) is still unmodified.
 | `pull PATH…`, `pull --all` | update files and directories to the selected release (or once another one) and commit |
 | `diff [PATH…]` | local modifications against what the release gave; what `pull` would bring |
 | `difftool [PATH…]` | the same in your difftool, file by file or (`-d`) as two directories |
+| `restore PATH…` | discard local modifications: back to what the release gave, without pulling |
 | `add PATH SOURCE` | take a file or directory from release assets |
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `edit` | open `.git-assetsync` in the editor, then check and stage it |
@@ -230,7 +232,7 @@ Upstream changes to pull:
 
 Locally modified files:
   (use "git assetsync diff --committed <file>..." to see the modifications)
-  (use "git assetsync pull --overwrite <file>..." to restore the release asset)
+  (use "git assetsync restore -SW <file>..." to restore the release asset)
 	modified:   lib/data.bin  (NOT ALLOWED)
 
 Uncommitted changes:
@@ -556,6 +558,38 @@ dedicated commands are safer – [`set`](#set), [`source`](#source),
 whatever you write: a changed `blob` or `tree` changes what counts as a
 local modification, a removed `synced` makes `pull` take the release
 again.
+
+### `restore`
+
+```
+git assetsync restore PATH… [-S] [-W]
+```
+
+Like `git restore`, but brings back what the entries were synced with –
+what the release gave, after the filter – instead of what is committed:
+it discards local modifications without pulling a newer release (that
+does `pull --overwrite`). Without options it restores the working tree;
+`-S` (`--staged`) restores the index instead, `-S -W` (short `-SW`) both.
+Nothing is committed and `.git-assetsync` doesn't change. A committed
+modification is gone with `restore -SW` and a commit:
+
+```sh
+git assetsync restore -SW lib/data.bin
+git commit -m "Restore lib/data.bin"
+```
+
+In a directory entry, the files of the release are written back, files
+the release doesn't give are deleted (ignored ones stay), and executable
+bits are set as synced. Files are written as the current `.gitattributes`
+say (line endings, Git LFS). `restore` works offline: what an entry was
+synced with is in the repository (`blob`/`tree`) – if it isn't (e.g. it
+was never committed in this clone), `restore` says so, and `pull
+--overwrite` gets it again.
+
+| Option | Meaning |
+|---|---|
+| `-S`, `--staged` | restore the index instead of the working tree |
+| `-W`, `--worktree` | restore the working tree (the default; with `-S`: both) |
 
 ### `unlink`
 

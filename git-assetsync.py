@@ -44,7 +44,8 @@ An entry records what the committed file (directory) comes from, so the
 local state is known offline; only the check for new releases asks the
 platform. It must stay exactly what its release gives: pull refuses local
 modifications (in a directory: also untracked files; ignored ones don't
-count), --overwrite discards them.
+count); restore brings back what the release gave, pull --overwrite
+updates anyway.
 
 Filter steps (no code is run): extract (unpack zip, tar, tar.gz/bz2/xz,
 .gz/.bz2/.xz, and 7z with an external 7-Zip - 7zz/7z on the PATH or
@@ -119,6 +120,14 @@ command.
                                 directory entry in Meld; temporary copies)
         -y, --no-prompt         don't ask before each file
         --prompt                ask even if PATHs are given
+
+    restore PATH...             like `git restore`: discard local
+                                modifications - back to what the release
+                                gave (the synced version), offline, without
+                                pulling; nothing is committed
+        -S, --staged            restore the index instead of the working tree
+        -W, --worktree          restore the working tree (the default; with
+                                -S: both)
 
     add PATH SOURCE             take the file PATH from an asset of the
                                 release SOURCE selects - or with PATH/ (or
@@ -2745,7 +2754,7 @@ def print_long(ctx, repo, sts, verbose):
     adapted = [st for st in ok if st.committed == "adapted"]
     section("Locally modified files:",
             ['use "git assetsync diff --committed <file>..." to see the modifications',
-             'use "git assetsync pull --overwrite <file>..." to restore the release asset'],
+             'use "git assetsync restore -SW <file>..." to restore the release asset'],
             [("modified", st.entry.shown) + not_allowed for st in adapted], "cyan")
 
     labels = {"modified": "modified", "deleted": "deleted", "added": "new file"}
@@ -3562,9 +3571,9 @@ def pull_one(repo, reg, st, args):
         what = ("committed modifications" if st.committed == "adapted" else
                 "uncommitted changes")
         raise FsError(f"{rel}: {what} NOT ALLOWED - it must stay what its release "
-                      f"gives; discard them with 'git assetsync pull --overwrite "
-                      f"{path_arg(repo, rel)}'" + ("" if st.committed == "adapted" else
-                                                   f" or 'git restore {path_arg(repo, rel)}'"))
+                      f"gives; discard them with 'git assetsync restore -SW "
+                      f"{path_arg(repo, rel)}', or update anyway with 'git assetsync pull "
+                      f"--overwrite {path_arg(repo, rel)}'")
     # an entry without a base (written by hand): a directory with files is
     # only taken over with --overwrite (a file: only if it is the same)
     if entry.is_dir and not entry.blob and not args.overwrite and repo.dir_files(entry.rel):
@@ -4198,6 +4207,100 @@ def and_list(items):
     return ", ".join(items[:-1]) + " and " + items[-1] if len(items) > 1 else "".join(items)
 
 
+def restore_items(repo, entry):
+    """base_items() as they are stored now (.gitattributes may have changed
+    since the sync: LFS, line endings)."""
+    try:
+        return [(m, repo.as_local(repo.read_content(o, path), path), path)
+                for m, o, path in base_items(repo, entry)]
+    except FsError as e:
+        raise FsError(f"its synced version is not available ({e}) - get it again with "
+                      f"'git assetsync pull --overwrite {path_arg(repo, entry.shown)}'")
+
+
+def restore_worktree(repo, entry, items):
+    """Write the files of items (and in a directory: delete the others git
+    sees there; ignored ones stay)."""
+    if entry.is_dir:
+        keep = {path for _, _, path in items}
+        for path in repo.dir_files(entry.rel):
+            if path not in keep:
+                (repo.top / path).unlink()
+        dirs = entry.target.rglob("*") if entry.target.is_dir() else []
+        for d in sorted((d for d in dirs if d.is_dir()), reverse=True):
+            try:
+                d.rmdir()               # only empty ones
+            except OSError:
+                pass
+    for mode, oid, path in items:
+        target = repo.top / path
+        if target.is_dir():
+            raise FsError(f"'{path}' is a directory in the working tree")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(repo.checkout_form(oid, path))
+        set_executable(target, mode == "100755")
+
+
+def restore_index(repo, entry, items):
+    if entry.is_dir:
+        repo.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", lit(entry.rel)])
+    data = "".join(f"{m} {o}\t{path}\0" for m, o, path in items)
+    repo.git(["update-index", "-z", "--add", "--index-info"], data=data.encode("utf-8"))
+
+
+def restore_one(repo, entry, staged, worktree):
+    """Restore what the entry was synced with: in the working tree and/or
+    the index. Returns what was done, or None if nothing differed."""
+    items = restore_items(repo, entry)
+    if entry.is_dir:
+        base = repo.make_tree([(m, o, path[len(entry.rel) + 1:]) for m, o, path in items])
+        p = repo.git(["write-tree", f"--prefix={entry.rel}/"], check=False)
+        in_index = out(p) if p.returncode == 0 else None
+        in_worktree = repo.worktree_tree(entry.rel)
+    else:
+        (mode, base, _), = items
+        in_index = out(repo.git(["ls-files", "-s", "--", lit(entry.rel)])).split(" ")[1:2]
+        in_index = in_index[0] if in_index else None
+        in_worktree = repo.worktree_blob(entry.target)
+    done = []
+    if staged and in_index != base:
+        restore_index(repo, entry, items)
+        done.append("index")
+    if worktree and in_worktree != base:
+        restore_worktree(repo, entry, items)
+        done.append("worktree")
+    return done
+
+
+def cmd_restore(ctx, repo, args):
+    """Like `git restore`, but from what the entries were synced with (their
+    base): the working tree by default, the index with --staged, both with
+    -S -W. Offline; .git-assetsync doesn't change."""
+    reg = Registry(repo)
+    worktree = args.worktree or not args.staged
+    rc = EXIT_OK
+    for entry in select_entries(repo, reg, args.paths):
+        try:
+            problem = path_problem(entry.rel)
+            if problem:
+                raise FsError(problem)
+            if not entry.blob:
+                raise FsError(f"not synced yet - use 'git assetsync pull "
+                              f"{path_arg(repo, entry.shown)}'")
+            done = restore_one(repo, entry, args.staged, worktree)
+        except FsError as e:
+            error(f"{entry.shown}: {e}")
+            rc = EXIT_ERROR
+            continue
+        what = {("index",): "restored in the index", ("worktree",): "restored",
+                ("index", "worktree"): "restored and staged"}.get(tuple(done))
+        if what:
+            print(f"{entry.shown}: {paint(what, 'green')} ({entry.name} {entry.synced})")
+        else:
+            print(f"{entry.shown}: nothing to restore")
+    return rc
+
+
 def cmd_unlink(ctx, repo, args):
     reg = Registry(repo)
     for entry in select_entries(repo, reg, args.paths):
@@ -4703,6 +4806,14 @@ def main(argv=None):
                    help="run COMMAND on all files: {in} a directory with them, {out} an empty "
                         "directory for the result, which replaces them")
 
+    p = sub.add_parser("restore", parents=[colorp],
+                       help="restore what the release gave (the synced version), without pulling")
+    p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
+    p.add_argument("-S", "--staged", action="store_true",
+                   help="restore the index instead of the working tree")
+    p.add_argument("-W", "--worktree", action="store_true",
+                   help="restore the working tree (the default; with -S: both)")
+
     p = sub.add_parser("add", parents=[colorp, remotep],
                        help="take a file or directory from release assets")
     p.add_argument("--filter", metavar="NAME",
@@ -4925,7 +5036,7 @@ def main(argv=None):
         ctx = Context(args)
         return {"hook": cmd_hook, "status": cmd_status, "pull": cmd_pull, "diff": cmd_diff,
                 "difftool": cmd_difftool, "add": cmd_add, "edit": cmd_edit,
-                "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv,
+                "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv, "restore": cmd_restore,
                 "source": cmd_source, "filter": cmd_filter,
                 "trust": cmd_trust, "verify": cmd_verify}[args.cmd](ctx, repo, args)
     except FsError as e:
