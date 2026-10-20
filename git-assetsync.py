@@ -4573,6 +4573,18 @@ def cmd_uninstall_hooks(repo, args):
 
 # --------------------------------------------------------------------------
 
+def describe_commands(parser):
+    """Let each command's -h start with its line from the command list (as
+    a sentence), also for the actions of source, filter and cache."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for choice in action._choices_actions:
+                p = action.choices[choice.dest]
+                if p.description is None and choice.help:
+                    p.description = choice.help[0].upper() + choice.help[1:] + "."
+                describe_commands(p)
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         # LF line ends like git's output, also on Windows (no CRLF translation);
@@ -4856,6 +4868,7 @@ def main(argv=None):
     p = sub.add_parser("hook", parents=[colorp], help="what the installed hooks run")
     p.add_argument("name", choices=list(HOOKS))
     p.add_argument("hook_args", nargs=argparse.REMAINDER, help="the hook's arguments")
+    describe_commands(ap)
 
     argv = list(sys.argv[1:] if argv is None else argv)
     extra = []
