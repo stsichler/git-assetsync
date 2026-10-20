@@ -319,16 +319,18 @@ HOOK_MARKER = "git-assetsync"
 # What the installed hooks run - an interface, so that later versions need no
 # reinstall. Only EXIT_REFUSED blocks a push; any other failure (e.g.
 # git-assetsync not installed) never does. pre-push: the pushed refs on stdin
-# are kept for the commands after these lines (e.g. git lfs pre-push); git
-# always passes arguments, run by hand there is nothing to read.
+# are kept for the commands after these lines (e.g. git lfs pre-push; empty:
+# nothing, so they get EOF, not a blank line); git always passes arguments,
+# run by hand there is nothing to read. Names as in git-filesync's hook, so
+# both blocks can follow each other in one hook.
 HOOKS = {
     "pre-push": "\n".join([
-        '[ $# -eq 0 ] || assetsync_refs=$(cat)',
-        f'''printf '%s\\n' "$assetsync_refs" | git assetsync hook pre-push "$@" || '''
+        '[ $# -eq 0 ] || git_assetsync_refs=$(cat)',
+        f'''printf '%s\\n' "$git_assetsync_refs" | git assetsync hook pre-push "$@" || '''
         f'[ $? -ne {EXIT_REFUSED} ] || exit 1',
-        'exec <<assetsync_EOF',
-        '$assetsync_refs',
-        'assetsync_EOF']),
+        '[ -z "$git_assetsync_refs" ] || exec <<git_assetsync_refs_end',
+        '$git_assetsync_refs',
+        'git_assetsync_refs_end']),
     "post-merge": 'git assetsync hook post-merge "$@" </dev/null || true',
 }
 REGISTRY_HEADER = ("# git-assetsync: files and directories of this repository that are taken\n"
@@ -4496,7 +4498,7 @@ def is_our_hook_line(line):
     s = line.strip()
     return s.startswith((f"# {HOOK_MARKER}:", "git assetsync hook ",
                          "git assetsync status --hook")) or \
-        bool(re.search(r"\bassetsync_(refs|EOF)\b", s))     # status --hook: before 0.10
+        bool(re.search(r"\b(git_)?assetsync_(refs|EOF)", s))   # status --hook: before 0.10
 
 
 def only_ours(lines):
