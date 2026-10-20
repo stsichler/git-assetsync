@@ -574,6 +574,10 @@ check "status --exit-code: 1" "$(rc git assetsync status --exit-code)" "1"
 check "pull refused" "$(rc git assetsync pull --no-edit lm.txt)" "2"
 check "pull refused: message" "$(git assetsync pull lm.txt 2>&1 | grep -c 'committed modifications NOT ALLOWED')" "1"
 check "... file unchanged" "$(cat lm.txt)" "changed"
+mkdir -p sub
+check "... the proposed command fits the current directory" \
+  "$(cd sub && git assetsync pull ../lm.txt 2>&1 | grep -o "discard them with '[^']*'")" \
+  "discard them with 'git assetsync pull --force ../lm.txt'"
 pullc --force lm.txt
 check "pull --force restores" "$(cat lm.txt)" "lm 1"
 check "pull --force: message" "$(msg)" \
@@ -734,13 +738,22 @@ check "failed commit: exit code 1" "$(rc git assetsync pull --no-edit p1.txt)" "
 check "failed commit: staged" "$(git status --porcelain | oneline)" "M  .git-assetsync M  p1.txt "
 rm .git/hooks/pre-commit; git commit -q --no-edit
 check "failed commit: proposal kept" "$(git log -1 --format=%s)" "Update p1.txt to acme/p v3 (was v2)"
+# in a subdirectory, the proposed command works there: its paths are relative to it
+echo "squash of someone else" > .git/SQUASH_MSG
+CMD=$(cd sub && git assetsync pull --no-commit ../p2.txt 2>&1 | grep -o 'git commit -e -F .*')
+check "message file: paths relative to the current directory" "$CMD" \
+  'git commit -e -F "../.git/ASSETSYNC_MSG_p2.txt" -- ../p2.txt ../.git-assetsync'
+rm .git/SQUASH_MSG
+(cd sub && eval "${CMD/ -e / }") >/dev/null 2>&1      # without the editor
+check "... and commits there" "$(git log -1 --format=%s)$(git status --porcelain)" \
+  "Update p2.txt to acme/p v3 (was v2)"
 # pull --all stops after a commit that isn't done (the others would be refused)
 asset p.txt "p 4"
 release acme/p v4 13 "$F/p.txt"
 printf '#!/bin/sh\nexit 1\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit
 OUT=$(git assetsync pull --all --no-edit 2>&1)
 check "pull --all: stops after a failed commit" \
-  "$(echo "$OUT" | grep -c '^warning: stopped after p1.txt - commit it first, then pull the rest$') $(cat p2.txt)" "1 p 2"
+  "$(echo "$OUT" | grep -c '^warning: stopped after p1.txt - commit it first, then pull the rest$') $(cat p2.txt)" "1 p 3"
 rm .git/hooks/pre-commit; git commit -q --no-edit
 # only the pulled file and its entry are committed; other staged changes stay staged
 echo other > other.txt; git add other.txt

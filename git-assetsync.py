@@ -2573,7 +2573,7 @@ def evaluate(ctx, repo, entry):
         return st
     if entry.reg.kinds.get(entry.rel) == "both":
         st.error = (f"both a [file] and a [dir] entry in {REGISTRY} - remove it with "
-                    f"'git assetsync unlink {shlex.quote(entry.rel)}' and add it again")
+                    f"'git assetsync unlink {path_arg(repo, entry.rel)}' and add it again")
         return st
     others = entry.reg.overlapping(entry.rel, exclude=entry.rel)
     if others:
@@ -2586,7 +2586,7 @@ def evaluate(ctx, repo, entry):
         if "step" in entry.v:
             raise FsError("filter steps belong to a named filter - define one with 'git "
                           "assetsync filter add NAME ...' and use it with 'git assetsync set "
-                          f"{cmd_arg(entry.rel)} --filter NAME'")
+                          f"{path_arg(repo, entry.rel)} --filter NAME'")
         if entry.filter and entry.filter not in entry.reg.filters:
             raise FsError(f"filter '{entry.filter}' not found in {REGISTRY} (define it with "
                           f"'git assetsync filter add {entry.filter} ...')")
@@ -2602,7 +2602,7 @@ def evaluate(ctx, repo, entry):
         try:
             st.origin, st.release = ctx.release(entry.url, entry.spec)
             st.assets = select_assets(st.release, entry.asset, st.origin.label, entry.is_dir,
-                                      f"'git assetsync set {cmd_arg(entry.rel)} --asset PATTERN'")
+                                      f"'git assetsync set {path_arg(repo, entry.rel)} --asset PATTERN'")
         except FsError as e:
             st.error = str(e)
             return st
@@ -2677,6 +2677,12 @@ def shown(repo, rel):
     trailing '/' of a directory kept)."""
     path = Path(os.path.relpath(repo.top / rel, repo.base)).as_posix()
     return path + "/" if rel.endswith("/") and path != "." else path
+
+
+def path_arg(repo, rel):
+    """A path as argument in a command shown to the user, who runs it in
+    the current directory."""
+    return cmd_arg(shown(repo, rel))
 
 
 def print_short(repo, sts):
@@ -3342,11 +3348,13 @@ def check_other_entries(reg, rels, args):
 def message_file(repo, name, msg, rels=None):
     """Keep the proposed commit message in .git/ASSETSYNC_MSG_<name>; returns
     the file and the command that commits the files (default: name) and
-    their entries with it."""
-    msgfile = repo.state_file("ASSETSYNC_MSG_", name)
+    their entries with it - with paths relative to the current directory,
+    where it is run."""
+    rels = [name] if rels is None else rels
+    msgfile = repo.state_file("ASSETSYNC_MSG_", rels[0])
     msgfile.write_bytes(msg.encode("utf-8"))
-    paths = " ".join([cmd_arg(r) for r in ([name] if rels is None else rels)] + [REGISTRY])
-    return msgfile, f'git commit -e -F "{msgfile}" -- {paths}'
+    paths = " ".join(path_arg(repo, r) for r in rels + [REGISTRY])
+    return msgfile, f'git commit -e -F "{shown_path(repo, msgfile)}" -- {paths}'
 
 
 def propose_message(repo, msg):
@@ -3549,8 +3557,8 @@ def pull_one(repo, reg, st, args):
                 "uncommitted changes")
         raise FsError(f"{rel}: {what} NOT ALLOWED - it must stay what its release "
                       f"gives; discard them with 'git assetsync pull --force "
-                      f"{cmd_arg(rel)}'" + ("" if st.committed == "adapted" else
-                                            f" or 'git restore {cmd_arg(rel)}'"))
+                      f"{path_arg(repo, rel)}'" + ("" if st.committed == "adapted" else
+                                                   f" or 'git restore {path_arg(repo, rel)}'"))
     # an entry without a base (written by hand): a directory with files is
     # only taken over with --force (a file: only if it is the same)
     if entry.is_dir and not entry.blob and not args.force and repo.dir_files(entry.rel):
@@ -3590,7 +3598,7 @@ def one_off_hint(ctx, st):
     except FsError:
         return
     if selected.tag != st.release.tag:
-        rel = cmd_arg(st.entry.shown)
+        rel = path_arg(st.entry.reg.repo, st.entry.shown)
         print(f"note: {st.entry.shown}: its source still selects {selected.tag} - 'git "
               f"assetsync pull {rel}' goes back to it; to stay on {st.release.tag}: 'git "
               f"assetsync set {rel} --release {shlex.quote(st.release.tag)}'")
@@ -3674,7 +3682,7 @@ def large_binary_hint(repo, rels):
         shown += 1
         if shown <= 3:
             warn(f"{rel} is a binary file of {size // 1024} KiB, not stored in Git LFS - every "
-                 f"update adds a copy to the history; consider 'git lfs track {cmd_arg(rel)}' "
+                 f"update adds a copy to the history; consider 'git lfs track {path_arg(repo, rel)}' "
                  "(before committing)")
     if shown > 3:
         warn(f"... and {shown - 3} more such files")
@@ -3732,7 +3740,7 @@ def cmd_add(ctx, repo, args):
         raise FsError(f"'{rel}' is already synced (use --force to replace its entry)")
     if rel in reg.files and reg.section(rel) != kind:
         raise FsError(f"'{rel}' is synced as a {'directory' if reg.section(rel) == 'dir' else 'file'}"
-                      f" - remove its entry with 'git assetsync unlink {cmd_arg(rel)}' first")
+                      f" - remove its entry with 'git assetsync unlink {path_arg(repo, rel)}' first")
     others = reg.overlapping(rel, exclude=rel)
     if others:
         raise FsError(f"cannot add '{shown_rel}': overlaps with the entry for "
