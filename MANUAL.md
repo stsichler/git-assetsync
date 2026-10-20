@@ -1130,7 +1130,7 @@ using it. All methods 7-Zip knows work (LZMA, LZMA2, PPMd, BCJ2, …).
 ### Proposed commit messages
 
 ```
-Update bin/tool to acme/tool v1.1 (was v1.0)
+[assetsync] Update bin/tool to acme/tool v1.1 (was v1.0)
 
 Release: https://github.com/acme/tool/releases/tag/v1.1
 Title:   Tool 1.1
@@ -1144,7 +1144,10 @@ Release notes:
   **Full Changelog**: https://github.com/acme/tool/compare/v1.0...v1.1
 ```
 
-The subject names the file (directory), the source and the release –
+The subject starts with `[assetsync] `, so the commits git-assetsync
+proposed are easy to tell apart (`git log --grep='^\[assetsync\]'`;
+git-filesync's start with `[filesync] `). It names the file (directory),
+the source and the release –
 `Add …` for a new entry, `Update … to … (was …)` for another release,
 `Update … (asset replaced)` when the asset of the same release changed,
 `Update … (filter changed)` after another filter, `Restore …` when `pull
@@ -1154,7 +1157,7 @@ the tag), the assets and the filter; for a directory it adds what changes
 in it:
 
 ```
-Update third_party/zlib/ to madler/zlib v1.3.2 (was v1.3.1)
+[assetsync] Update third_party/zlib/ to madler/zlib v1.3.2 (was v1.3.1)
 
 Release: https://github.com/madler/zlib/releases/tag/v1.3.2
 Title:   zlib 1.3.2
@@ -1179,7 +1182,7 @@ source (its tag pattern; prereleases only if it takes them; no drafts) –
 newest first:
 
 ```
-Update bin/tool to acme/tool v1.3 (was v1.0)
+[assetsync] Update bin/tool to acme/tool v1.3 (was v1.0)
 
 Release: https://github.com/acme/tool/releases/tag/v1.3
 Asset:   tool-1.3-linux-x64

@@ -187,7 +187,7 @@ git assetsync pull bin/tool
 Proposed commit message:
 
 ```
-Update bin/tool to acme/tool v1.1 (was v1.0)
+[assetsync] Update bin/tool to acme/tool v1.1 (was v1.0)
 
 Release: https://github.com/acme/tool/releases/tag/v1.1
 Title:   Tool 1.1

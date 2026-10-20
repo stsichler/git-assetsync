@@ -338,6 +338,9 @@ REGISTRY_HEADER = ("# git-assetsync: files and directories of this repository th
                    "# synced/digest/blob/tree record what each one comes from.\n")
 # add warns about binary files at least this big that are not stored in LFS
 LFS_HINT_SIZE = 1 << 20
+# the subject of every proposed commit message starts with it: which commits
+# came from git-assetsync (as git-filesync's '[filesync] ')
+COMMIT_PREFIX = "[assetsync] "
 # release notes in a commit message: at most this many lines of this length per
 # release (assetsync.notesLines), this many in all (assetsync.notesTotalLines)
 NOTES_LINES, NOTES_WIDTH, NOTES_TOTAL_LINES = 20, 200, 60
@@ -3131,7 +3134,7 @@ def build_message(st, discarded, unchanged=False, stats=None, between=None,
         subject = f"Update {rel} from {name} {tag} (filter changed)"
     else:
         subject = f"Restore {rel} from {name} {tag}"
-    lines = [subject, ""] + release_lines(release, st.assets, entry.filter, stats)
+    lines = [COMMIT_PREFIX + subject, ""] + release_lines(release, st.assets, entry.filter, stats)
     kind, others = between or ("", [])
     if others:
         tags = [r.tag for r in others]
@@ -3569,7 +3572,7 @@ def pull_one(repo, reg, st, args):
         warn(f"{rel}: {w}")
     discard = st.modified
     if args.dry_run:
-        msg = build_message(st, discard).splitlines()[0]
+        msg = build_message(st, discard).splitlines()[0][len(COMMIT_PREFIX):]
         print(f"would: {msg}" + (" - discarding local modifications" if discard else ""))
         return EXIT_OK
     # before anything changes: the releases in between, and the limits of the notes
@@ -3794,7 +3797,7 @@ def cmd_add(ctx, repo, args):
               "nothing to commit")
         return EXIT_OK
     # staged only, like git add; the proposed message is prepared for the commit
-    msg = "\n".join([f"Add {shown_rel} from {name} {release.tag}", ""]
+    msg = "\n".join([f"{COMMIT_PREFIX}Add {shown_rel} from {name} {release.tag}", ""]
                     + release_lines(release, assets, args.filter, stats)) + "\n"
     report_staged(repo, shown_rel, msg, paint("staged", "green"), rels=[rel])
     return EXIT_OK
