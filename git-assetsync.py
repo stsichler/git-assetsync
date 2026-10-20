@@ -302,6 +302,7 @@ import tempfile
 import time
 import zipfile
 import zlib
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
@@ -1946,11 +1947,20 @@ class Repo:
         p = Path(out(self.git(["rev-parse", "--git-path", "index"])))
         return p if p.is_absolute() else self.top / p
 
+    @contextmanager
+    def temp_index(self, copy=False):
+        """Environment for git commands on a temporary index: empty, or with
+        copy a copy of the index (which stays as it is)."""
+        with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
+            index = Path(td) / "index"
+            if copy and self.index_path().exists():
+                shutil.copyfile(self.index_path(), index)
+            yield dict(os.environ, GIT_INDEX_FILE=str(index))
+
     def make_tree(self, entries):
         """Tree object with the given (mode, id, path) entries, via a
         temporary index."""
-        with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
-            env = dict(os.environ, GIT_INDEX_FILE=str(Path(td) / "index"))
+        with self.temp_index() as env:
             if entries:
                 data = "".join(f"{m} {o}\t{p}\0" for m, o, p in entries)
                 self.git(["update-index", "-z", "--add", "--index-info"],
@@ -1988,11 +1998,7 @@ class Repo:
         """[(mode, id, path)] of the files at rel as `git add -A` would
         stage them (untracked ones included, ignored ones not), computed with
         a copy of the index, which stays as it is."""
-        with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
-            index = Path(td) / "index"
-            if self.index_path().exists():
-                shutil.copyfile(self.index_path(), index)
-            env = dict(os.environ, GIT_INDEX_FILE=str(index))
+        with self.temp_index(copy=True) as env:
             self.git(["add", "-A", "--", lit(rel)], env=env, check=False)
             p = self.git(["ls-files", "-s", "-z", "--", lit(rel)], env=env)
         items = []
@@ -2019,11 +2025,7 @@ class Repo:
         """Tree the directory rel would get by `git add -A` (untracked files
         included, ignored ones not); None if there are no files. Computed
         with a copy of the index, which stays as it is."""
-        with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
-            index = Path(td) / "index"
-            if self.index_path().exists():
-                shutil.copyfile(self.index_path(), index)
-            env = dict(os.environ, GIT_INDEX_FILE=str(index))
+        with self.temp_index(copy=True) as env:
             self.git(["add", "-A", "--", lit(rel)], env=env, check=False)
             p = self.git(["write-tree", f"--prefix={rel}/"], env=env, check=False)
             return out(p) if p.returncode == 0 else None
@@ -3374,14 +3376,39 @@ def commit_staged(repo, name, msg, args, done, rels=None):
         report_staged(repo, name, msg, paint(done, "green"), rels)
         return EXIT_OK
     msgfile, _ = message_file(repo, name, msg, rels)
-    cmd = ["git", "commit", "-F", str(msgfile)] + ([] if args.no_edit else ["-e"]) + \
-        ["--"] + [lit(r) for r in rels] + [REGISTRY]
-    if subprocess.run(cmd, cwd=repo.top).returncode:
+    if not commit_paths(repo, rels + [REGISTRY], msgfile, not args.no_edit):
         report_staged(repo, name, msg, paint("commit not done", "yellow")
                       + "; changes stay staged", rels, "Commit later with")
         return EXIT_PENDING
     msgfile.unlink()
     return EXIT_OK
+
+
+def commit_paths(repo, rels, msgfile, edit):
+    """Commit only these paths, as they are staged - like `git commit --
+    PATHS`, which, though, takes them from the working tree again: with
+    core.filemode=false (Windows) it would lose executable bits set with
+    update-index --chmod. The commit is made from a temporary index (HEAD
+    with these paths as staged), so hooks run as usual. True if done."""
+    for name, what in (("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"),
+                       ("REVERT_HEAD", "revert")):
+        if (repo.gitdir / name).exists():
+            error(f"cannot commit only these files during a {what} (like `git commit -- "
+                  "PATHS`) - finish it first")
+            return False
+    specs = [lit(r) for r in rels]
+    staged = repo.git(["ls-files", "-s", "-z", "--"] + specs).stdout
+    with repo.temp_index() as env:
+        if repo.git(["rev-parse", "-q", "--verify", "HEAD"], check=False).returncode == 0:
+            repo.git(["read-tree", "HEAD"], env=env)
+        # what HEAD has at these paths, removed; then what is staged
+        old = repo.git(["ls-files", "-z", "--"] + specs, env=env).stdout
+        if old:
+            repo.git(["update-index", "-z", "--force-remove", "--stdin"], data=old, env=env)
+        if staged:
+            repo.git(["update-index", "-z", "--index-info"], data=staged, env=env)
+        cmd = ["git", "commit", "-F", str(msgfile)] + (["-e"] if edit else [])
+        return subprocess.run(cmd, cwd=repo.top, env=env).returncode == 0
 
 
 def install_file(repo, rel, target, files, force=False):
@@ -3399,8 +3426,8 @@ def install_file(repo, rel, target, files, force=False):
     target.write_bytes(repo.checkout_form(blob, rel))
     set_executable(target, executable)
     repo.git(["add", "--", lit(rel)])
-    if executable:
-        repo.git(["update-index", "--chmod=+x", "--", rel])
+    # also -x: with core.filemode=false (Windows) `git add` keeps the old mode
+    repo.git(["update-index", f"--chmod={'+' if executable else '-'}x", "--", rel])
     return blob
 
 
@@ -3553,7 +3580,7 @@ def cmd_pull(ctx, repo, args):
         raise FsError("specify file(s) or --all")
     ctx.override = args.release
     rc, done = EXIT_OK, 0
-    for entry in entries:
+    for n, entry in enumerate(entries, 1):
         st = evaluate(ctx, repo, entry)
         if st.error:
             report_error(st)
@@ -3563,12 +3590,18 @@ def cmd_pull(ctx, repo, args):
             continue
         done += 1
         try:
-            rc = max(rc, pull_one(repo, reg, st, args))
+            result = pull_one(repo, reg, st, args)
+            rc = max(rc, result)
             if args.release and (st.pending or st.modified):
                 one_off_hint(ctx, st)
         except FsError as e:   # report and carry on with the other files
             error(str(e))
             rc = EXIT_ERROR
+            continue
+        # the commit wasn't done: the others would be refused because of its entry
+        if result == EXIT_PENDING and n < len(entries):
+            warn(f"stopped after {entry.shown} - commit it first, then pull the rest")
+            break
     if args.all and not done and rc == EXIT_OK:
         print(paint("everything up to date", "green"))
     return rc

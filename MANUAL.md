@@ -280,7 +280,10 @@ from the [download cache](#download-cache) if possible.
 [No local modifications](#no-local-modifications)); the other files are
 pulled anyway, and the exit code is 2.
 
-`pull` commits only the file (directory) and `.git-assetsync`. If `.git-assetsync`
+`pull` commits only the file (directory) and `.git-assetsync`, as staged –
+other staged changes stay staged, and executable bits are kept also with
+`core.filemode=false` (Windows). Like `git commit -- PATH`, it doesn't
+commit during a merge, cherry-pick or revert. If `.git-assetsync`
 has uncommitted changes to entries of other files, it refuses, since the
 commit would take them along without their files; commit them first, or
 use `--no-commit`. Uncommitted changes to `[source]` sections are fine:
@@ -299,6 +302,8 @@ one commit.
 If the commit is not done (e.g. the editor is closed with an empty
 message, or a hook rejects it), the changes stay staged and `pull` tells
 how to commit them with the proposed message; the exit code is then 1.
+`pull --all` stops there: the other entries would be refused as long as
+that entry isn't committed.
 
 **Another release, once:** `pull --release TAG PATH…` updates the files to
 that release instead of the selected one – also an older one, e.g. to go

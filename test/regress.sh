@@ -734,6 +734,24 @@ check "failed commit: exit code 1" "$(rc git assetsync pull --no-edit p1.txt)" "
 check "failed commit: staged" "$(git status --porcelain | oneline)" "M  .git-assetsync M  p1.txt "
 rm .git/hooks/pre-commit; git commit -q --no-edit
 check "failed commit: proposal kept" "$(git log -1 --format=%s)" "Update p1.txt to acme/p v3 (was v2)"
+# pull --all stops after a commit that isn't done (the others would be refused)
+asset p.txt "p 4"
+release acme/p v4 13 "$F/p.txt"
+printf '#!/bin/sh\nexit 1\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit
+OUT=$(git assetsync pull --all --no-edit 2>&1)
+check "pull --all: stops after a failed commit" \
+  "$(echo "$OUT" | grep -c '^warning: stopped after p1.txt - commit it first, then pull the rest$') $(cat p2.txt)" "1 p 2"
+rm .git/hooks/pre-commit; git commit -q --no-edit
+# only the pulled file and its entry are committed; other staged changes stay staged
+echo other > other.txt; git add other.txt
+quiet git assetsync pull --no-edit p2.txt
+check "pull: commits only its file" "$(git show --name-only --format= HEAD | oneline)$(git status --porcelain)" \
+  ".git-assetsync p2.txt A  other.txt"
+# during a merge, like `git commit -- PATHS`: not committed
+git rev-parse HEAD > .git/MERGE_HEAD
+check "pull during a merge: not committed" \
+  "$(git assetsync pull --no-edit sub/p3.txt 2>&1 | grep -c '^error: cannot commit only these files during a merge')" "1"
+rm .git/MERGE_HEAD; git commit -q --no-edit
 
 
 # =============================================================================
@@ -1463,6 +1481,23 @@ check "unsafe hardlink (tar): refused" "$(asd add e/ acme/evil-hardlink --filter
 printf 'PK\003\004broken' > "$F/broken.zip"
 release acme/broken v1 10 "$F/broken.zip"
 check "broken archive" "$(asd add e/ acme/broken --filter ex 2>&1 | grep -c '^error: e/ filter ex: broken.zip: cannot unpack')" "1"
+# the executable bit as the release gives it, also committed by pull with
+# core.filemode=false (Windows), where git takes modes from the index or HEAD
+git reset -q --hard; git clean -qfd
+mkdir -p "$T/xb1" "$T/xb2"; printf 'x\n' > "$T/xb1/run.sh"; printf 'x\n' > "$T/xb2/run.txt"
+mkarchive "$F/xb1.tar" "$T/xb1"; mkarchive "$F/xb2.tar" "$T/xb2"
+release acme/xbit v1 10 "$F/xb1.tar"
+git config core.filemode false
+filt ex-run --extract --move 'run.*' run
+addc run acme/xbit --filter ex-run
+check "executable: committed" "$(git ls-tree HEAD run | cut -d' ' -f1)" "100755"
+release acme/xbit v2 11 "$F/xb2.tar"
+pullc run
+check "... no longer executable: pulled" "$(git ls-tree HEAD run | cut -d' ' -f1) $(git ls-files -s run | cut -d' ' -f1)" "100644 100644"
+release acme/xbit v3 12 "$F/xb1.tar"
+pullc run
+check "... executable again: pulled" "$(git ls-tree HEAD run | cut -d' ' -f1) $(git ls-files -s run | cut -d' ' -f1)" "100755 100755"
+git config --unset core.filemode
 
 
 # =============================================================================
