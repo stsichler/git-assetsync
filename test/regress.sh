@@ -965,12 +965,22 @@ check "uninstall-hooks" "$(git assetsync uninstall-hooks | oneline)" "pre-push: 
 printf '#!/bin/sh\necho before\n# git-assetsync: remind about new releases to pull (never blocks)\ngit assetsync status --hook </dev/null || true\necho after\n' > .git/hooks/pre-push
 check "install-hooks: old hook updated" "$(git assetsync install-hooks | head -1)" "pre-push: updated"
 check "... in place" "$(grep -v '^#' .git/hooks/pre-push | oneline)" \
-  'echo before git assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1 echo after '
+  'echo before [ $# -eq 0 ] || assetsync_refs=$(cat) printf '"'%s\\n'"' "$assetsync_refs" | git assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1 exec <<assetsync_EOF $assetsync_refs assetsync_EOF echo after '
 quiet git assetsync uninstall-hooks
 check "... uninstall keeps the rest" "$(oneline < .git/hooks/pre-push)" "#!/bin/sh echo before echo after "
-rm .git/hooks/pre-push
+# a hook of our own from before 0.13.1: rewritten, without its 'exit 0' (lines
+# others append after it would never run)
+printf '#!/bin/sh\n# git-assetsync: reminders\ngit assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1\nexit 0\n' > .git/hooks/pre-push
+check "install-hooks: our old hook updated" "$(git assetsync install-hooks | head -1)" "pre-push: updated"
+check "... without exit 0" "$(grep -c 'exit 0' .git/hooks/pre-push)" "0"
+quiet git assetsync uninstall-hooks
+check "... uninstalled: removed" "$(ls .git/hooks/pre-push 2>/dev/null)" ""
 printf '#!/bin/sh\necho mine\n' > .git/hooks/post-merge
-check "existing hook: not touched" "$(git assetsync install-hooks | grep -c 'post-merge: hook exists')" "1"
+printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-push
+OUT=$(git assetsync install-hooks)
+check "existing hook: not touched" "$(echo "$OUT" | grep -c 'post-merge: hook exists')" "1"
+check "existing pre-push hook: lines to add first" "$(echo "$OUT" | grep -c 'pre-push: hook exists, add these lines to .* (first: ')" "1"
+rm .git/hooks/pre-push
 check "colors: --color=always" "$(git assetsync status -s --color=always | grep -c "$(printf '\033')")" "1"
 check "colors: none in pipes" "$(git assetsync status -s | grep -c "$(printf '\033')")" "0"
 
@@ -2136,8 +2146,14 @@ check "push check: message" \
 check "push check: refusal named" "$(echo "$OUT" | grep -c 'push refused (assetsync.pushCheck = error)')" "1"
 check "push check: --no-verify" "$(rc git push -q --dry-run --no-verify origin main)" "0"
 git config assetsync.pushCheck warn
+# a command after our lines in the hook (like git lfs pre-push) still gets
+# the pushed refs on stdin
+printf 'cat > "%s/after.log"\n' "$T" >> .git/hooks/pre-push
 OUT=$(git push -q origin main 2>&1); RC=$?
 check "push check: warn pushes" "$RC $(echo "$OUT" | grep -c 'pushing anyway')" "0 1"
+check "pre-push: stdin kept for later commands" \
+  "$(grep -c "^refs/heads/main $(git rev-parse HEAD) refs/heads/main " "$T/after.log")" "1"
+rm .git/hooks/pre-push; quiet git assetsync install-hooks
 check "push check: by hand (HEAD)" "$(git assetsync hook pre-push 2>&1 | grep -c 'not on the server')" "0"
 # published as tested: no warning; other assets on the server: a warning
 cp "$L/v3/t.bin" "$F/t.bin"; release acme/loc v3 13 "$F/t.bin"

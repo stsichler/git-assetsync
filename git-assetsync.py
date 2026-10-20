@@ -318,9 +318,17 @@ EXIT_REFUSED = 3          # hook pre-push: refuse the push (assetsync.pushCheck 
 HOOK_MARKER = "git-assetsync"
 # What the installed hooks run - an interface, so that later versions need no
 # reinstall. Only EXIT_REFUSED blocks a push; any other failure (e.g.
-# git-assetsync not installed) never does.
+# git-assetsync not installed) never does. pre-push: the pushed refs on stdin
+# are kept for the commands after these lines (e.g. git lfs pre-push); git
+# always passes arguments, run by hand there is nothing to read.
 HOOKS = {
-    "pre-push": f'git assetsync hook pre-push "$@" || [ $? -ne {EXIT_REFUSED} ] || exit 1',
+    "pre-push": "\n".join([
+        '[ $# -eq 0 ] || assetsync_refs=$(cat)',
+        f'''printf '%s\\n' "$assetsync_refs" | git assetsync hook pre-push "$@" || '''
+        f'[ $? -ne {EXIT_REFUSED} ] || exit 1',
+        'exec <<assetsync_EOF',
+        '$assetsync_refs',
+        'assetsync_EOF']),
     "post-merge": 'git assetsync hook post-merge "$@" </dev/null || true',
 }
 REGISTRY_HEADER = ("# git-assetsync: files and directories of this repository that are taken\n"
@@ -4467,7 +4475,14 @@ def hook_snippet(cmd):
 def is_our_hook_line(line):
     s = line.strip()
     return s.startswith((f"# {HOOK_MARKER}:", "git assetsync hook ",
-                         "git assetsync status --hook"))     # the latter: before 0.10
+                         "git assetsync status --hook")) or \
+        bool(re.search(r"\bassetsync_(refs|EOF)\b", s))     # status --hook: before 0.10
+
+
+def only_ours(lines):
+    """A hook file with nothing but our lines (and what we wrote around them)."""
+    return all(is_our_hook_line(ln) or ln.strip() in ("", "#!/bin/sh", "exit 0")
+               for ln in lines)
 
 
 def cmd_install_hooks(repo, args):
@@ -4476,23 +4491,28 @@ def cmd_install_hooks(repo, args):
     for name, cmd in HOOKS.items():
         f = hookdir / name
         snippet = hook_snippet(cmd)
+        # no 'exit 0' at the end: lines others add (e.g. git lfs) are appended
+        fresh = "#!/bin/sh\n" + snippet
         if f.exists():
             text = f.read_bytes().decode("utf-8", "replace")
             lines = text.splitlines(keepends=True)
             at = next((i for i, ln in enumerate(lines) if is_our_hook_line(ln)), None)
             if at is None:
-                print(f"{name}: {paint('hook exists', 'yellow')}, add these lines to {f}:\n{snippet}")
+                where = (" (first: commands after them that read the pushed refs, like git lfs "
+                         "pre-push, still get them)" if name == "pre-push" else "")
+                print(f"{name}: {paint('hook exists', 'yellow')}, add these lines to "
+                      f"{f}{where}:\n{snippet}")
                 continue
             # ours: replace our lines with the current ones, in the same place
             rest = [ln for ln in lines if not is_our_hook_line(ln)]
-            new = "".join(rest[:at] + [snippet] + rest[at:])
+            new = fresh if only_ours(lines) else "".join(rest[:at] + [snippet] + rest[at:])
             if new == text:
                 print(f"{name}: already installed")
             else:
                 f.write_bytes(new.encode("utf-8"))
                 print(f"{name}: {paint('updated', 'green')}")
             continue
-        f.write_bytes(("#!/bin/sh\n" + snippet + "exit 0\n").encode())
+        f.write_bytes(fresh.encode())
         f.chmod(0o755)
         print(f"{name}: {paint('installed', 'green')}")
     return EXIT_OK
@@ -4512,7 +4532,7 @@ def cmd_uninstall_hooks(repo, args):
         if len(rest) == len(lines):
             print(f"{name}: {paint('not installed', 'dim')} (existing hook left unchanged)")
             continue
-        if all(ln.strip() in ("", "#!/bin/sh", "exit 0") for ln in rest):
+        if only_ours(lines):
             f.unlink()
             print(f"{name}: {paint('removed', 'green')}")
         else:
