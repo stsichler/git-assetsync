@@ -1529,6 +1529,16 @@ quiet asd add c.txt https://gitlab.com/grp/cache
 quiet asd add d.txt https://gitlab.com/grp/cache
 check "cache: downloaded once (GitLab, by the index)" "$(downloads)" "1"
 check "cache: same content once" "$(ls "$ASSETSYNC_CACHE/sha256" | lines)" "$N"
+# GitLab: a file of the cache deleted by hand, the asset re-uploaded since -
+# the digest in the index is no promise of the platform
+asset c3.txt gitlab3
+release --host gitlab.com grp/cache3 v1 10 "$F/c3.txt"
+quiet asd add g1.txt https://gitlab.com/grp/cache3
+rm "$ASSETSYNC_CACHE/sha256/$(sha "$F/c3.txt")"
+printf 'gitlab3, re-uploaded\n' > "$GH/gitlab.com/grp/cache3/1/assets/c3.txt"
+check "cache: GitLab file deleted by hand, asset re-uploaded" \
+  "$(asd add g2.txt https://gitlab.com/grp/cache3 2>&1 | grep -c '^error'; cat g2.txt)" "0
+gitlab3, re-uploaded"
 reset_calls
 check "cache: pull --force from the cache" "$(echo x > a.txt; git commit -qam x; git assetsync pull --force --no-edit a.txt >/dev/null 2>&1; cat a.txt) $(downloads)" "cached 0"
 rm -rf "$ASSETSYNC_CACHE"

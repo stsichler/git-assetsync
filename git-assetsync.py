@@ -997,7 +997,8 @@ def get_asset(origin, release, asset):
     key = "\n".join([type(origin).__name__, origin.host, origin.project, release.tag,
                      asset.id, asset.name])
     entry = index / hashlib.sha256(key.encode("utf-8")).hexdigest()
-    known = asset.digest.lower() if (asset.digest or "").lower().startswith("sha256:") else None
+    listed = asset.digest.lower() if (asset.digest or "").lower().startswith("sha256:") else None
+    known = listed            # else what the index says: no promise, a re-upload may differ
     if not known and entry.is_file():
         known = entry.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0].strip()
     if known and (store / known[7:]).is_file():
@@ -1019,8 +1020,8 @@ def get_asset(origin, release, asset):
     try:
         origin.download(asset, tmp)
         digest, size = sha256_file(tmp)
-        if known and known != digest:
-            raise FsError(f"{what}: downloaded file has {digest}, but the release lists {known}")
+        if listed and listed != digest:
+            raise FsError(f"{what}: downloaded file has {digest}, but the release lists {listed}")
         if asset.size is not None and asset.size != size:
             raise FsError(f"{what}: downloaded {size} bytes, but the release lists {asset.size}")
         os.replace(tmp, store / digest[7:])
@@ -1712,7 +1713,8 @@ def run_steps(files, steps, work, filters=None, chain=()):
             matched = sorted(r for r in files if rx.match(r))
             if not matched:
                 raise FsError(f"{work.what}: '{step}': no files match '{args[0]}'")
-            rest = {r: v for r, v in files.items() if name == "copy" or r not in matched}
+            moved = set() if name == "copy" else set(matched)
+            rest = {r: v for r, v in files.items() if r not in moved}
             new, origin = {}, {}
             for r in matched:
                 t = target_path(args[1], r, f"{work.what}: '{step}'")
@@ -1763,7 +1765,8 @@ def run_steps(files, steps, work, filters=None, chain=()):
             matched = sorted(r for r in files if rx.match(r))
             if not matched:
                 raise FsError(f"{what}: no files match '{pattern}'")
-            rest = {r: v for r, v in files.items() if r not in matched}
+            converted = set(matched)
+            rest = {r: v for r, v in files.items() if r not in converted}
             new, origin = {}, {}
             for r in matched:
                 values = path_values(r)
@@ -1909,7 +1912,10 @@ class Repo:
         return (self.base / s).resolve()
 
     def rel(self, path):
-        return Path(os.path.relpath(Path(path).resolve(), self.top)).as_posix()
+        try:
+            return Path(os.path.relpath(Path(path).resolve(), self.top)).as_posix()
+        except ValueError:            # Windows: another drive
+            raise FsError(f"'{path}' is outside the repository")
 
     def worktree_blob(self, path):
         """Blob id of the (clean-filtered) working tree file, None if missing.
@@ -2879,9 +2885,21 @@ def cmd_map(args, repo):
     return EXIT_OK
 
 
-def registry_at(repo, rev):
-    """parse_registry() of .git-assetsync in a commit, None if it has none."""
-    p = repo.git(["config", "--blob", f"{rev}:{REGISTRY}", "--list", "-z"], check=False)
+def registry_blobs(repo, revs):
+    """Ids of the .git-assetsync of these commits, each once (commits without
+    one left out) - one git call for all, as there may be many refs."""
+    if not revs:
+        return []
+    data = "".join(f"{rev}:{REGISTRY}\n" for rev in revs).encode("utf-8")
+    p = repo.git(["cat-file", "--batch-check=%(objecttype) %(objectname)"], data=data,
+                 check=False)
+    return list(dict.fromkeys(line.split(" ")[1] for line in out(p).splitlines()
+                              if line.startswith("blob ")))
+
+
+def registry_blob(repo, oid):
+    """parse_registry() of a .git-assetsync blob, None if it can't be read."""
+    p = repo.git(["config", "--blob", oid, "--list", "-z"], check=False)
     return parse_registry(p.stdout) if p.returncode == 0 else None
 
 
@@ -2926,13 +2944,14 @@ def push_check(repo, args):
     not checked again. Warns on stderr; True if such an entry was found."""
     sent, have = pushed_revs(repo, args)
     known = set()
-    for rev in have:
-        parsed = registry_at(repo, rev)
+    have_blobs = registry_blobs(repo, have)
+    for oid in have_blobs:
+        parsed = registry_blob(repo, oid)
         if parsed:
             known |= set(synced_entries(parsed))
     found = {}
-    for rev in sent:
-        parsed = registry_at(repo, rev)
+    for oid in registry_blobs(repo, sent):
+        parsed = None if oid in have_blobs else registry_blob(repo, oid)
         for key, items in (synced_entries(parsed) if parsed else {}).items():
             if key not in known:
                 lst = found.setdefault(key, [])
@@ -4377,7 +4396,8 @@ def filter_test(ctx, repo, reg, args):
                 for p in sorted(path.rglob("*")):
                     if p.is_file():
                         rel = safe_path(p.relative_to(path).as_posix(), what)
-                        add_member(files, rel, (p, bool(p.stat().st_mode & 0o111)), what)
+                        add_member(files, rel, (p, os.name != "nt" and
+                                                bool(p.stat().st_mode & 0o111)), what)
             elif path.is_file():
                 add_member(files, safe_path(path.name, what), (path, False), what)
             else:
