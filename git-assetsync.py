@@ -47,17 +47,21 @@ modifications (in a directory: also untracked files; ignored ones don't
 count); restore brings back what the release gave, pull --overwrite
 updates anyway.
 
-Filter steps (no code is run): extract (unpack zip, tar, tar.gz/bz2/xz,
+Filter steps (no code is run): extract [PATTERN...] (unpack the matching
+files, default all, which must be archives: zip, tar, tar.gz/bz2/xz,
 .gz/.bz2/.xz, and 7z with an external 7-Zip - 7zz/7z on the PATH or
 ASSETSYNC_7Z; unsafe members - paths outside, links, names invalid on
 Windows - are refused), subdir PATH (only that directory, as the root),
-strip N (N leading directories off), include / exclude PATTERN... (only /
+strip N (N leading directories off; files with fewer are left out),
+include / exclude PATTERN... (only /
 not the files matching any of them; gitignore-like), move / copy PATTERN
 TARGET (TARGET/: into that directory; else a path with {path} {dir}
 {parent} {name} {stem} {ext}), apply PATTERN NAME (the filter NAME on the
 matching files only), convert PATTERN TARGET COMMAND (each matching file:
 {in} -> {out}, which replaces it at TARGET; TARGET/: {out} a directory),
 run COMMAND ({in} a directory with all files, {out} one for the result).
+A step that matches no files does nothing; a filter that leaves no files
+at all is an error, and so are results that would replace each other.
 Commands run with sh -c (ASSETSYNC_SH; on Windows Git's sh) in a working
 directory where {in} and {out} are short relative names (fw.bin, fw.c),
 so results are the same everywhere; {root} is the repository's root (for
@@ -230,15 +234,16 @@ Advanced commands - change entries, sources and filters; set up:
     filter                      list the filters (and who uses them)
     filter show NAME            the steps of a filter
     filter test NAME FILE...    apply a filter to local files (as if they were
-                                the assets; a directory: its files) and list
-                                the result; nothing else changes
+                                the assets; a directory: its files), show
+                                what each step did and list the result;
+                                nothing else changes
         --source SOURCE         instead: the assets of its release (with
                                 --release, --prerelease, --type as for add;
                                 --asset PATTERN: only the matching ones)
         -o, --output DIR        write the result to DIR (new or empty)
     filter add NAME STEP-OPTIONS...  define a new filter; the steps in the
                                 order given:
-        --extract, --subdir PATH, --strip N, --include PATTERN,
+        --extract [PATTERN...], --subdir PATH, --strip N, --include PATTERN,
         --exclude PATTERN, --move PATTERN TARGET, --copy PATTERN TARGET,
         --apply PATTERN NAME, --convert PATTERN TARGET COMMAND, --run COMMAND
                                 (consecutive --include / --exclude: one step)
@@ -1424,16 +1429,15 @@ def extract_single(path, name, kind, files, work):
         raise FsError(f"{what}: cannot unpack: {e}")
 
 
-def extract_all(files, work):
-    """Unpack every archive among files into one root, keep the others;
-    a path coming from two of them is an error."""
-    result, found = {}, False
+def extract_all(files, work, what):
+    """Unpack the archives files into one root; a file that is no archive
+    is an error (as a broken one), and so is a path coming from two."""
+    result = {}
     for rel, (path, executable) in sorted(files.items()):
         kind = archive_kind(path)
         if not kind:
-            add_member(result, rel, (path, executable), work.what)
-            continue
-        found = True
+            raise FsError(f"{what}: '{rel}' is not an archive (zip, tar, tar.gz/bz2/xz, "
+                          ".gz/.bz2/.xz, 7z) - choose the archives with a pattern")
         if kind == "zip":
             extract_zip(path, rel, result, work)
         elif kind == "7z":
@@ -1442,8 +1446,6 @@ def extract_all(files, work):
             extract_tar(path, rel, result, work)
         else:
             extract_single(path, rel, kind, result, work)
-    if not found:
-        raise FsError(f"{work.what}: 'extract': no archive among {', '.join(sorted(files))}")
     return result
 
 
@@ -1484,7 +1486,7 @@ def parse_step(step):
     except ValueError as e:
         raise FsError(f"filter step '{step}': {e}")
     name, args = (words[0], words[1:]) if words else ("", [])
-    ok = {"extract": not args,
+    ok = {"extract": all(args),
           "subdir": len(args) == 1 and bool(args[0].strip("/")),
           "strip": len(args) == 1 and args[0].isdigit() and int(args[0]) > 0,
           "include": bool(args), "exclude": bool(args),
@@ -1741,17 +1743,21 @@ def ensure_trusted(repo, steps, filters):
     return set(used_filters(steps, filters))
 
 
-def run_steps(files, steps, work, filters=None, chain=()):
+def run_steps(files, steps, work, filters=None, chain=(), report=None):
     """Apply the filter steps to {path: (file, executable)}; filters: the
-    named filters {name: steps}, for 'apply' steps."""
+    named filters {name: steps}, for 'apply' steps. A step that matches no
+    files does nothing; only a filter that leaves no files at all is an
+    error (checked_result), and one whose results would replace each other.
+    report(step, text): told what each step did (filter test)."""
     filters = filters or {}
     for step in steps:
         name, args = parse_step(step)
+        before, info = len(files), None
         if name in ("move", "copy"):
             rx = glob_regex(args[0])
             matched = sorted(r for r in files if rx.match(r))
-            if not matched:
-                raise FsError(f"{work.what}: '{step}': no files match '{args[0]}'")
+            info = (f"{plural(len(matched), 'file')} {'moved' if name == 'move' else 'copied'}"
+                    if matched else "no files match")
             moved = set() if name == "copy" else set(matched)
             rest = {r: v for r, v in files.items() if r not in moved}
             new, origin = {}, {}
@@ -1774,7 +1780,9 @@ def run_steps(files, steps, work, filters=None, chain=()):
             rx = glob_regex(pattern)
             subset = {r: v for r, v in files.items() if rx.match(r)}
             if not subset:
-                raise FsError(f"{work.what}: '{step}': no files match '{pattern}'")
+                if report:
+                    report(step, "no files match")
+                continue
             rest = {r: v for r, v in files.items() if r not in subset}
             outer, work.what = work.what, f"{work.what} filter {fname}"
             try:
@@ -1787,6 +1795,7 @@ def run_steps(files, steps, work, filters=None, chain=()):
                                   "outside the filter")
                 rest[r] = v
             files = rest
+            info = f"{len(subset)} of {plural(before, 'file')} -> {plural(len(result), 'file')}"
         elif name in COMMAND_STEPS:
             fname = chain[-1] if chain else None
             if fname not in work.trusted:
@@ -1798,12 +1807,13 @@ def run_steps(files, steps, work, filters=None, chain=()):
                 (d / "out").mkdir()
                 run_command(args[0], {"in": "in", "out": "out"}, work, what, d)
                 files = collect_dir(d / "out", what, work)
+                if report:
+                    report(step, f"{before} -> {plural(len(files), 'file')}")
                 continue
             pattern, target, command = args
             rx = glob_regex(pattern)
             matched = sorted(r for r in files if rx.match(r))
-            if not matched:
-                raise FsError(f"{what}: no files match '{pattern}'")
+            info = f"{plural(len(matched), 'file')} converted" if matched else "no files match"
             converted = set(matched)
             rest = {r: v for r, v in files.items() if r not in converted}
             new, origin = {}, {}
@@ -1843,25 +1853,37 @@ def run_steps(files, steps, work, filters=None, chain=()):
             rest.update(new)
             files = rest
         elif name == "extract":
-            files = extract_all(files, work)
+            rxs = [glob_regex(a) for a in args]
+            archives = {r: v for r, v in files.items() if not rxs or any(x.match(r) for x in rxs)}
+            if not archives:
+                info = "no files match"
+            else:
+                rest = {r: v for r, v in files.items() if r not in archives}
+                for r, v in extract_all(archives, work, f"{work.what}: '{step}'").items():
+                    add_member(rest, r, v, f"{work.what}: '{step}'")
+                files = rest
+                info = (f"{plural(len(archives), 'archive')} -> "
+                        f"{plural(len(files) - before + len(archives), 'file')}")
         elif name == "subdir":
             sub = args[0].strip("/") + "/"
             files = {r[len(sub):]: v for r, v in files.items() if r.startswith(sub)}
-            if not files:
-                raise FsError(f"{work.what}: 'subdir {args[0]}': no files there")
         elif name == "strip":
+            # files with no more than n directories are left out
             n, new = int(args[0]), {}
             for r, v in files.items():
                 parts = r.split("/")
-                if len(parts) <= n:
-                    raise FsError(f"{work.what}: 'strip {n}': '{r}' has fewer than {n} "
-                                  f"director{'y' if n == 1 else 'ies'} to strip")
-                add_member(new, "/".join(parts[n:]), v, work.what)
+                if len(parts) > n:
+                    add_member(new, "/".join(parts[n:]), v, f"{work.what}: '{step}'")
             files = new
         else:
             rxs = [glob_regex(a) for a in args]
             files = {r: v for r, v in files.items()
                      if any(x.match(r) for x in rxs) == (name == "include")}
+        if report:
+            if info is None:
+                info = (plural(before, "file") if len(files) == before
+                        else f"{before} -> {plural(len(files), 'file')}")
+            report(step, info)
     if chain:            # a named filter: may leave nothing of its part
         return files
     return checked_result(files, work.what)
@@ -3758,7 +3780,7 @@ def filter_steps(args):
     steps, last = [], None
     for kind, value in getattr(args, "steps", None) or []:
         if kind == "extract":
-            steps.append("extract")
+            steps.append(shlex.join(["extract"] + list(value)))
         elif kind == "subdir":
             steps.append(shlex.join(["subdir", value]))
         elif kind == "strip":
@@ -4611,8 +4633,13 @@ def filter_test(ctx, repo, reg, args):
                 add_member(files, safe_path(path.name, what), (path, False), what)
             else:
                 raise FsError(f"'{name}' not found")
-        result = checked_result(run_steps(files, reg.filters[args.name], work, reg.filters,
-                                          (args.name,)), what)
+        steps = reg.filters[args.name]
+        width = max(len(s) for s in steps) if steps else 0
+
+        def report(step, text):
+            print(paint(f"{step:<{min(width, 40)}}  {text}", "dim", "err"), file=sys.stderr)
+        result = checked_result(run_steps(files, steps, work, reg.filters, (args.name,),
+                                          report), what)
         if out_dir:
             for rel, (src, executable) in sorted(result.items()):
                 dest = out_dir / rel
@@ -4885,9 +4912,9 @@ def main(argv=None):
 
     filterp = argparse.ArgumentParser(add_help=False)
     g = filterp.add_argument_group("filter steps (applied in the order given)")
-    g.add_argument("--extract", action=StepOption, nargs=0,
-                   help="unpack the archives among the files (zip, tar, tar.gz/bz2/xz; "
-                        ".gz/.bz2/.xz files; 7z with 7-Zip)")
+    g.add_argument("--extract", action=StepOption, nargs="*", metavar="PATTERN",
+                   help="unpack the matching files (default: all), which must be archives "
+                        "(zip, tar, tar.gz/bz2/xz; .gz/.bz2/.xz files; 7z with 7-Zip)")
     g.add_argument("--subdir", action=StepOption, metavar="PATH",
                    help="only the files below PATH, as the root")
     g.add_argument("--strip", action=StepOption, type=int, metavar="N",

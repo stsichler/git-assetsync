@@ -1511,12 +1511,14 @@ printf 'plain\n' | gzip > "$F/plain.txt.gz"
 release acme/gz v1 10 "$F/plain.txt.gz"
 quiet asd add plain.txt acme/gz --filter ex
 check "extract a .gz file" "$(cat plain.txt)" "plain"
-check "extract without an archive" "$(asd add x/ acme/many-assets --filter ex 2>&1 >/dev/null)" \
-  "error: x/ filter ex: 'extract': no archive among a1.txt, a2.txt"
-check "strip too deep" "$(asd add x/ acme/fmt-zip --filter ex-strip 2>&1)" \
-  "error: x/ filter ex-strip: 'strip 1': 'one.txt' has fewer than 1 directory to strip"
-check "subdir missing" "$(asd add x/ acme/fmt-zip --filter ex-subdir 2>&1)" \
-  "error: x/ filter ex-subdir: 'subdir nope': no files there"
+# a step that matches nothing does nothing; only no files at all is an error
+check "extract: a file that isn't an archive" "$(asd add x/ acme/many-assets --filter ex 2>&1 >/dev/null)" \
+  "error: x/ filter ex: 'extract': 'a1.txt' is not an archive (zip, tar, tar.gz/bz2/xz, .gz/.bz2/.xz, 7z) - choose the archives with a pattern"
+check "strip: files with fewer directories left out" "$(asd add x/ acme/fmt-zip --filter ex-strip >/dev/null 2>&1; git ls-files x | oneline)" \
+  "x/two.txt "
+git reset -q --hard; git clean -qfd
+check "subdir missing: no files left" "$(asd add x/ acme/fmt-zip --filter ex-subdir 2>&1)" \
+  "error: x/: the filter leaves no files"
 check "nothing left" "$(asd add x/ acme/fmt-zip --filter ex-c 2>&1)" \
   "error: x/: the filter leaves no files"
 git reset -q --hard; git clean -qfd
@@ -1754,12 +1756,12 @@ filt nomatch --extract --move '*.c' src/
 filt outside --extract --move '*.h' ../up/
 check "move: collision" "$(asd add x/ acme/pk --asset pkg.zip --filter coll 2>&1 | grep '^error')" \
   "error: x/ filter coll: 'move app.bin bin/': 'boards/boardA/app.bin' and 'boards/boardB/app.bin' would both become 'bin/app.bin'"
-check "move: a pattern with '/' is anchored" "$(asd add x/ acme/pk --asset pkg.zip --filter anch 2>&1 | grep '^error')" \
-  "error: x/ filter anch: 'move '*/app.bin' bin/': no files match '*/app.bin'"
+check "move: a pattern with '/' is anchored" "$(asd add x/ acme/pk --asset pkg.zip --filter anch >/dev/null 2>&1; git ls-files x/bin | lines)" "0"
+git reset -q --hard; git clean -qfd
 check "move: would replace" "$(asd add x/ acme/pk --asset pkg.zip --filter repl 2>&1 | grep '^error')" \
   "error: x/ filter repl: 'move src/x/a.h src/y/b.h': 'src/x/a.h' would replace 'src/y/b.h'"
-check "move: no match" "$(asd add x/ acme/pk --asset pkg.zip --filter nomatch 2>&1 | grep '^error')" \
-  "error: x/ filter nomatch: 'move '*.c' src/': no files match '*.c'"
+check "move: no match, nothing to do" "$(rc asd add x/ acme/pk --asset pkg.zip --filter nomatch)" "0"
+git reset -q --hard; git clean -qfd
 check "move: unknown placeholder" "$(git assetsync filter add bad1 --move '*' '{base}' 2>&1)" \
   "error: filter step 'move '*' '{base}'': unknown placeholder {base} (known: {path}, {dir}, {parent}, {name}, {stem}, {ext})"
 check "move: target outside" "$(asd add x/ acme/pk --asset pkg.zip --filter outside 2>&1 | grep -c "unsafe path '../up/a.h'")" "1"
@@ -1803,8 +1805,10 @@ check "filter test: a local file" "$(git assetsync filter test hdr "$F/pkg.zip")
 check "filter test: a directory" "$(git assetsync filter test fw "$T/pk/src" | oneline)" "2 bytes  fw/a.h 2 bytes  fw/b.h "
 check "filter test: --source" "$(git assetsync filter test sdk2 --source acme/pk 2>/dev/null | oneline)" \
   "3 bytes  fw/fw.bin 2 bytes  include/a.h "
-check "filter test: --source, input shown" "$(git assetsync filter test sdk2 --source acme/pk 2>&1 >/dev/null)" \
-  "input: acme/pk v1: fw.bin, pkg.zip"
+check "filter test: --source, input and steps shown" "$(git assetsync filter test sdk2 --source acme/pk 2>&1 >/dev/null | oneline)" \
+  "input: acme/pk v1: fw.bin, pkg.zip apply '*.zip' hdr  1 of 2 files -> 1 file apply '*.bin' fw   1 of 2 files -> 1 file "
+check "filter test: what each step did" "$(git assetsync filter test hdr "$F/pkg.zip" 2>&1 >/dev/null | oneline)" \
+  "extract              1 archive -> 6 files include a.h          6 -> 1 file move '*.h' include/  1 file moved "
 check "filter test -o" "$(git assetsync filter test sdk2 --source acme/pk -o "$T/ftout" 2>/dev/null; cat "$T/ftout/include/a.h")" \
   "2 files written to $T/ftout
 a"
@@ -1814,8 +1818,12 @@ check "filter test: no input" "$(git assetsync filter test hdr 2>&1)" \
   "error: give the input: FILE... (local files, as if they were the assets) or --source SOURCE (the assets of its release)"
 check "filter test: missing file" "$(git assetsync filter test hdr nothing.zip 2>&1)" "error: 'nothing.zip' not found"
 check "filter test: unknown filter" "$(git assetsync filter test nope "$F/pkg.zip" 2>&1)" "error: no filter 'nope' in .git-assetsync (known: fw, hdr, sdk2)"
-check "filter test: error as in pull" "$(git assetsync filter test hdr "$F/fw.bin" 2>&1)" \
-  "error: filter hdr: 'extract': no archive among fw.bin"
+check "filter test: error as in pull" "$(git assetsync filter test hdr "$F/fw.bin" 2>&1 | grep '^error')" \
+  "error: filter hdr: 'extract': 'fw.bin' is not an archive (zip, tar, tar.gz/bz2/xz, .gz/.bz2/.xz, 7z) - choose the archives with a pattern"
+check "filter test: extract by pattern, the rest kept" \
+  "$(git assetsync filter add zips --extract '*.zip' >/dev/null && git assetsync filter test zips "$F/fw.bin" "$F/pkg.zip" 2>/dev/null | grep -c 'fw.bin$\|a.h$')" "2"
+check "filter add: --extract with patterns" "$(git config -f .git-assetsync --get-all filter.zips.step)" "extract '*.zip'"
+git reset -q .git-assetsync && git checkout -q .git-assetsync
 check "filter test: nothing changed" "$(git status --porcelain)" ""
 # errors
 check "unknown filter in a filter" "$(git assetsync filter add x --apply '*' nope 2>&1)" "error: unknown filter 'nope' (in 'apply '*' nope')"
@@ -1828,12 +1836,15 @@ filt useren --apply fw.bin ren
 check "filter result collides" "$(asd add x/ acme/pk --filter useren 2>&1 | grep '^error')" \
   "error: x/ filter useren: 'apply fw.bin ren': its 'pkg.zip' collides with a file outside the filter"
 filt nom --apply '*.tar' fw
-check "filter: no match" "$(asd add x/ acme/pk --filter nom 2>&1 | grep '^error')" \
-  "error: x/ filter nom: 'apply '*.tar' fw': no files match '*.tar'"
-filt bad --extract
+check "apply: no match, nothing applied" "$(asd add x/ acme/pk --filter nom >/dev/null 2>&1; git ls-files x | oneline)" "x/fw.bin x/pkg.zip "
+git reset -q --hard; git clean -qfd
+filt drop --exclude '*'
+filt usedrop --apply fw.bin drop
+check "apply: a filter may leave nothing of its part" "$(asd add x/ acme/pk --filter usedrop >/dev/null 2>&1; git ls-files x | oneline)" "x/pkg.zip "
+git reset -q --hard; git clean -qfd
+filt bad --move '*' ../up/
 filt usebad --apply fw.bin bad
-check "error in a nested filter: named" "$(asd add x/ acme/pk --filter usebad 2>&1 | grep '^error')" \
-  "error: x/ filter usebad filter bad: 'extract': no archive among fw.bin"
+check "error in a nested filter: named" "$(asd add x/ acme/pk --filter usebad 2>&1 | grep -c "^error: x/ filter usebad filter bad: .*unsafe path '../up/fw.bin'")" "1"
 check "invalid filter name" "$(git assetsync filter add 'a b' --extract 2>&1)" \
   "error: invalid filter name 'a b' (letters, digits, '.', '+', '-', '_')"
 check "filter add without steps" "$(git assetsync filter add e 2>&1)" \

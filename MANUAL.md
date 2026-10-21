@@ -789,11 +789,15 @@ as pending in `status`, and `pull` updates them.
 | `remove NAME` | remove a filter that nothing uses |
 
 `filter test` changes nothing in the repository; errors are the ones
-`pull` would report:
+`pull` would report. It shows what each step did (on stderr), then the
+result:
 
 ```console
 $ git assetsync filter test zlib-headers --source madler/zlib --asset 'zlib-*.tar.gz'
 input: madler/zlib v1.3.2: zlib-1.3.2.tar.gz
+extract                 1 archive -> 287 files
+strip 1                 287 files
+include '/*.h' LICENSE  287 -> 16 files
 1002 bytes  LICENSE
  577.9 KiB  crc32.h
   13.9 KiB  deflate.h
@@ -1052,9 +1056,9 @@ has the name of its step:
 
 | Option (step) | Effect |
 |---|---|
-| `--extract` | unpack the archives among the files: ZIP, tar, tar.gz/.tgz, tar.bz2, tar.xz, single `.gz`/`.bz2`/`.xz` files (named without the suffix), and 7z with an external 7-Zip (see below). The type is recognized by the content, not the name. All archives go into one root; files that are no archives stay as they are |
+| `--extract [PATTERN…]` | unpack the matching files (without a pattern: all), which must be archives – a file that is none is an error, like a broken archive: ZIP, tar, tar.gz/.tgz, tar.bz2, tar.xz, single `.gz`/`.bz2`/`.xz` files (named without the suffix), and 7z with an external 7-Zip (see below). The type is recognized by the content, not the name. All archives go into one root; the files not matching stay as they are. With archives and other files among the assets, choose the archives: `--extract '*.zip'` |
 | `--subdir PATH` | only the files below `PATH`, which becomes the root |
-| `--strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive) |
+| `--strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive); files with no more than `N` directories are left out, as `tar` does |
 | `--include PATTERN` | only the files matching the pattern |
 | `--exclude PATTERN` | not the files matching the pattern |
 | `--move PATTERN TARGET` | move the matching files to `TARGET`, see below |
@@ -1112,9 +1116,15 @@ So `--move 'images/*/app.bin' 'firmware/{parent}.bin'` makes
 'api/{path}'` moves a whole directory with its structure. Two files with
 the same target, or a target that is another file, are an error.
 
-It is an error if `extract` finds no archive, `subdir`, `move`, `copy` or
-`apply` no files, `strip` a file with too few directories, or if nothing
-is left. A file entry must end up with exactly one file.
+A step whose pattern matches no files does nothing – a filter stays
+valid for a release that happens to have none of them (e.g. no headers).
+Only grave problems are errors: a file that `extract` can't unpack,
+results that would replace each other (two files with the same target,
+a target that is another file), and a filter that leaves no files at all
+for an entry – a filter applied with `apply` may leave nothing of its
+part. A file entry must end up with exactly one file. In `pull` and
+`verify` filters are silent; [`filter test`](#filter) shows what each
+step did.
 
 #### Filters using filters
 
