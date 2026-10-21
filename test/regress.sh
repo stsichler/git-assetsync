@@ -52,6 +52,7 @@
 #   28. Release notes of skipped releases
 #   29. restore: back to what the release gave
 #   30. rm: remove entries and their files
+#   31. A directory with files of others
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -1356,22 +1357,23 @@ check "dir: message" "$(git log -1 --format=%B | grep -E '^(\[assetsync\] Update
   "[assetsync] Update lib/zlib/ to madler/zlib v1.3.1 (was v1.3) Files:   1 added, 1 removed, 1 changed (3 in total) "
 check "dir: clean after pull" "$(st) $(git status --porcelain)" " "
 
-# local modifications: changed, untracked; ignored files don't count
+# local modifications: only the files of the release count - files of
+# others there (untracked or committed) and ignored ones don't
 echo build > lib/zlib/build.log
 check "dir: ignored file: no modification" "$(st)" ""
 echo mine > lib/zlib/mine.h
-check "dir: untracked file: modified" "$(st)" "  M"
-check "dir: NOT ALLOWED" "$(git assetsync status | grep -cE "^${TAB}modified:[[:space:]]+lib/zlib/  \(NOT ALLOWED\)")" "1"
-rm lib/zlib/mine.h
+check "dir: a file of others: no modification" "$(st)" ""
+git add lib/zlib/mine.h && git commit -qm "a file of mine"
+check "... also committed" "$(st)" ""
 echo changed >> lib/zlib/include/zlib.h
 check "dir: changed file: modified" "$(st)" "  M"
+check "dir: NOT ALLOWED" "$(git assetsync status | grep -cE "^${TAB}modified:[[:space:]]+lib/zlib/  \(NOT ALLOWED\)")" "1"
 check "dir: pull refused" "$(rc git assetsync pull --no-edit lib/zlib)" "2"
 git commit -qam "local change"
 check "dir: committed modification" "$(st)" " A"
-echo mine > lib/zlib/mine.h
 pullc --overwrite lib/zlib
 check "dir: --overwrite restores" "$(cat lib/zlib/include/zlib.h) $(git log -1 --format=%s)" "zlib 1.3.1 [assetsync] Restore lib/zlib/ from madler/zlib v1.3.1"
-check "dir: --overwrite: untracked deleted, ignored kept" "$(ls lib/zlib | oneline)" "build.log include lib "
+check "dir: --overwrite: files of others and ignored ones kept" "$(ls lib/zlib | oneline)" "build.log include lib mine.h "
 check "dir: clean after restore" "$(st) $(git status --porcelain)" " "
 
 # another filter (set): pending, pulled from the cache
@@ -1381,7 +1383,7 @@ check "set filter: staged" "$(reg dir.lib/zlib.filter) $(git status --porcelain 
 check "set filter: pending" "$(git assetsync status | grep -c 'pending:    lib/zlib/  (filter changed)')" "1"
 reset_calls
 pullc lib/zlib
-check "filter changed: pulled" "$(git ls-files lib | oneline)" "lib/zlib/include/new.h lib/zlib/include/zlib.h "
+check "filter changed: pulled, the files of others kept" "$(git ls-files lib | oneline)" "lib/zlib/include/new.h lib/zlib/include/zlib.h lib/zlib/mine.h "
 check "filter changed: message" "$(git log -1 --format=%s)" "[assetsync] Update lib/zlib/ from madler/zlib v1.3.1 (filter changed)"
 check "filter changed: no download (cache)" "$(downloads)" "0"
 check "set --no-filter" "$(git assetsync set lib/zlib --no-filter; reg dir.lib/zlib.filter)" \
@@ -1435,14 +1437,20 @@ check "dir --asset with several matches" "$(asd add -n m1/ acme/eleven --asset '
   "would add m1/ from acme/eleven v1 (..., latest release)"
 git reset -q --hard; rm -rf many
 
-# an existing directory with files becomes the entry's only with --overwrite
+# a directory with files of others: the release's files go next to them; one
+# in the way only with --overwrite
+mkdir -p own && echo mine > own/mine.txt
+check "dir with files of others: added next to them" "$(asd add own/ acme/many-assets >/dev/null 2>&1; ls own | oneline)" \
+  "a1.txt a2.txt mine.txt "
+git reset -q --hard; rm -rf own
 mkdir -p own && echo mine > own/mine.txt && echo old > own/a1.txt
-check "non-empty dir: refused" "$(asd add own/ acme/many-assets 2>&1 >/dev/null)" \
-  "error: 'own/' is not empty - with --overwrite it becomes the entry's (files there the release doesn't give are deleted; ignored ones stay)"
+check "a file of others in the way: refused" "$(asd add own/ acme/many-assets 2>&1 >/dev/null)" \
+  "error: 'own/': files of others in the way of the release: own/a1.txt - use --overwrite to replace them"
 check "... also with --force" "$(asd add --force own/ acme/many-assets 2>&1 >/dev/null | tail -1)" \
-  "error: 'own/' is not empty - with --overwrite it becomes the entry's (files there the release doesn't give are deleted; ignored ones stay)"
+  "error: 'own/': files of others in the way of the release: own/a1.txt - use --overwrite to replace them"
 quiet asd add --overwrite own/ acme/many-assets
-check "non-empty dir with --overwrite" "$(ls own | oneline)$(cat own/a1.txt)" "a1.txt a2.txt a1"
+check "with --overwrite: replaced, the others kept" "$(ls own | oneline)$(cat own/a1.txt)" "a1.txt a2.txt mine.txt a1"
+check "... only the release's files staged" "$(git status --porcelain own | oneline)" "A  own/a1.txt A  own/a2.txt ?? own/mine.txt "
 git reset -q --hard; rm -rf own
 
 # a hand-written [dir] entry: pull fetches it
@@ -2045,10 +2053,10 @@ check "diff: status hints at --committed" \
   "$(git assetsync status | grep -c 'git assetsync diff --committed')" "1"
 quiet git assetsync pull --overwrite --no-edit f.txt
 check "diff --committed: nothing after --overwrite" "$(git assetsync diff --committed)" ""
-# a directory: changed, deleted and untracked files
+# a directory: changed and deleted files; a file of others isn't shown
 printf 'a mine\n' > d/a.txt; rm d/b.txt; printf 'x\n' > d/x.txt
 check "diff: directory" "$(git assetsync diff d -- --name-status | oneline)" \
-  "M${TAB}d/a.txt D${TAB}d/b.txt A${TAB}d/x.txt "
+  "M${TAB}d/a.txt D${TAB}d/b.txt "
 check "diff: only the paths given" "$(git assetsync diff f.txt)" ""
 check "diff: nothing changed" "$(git status --porcelain | oneline)" " M d/a.txt  D d/b.txt ?? d/x.txt "
 git checkout -q d && rm d/x.txt
@@ -2100,20 +2108,20 @@ EOF2
 git config difftool.fake.cmd "sh '$T/faketool.sh' \"\$LOCAL\" \"\$REMOTE\""
 git config diff.tool fake
 check "difftool: nothing to show" "$(git assetsync difftool -y)" ""
-printf 'mine\n' > f.txt; printf 'a mine\n' > d/a.txt; printf 'x\n' > d/x.txt
+printf 'mine\n' > f.txt; printf 'a mine\n' > d/a.txt; printf 'b mine\n' > d/b.txt
 check "difftool: file by file, the working files" "$(git assetsync difftool -y | oneline)" \
-  "TOOL synced-v2 d/a.txt TOOL synced-v2 d/x.txt TOOL synced-v2 r25/f.txt "
+  "TOOL synced-v2 d/a.txt TOOL synced-v2 d/b.txt TOOL synced-v2 r25/f.txt "
 OUT=$(printf 'n\ny\n' | git assetsync difftool)
-check "difftool prompt: n then y" "$(echo "$OUT" | grep -o 'TOOL .*')" "TOOL synced-v2 d/x.txt"
-check "difftool prompt text" "$(echo "$OUT" | grep -c "Viewing (2/3): 'd/x.txt'")" "1"
+check "difftool prompt: n then y" "$(echo "$OUT" | grep -o 'TOOL .*')" "TOOL synced-v2 d/b.txt"
+check "difftool prompt text" "$(echo "$OUT" | grep -c "Viewing (2/3): 'd/b.txt'")" "1"
 check "difftool prompt names tool" "$(printf 'q\n' | git assetsync difftool | grep -c "Launch 'fake' \[Y/n/q\]?")" "1"
 check "difftool prompt: EOF quits" "$(git assetsync difftool </dev/null | grep -c 'TOOL ')" "0"
 check "difftool prompt: q quits" "$(printf 'q\n' | git assetsync difftool | grep -c 'TOOL ')" "0"
 check "difftool with path: no prompt" "$(git assetsync difftool f.txt </dev/null)" "TOOL synced-v2 r25/f.txt"
 check "difftool --prompt with path" "$(printf 'n\n' | git assetsync difftool --prompt f.txt | grep -c 'TOOL ')" "0"
 check "difftool -d: two directories" "$(git assetsync difftool -d)" \
-  "DIRS ./d/a.txt ./f.txt | ./d/a.txt ./d/x.txt ./f.txt "
-git checkout -q f.txt d && rm d/x.txt
+  "DIRS ./d/a.txt ./d/b.txt ./f.txt | ./d/a.txt ./d/b.txt ./f.txt "
+git checkout -q f.txt d
 check "difftool --upstream --release: temp copies" \
   "$(git assetsync difftool -y --upstream --release v1 2>/dev/null | oneline)" \
   "TOOL synced-v2 upstream-v1/b.txt TOOL synced-v2 upstream-v1/c.txt TOOL synced-v2 upstream-v1/f.txt "
@@ -2364,11 +2372,12 @@ check "restore: from a subdirectory" "$(cd s2 && git assetsync restore ../f.txt)
 echo x > d/a.txt; rm d/sub/b.txt; echo new > d/new.txt; mkdir -p d/build && echo out > d/build/o.log
 git rm -q --cached d/run.sh
 check "restore dir: the working tree" "$(git assetsync restore d) $(cd d && find . -type f | sort | oneline)$(cat d/a.txt d/sub/b.txt | oneline)" \
-  "d/: restored (acme/rs v1) ./a.txt ./build/o.log ./run.sh ./sub/b.txt one two "
-check "... the index not" "$(git status --porcelain d | oneline)" "D  d/run.sh ?? d/run.sh "
+  "d/: restored (acme/rs v1) ./a.txt ./build/o.log ./new.txt ./run.sh ./sub/b.txt one two "
+check "... the index not, files of others stay" "$(git status --porcelain d | oneline)" "D  d/run.sh ?? d/new.txt ?? d/run.sh "
 echo x > d/a.txt
-check "restore -SW dir" "$(git assetsync restore -SW d) $(git status --porcelain d)$(git ls-files -s d/run.sh | cut -d' ' -f1) $(st d)" \
+check "restore -SW dir" "$(git assetsync restore -SW d) $(git status --porcelain d | grep -v new.txt)$(git ls-files -s d/run.sh | cut -d' ' -f1) $(st d)" \
   "d/: restored and staged (acme/rs v1) 100755 "
+rm d/new.txt
 # errors: not synced yet, base not available
 git config -f .git-assetsync file.h.txt.source acme/rs
 check "restore: not synced yet" "$(git assetsync restore h.txt 2>&1)" "error: h.txt: not synced yet - use 'git assetsync pull h.txt'"
@@ -2414,14 +2423,105 @@ git reset -q --hard HEAD
 rm g.txt && git commit -qam "deleted"
 check "rm: file already deleted" "$(git assetsync rm g.txt) $(git status --porcelain | oneline)" "removed g.txt M  .git-assetsync "
 git commit -qm "rm g"
-# a directory: untracked files count, ignored ones stay; from a subdirectory
-echo new > d/new.txt; mkdir -p d/build && echo out > d/build/o.log
-check "rm dir: untracked file refused" "$(git assetsync rm d 2>&1)" "error: d/: has uncommitted changes - use -f to remove it anyway"
+# a directory: only its own files count and go, files of others and ignored
+# ones stay; from a subdirectory
+echo new > d/new.txt; mkdir -p d/build && echo out > d/build/o.log; echo x > d/a.txt
+check "rm dir: a changed file refused" "$(git assetsync rm d 2>&1)" "error: d/: has uncommitted changes - use -f to remove it anyway"
 mkdir -p s2
-check "rm -f dir, from a subdirectory" "$(cd s2 && git assetsync rm -f ../d) $(cd d && find . -type f | oneline)$(git ls-files d | lines)" \
-  "removed d/ ./build/o.log 0"
+check "rm -f dir, from a subdirectory: files of others kept" \
+  "$(cd s2 && git assetsync rm -f ../d) $(cd d && find . -type f | sort | oneline)$(git ls-files d | lines)" \
+  "removed d/ (1 other file kept) ./build/o.log ./new.txt 0"
 check "... the source stays while used" "$(reg dir.d.source)$(reg source.acme/rs.url)" "https://github.com/acme/rs"
 check "rm: a path inside an entry" "$(rc git assetsync rm d/a.txt)" "2"
+
+# =============================================================================
+section "31. A directory with files of others: only the release's files are the entry's"
+# =============================================================================
+cd "$T"
+mkdir -p ov1/include ov1/lib ov2/include ov2/lib ov3/include ov4/docs
+echo a1 > ov1/include/a.h; echo b > ov1/include/b.h; echo lib > ov1/lib/x.lib
+echo a2 > ov2/include/a.h; echo c > ov2/include/c.h; echo lib > ov2/lib/x.lib
+cp -R ov2/. ov3/; echo theirs > ov3/include/mine.h
+cp -R ov2/. ov4/; echo readme > ov4/README.MD; echo doc > ov4/docs/x.txt
+for v in 1 2 3 4; do mkarchive "$F/ov-$v.tar.gz" "$T/ov$v"; done
+release acme/ov v1 10 "$F/ov-1.tar.gz"
+new_repo r31
+filt unpack --extract
+mkdir -p third/include && echo mine > third/README.md && echo mine > third/include/mine.h
+git add third && git commit -qm "files of mine"
+addc third/ acme/ov --release v1 --filter unpack
+check "added next to the files of others" "$(git ls-files third | oneline)" \
+  "third/README.md third/include/a.h third/include/b.h third/include/mine.h third/lib/x.lib "
+check "... clean" "$(st third) $(git status --porcelain)" " "
+check "... the commit has the release's files" "$(git show --name-only --format= HEAD | oneline)" \
+  ".git-assetsync third/include/a.h third/include/b.h third/lib/x.lib "
+echo changed >> third/README.md
+check "a file of others changed: no modification" "$(st third)" ""
+git add third/README.md
+# the next release: its files replaced and deleted, those of others left alone
+quiet git assetsync source set-release acme/ov --unset && git commit -qm latest -- .git-assetsync
+release acme/ov v2 11 "$F/ov-2.tar.gz"
+pullc third
+check "pull: the release's files replaced and deleted" "$(cd third && find . -type f | sort | oneline)$(cat third/include/a.h)" \
+  "./README.md ./include/a.h ./include/c.h ./include/mine.h ./lib/x.lib a2"
+check "... commits only its files" "$(git show --name-only --format= HEAD | oneline)" \
+  ".git-assetsync third/include/a.h third/include/b.h third/include/c.h "
+check "... others' staged change stays staged" "$(git status --porcelain | oneline)" "M  third/README.md "
+check "... message: what changed in its files" "$(git log -1 --format=%B | grep '^Files:')" \
+  "Files:   1 added, 1 removed, 1 changed (3 in total)"
+git commit -qm "my readme"
+# a file of others in the way of a new release file: refused; --overwrite replaces it
+release acme/ov v3 12 "$F/ov-3.tar.gz"
+check "pull: a file of others in the way" "$(git assetsync pull --no-edit third 2>&1 | grep '^error')" \
+  "error: 'third/': files of others in the way of the release: third/include/mine.h - use --overwrite to replace them"
+check "... nothing changed" "$(cat third/include/mine.h) $(git status --porcelain)" "mine "
+pullc --overwrite third
+check "pull --overwrite: replaced, now the release's" "$(cat third/include/mine.h) $(st third) $(reg dir.third.synced)" "theirs  v3"
+# in the way: a name differing only in case, a file where a directory is needed
+echo mine > third/docs && git add third/docs && git commit -qm docs
+release acme/ov v4 13 "$F/ov-4.tar.gz"
+check "pull: in the way also by case, or as a file" "$(git assetsync pull --no-edit third 2>&1 | grep '^error')" \
+  "error: 'third/': files of others in the way of the release: third/README.md, third/docs - use --overwrite to replace them"
+rm -rf "$GH/github.com/acme/ov/4"
+# a clone doesn't have the base (it was committed with files of others): status
+# doesn't check, verify gets it; restore and pull get it when needed
+quiet git assetsync mv third vendor
+check "mv: files of others moved along" "$(git reset -q --hard; git assetsync mv third vendor)" \
+  "moved third -> vendor (entry kept; 2 other files moved along)"
+git commit -qm mv
+cd "$T" && git clone -q --no-local r31 r31c && cd r31c
+check "clone: not checked" "$(git assetsync status | grep -c "warning: vendor/: which files are those of v3 isn't known in this clone - local modifications not checked ('git assetsync verify vendor/' gets it)")" "1"
+check "... verify gets it" "$(git assetsync verify vendor) $(git assetsync status | grep -c 'not checked')" "vendor/: verified (v3) 0"
+cd "$T" && rm -rf r31c && git clone -q --no-local r31 r31c && cd r31c
+echo changed > vendor/include/a.h; echo changed > vendor/README.md
+check "clone: restore gets the base" "$(git assetsync restore vendor) $(cat vendor/include/a.h vendor/README.md | oneline)" \
+  "vendor/: restored (acme/ov v3) a2 changed "
+git checkout -q vendor
+cd "$T" && rm -rf r31c && git clone -q --no-local r31 r31c && cd r31c
+echo changed > vendor/include/a.h
+check "clone: pull --overwrite gets the base" "$(git assetsync pull --overwrite --no-edit vendor 2>/dev/null; cat vendor/include/a.h)" \
+  "vendor/: nothing to commit (the same as committed)
+a2"
+# ... unless the release it was synced with is gone: pull refuses, --overwrite only adds
+cd "$T" && rm -rf r31c && git clone -q --no-local r31 r31c && cd r31c
+rm -rf "$GH/github.com/acme/ov/3"
+release acme/ov v5 14 "$F/ov-1.tar.gz"
+check "base gone: pull refused" "$(git assetsync pull --no-edit vendor 2>&1)" \
+  "error: vendor/: which files are those of v3 isn't known in this clone, and release v3 of acme/ov no longer exists - with --overwrite the files of v5 are added, none deleted"
+quiet git assetsync pull --overwrite --no-edit vendor
+check "... --overwrite: added, none deleted" "$(cd vendor && find . -type f | sort | oneline)$(cat vendor/include/a.h)" \
+  "./README.md ./docs ./include/a.h ./include/b.h ./include/c.h ./include/mine.h ./lib/x.lib a1"
+check "... now known" "$(st vendor) $(git ls-tree -r --name-only $(reg dir.vendor.tree) | oneline)" " include/a.h include/b.h lib/x.lib "
+# a file of the release renamed in case only is its own, not in the way
+mkdir -p "$T/ov6/include" && echo a6 > "$T/ov6/include/A.h" && echo lib > "$T/ov6/x.lib"
+mkarchive "$F/ov-6.tar.gz" "$T/ov6"
+release acme/ov v6 15 "$F/ov-6.tar.gz"
+quiet git assetsync pull --no-edit vendor
+check "a file renamed in case: replaced" "$(git ls-files vendor/include | oneline)$(cat vendor/include/A.h)" \
+  "vendor/include/A.h vendor/include/c.h vendor/include/mine.h a6"
+# rm: the release's files go, those of others stay
+check "rm: files of others kept" "$(git assetsync rm vendor) $(cd vendor && find . -type f | sort | oneline)" \
+  "removed vendor/ (4 other files kept) ./README.md ./docs ./include/c.h ./include/mine.h "
 
 # =============================================================================
 echo

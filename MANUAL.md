@@ -10,6 +10,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [Files and directories](#files-and-directories)
   - [The `.git-assetsync` file](#the-git-assetsync-file)
   - [No local modifications](#no-local-modifications)
+  - [Files of your own in a directory](#files-of-your-own-in-a-directory)
 - [Commands](#commands)
   - [Common options](#common-options)
   - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`restore`](#restore) · [`add`](#add) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv)
@@ -58,11 +59,11 @@ path:
   next to it are not concerned.
 - **A directory** (`add third_party/zlib/ …`, with a trailing `/`, or an
   existing directory): any number of files – all assets of the release (or
-  those matching `--asset`), as they are or after the filter. The
-  directory **belongs to the entry completely**: `pull` makes it exactly
-  what the release gives, so files that a new release no longer has
-  disappear, and files of your own in it count as modifications (files
-  your `.gitignore` ignores don't count and stay).
+  those matching `--asset`), as they are or after the filter. The entry
+  has **the files its release gave**: `pull` replaces them with those of
+  the new release, and deletes those it no longer has. Files of your own
+  in the directory are left alone – see [Files of your own in a
+  directory](#files-of-your-own-in-a-directory).
 
 Entries must not overlap: no entry inside a directory entry, no directory
 entry around another entry.
@@ -166,15 +167,43 @@ discards it and brings back what the release gave, `pull --overwrite`
 discards it and updates to what the selected release gives (with a
 warning, and a note in the commit message).
 
-In a directory entry, every file git sees counts: a changed, deleted or
-added file – also an untracked one – is a modification. Files that your
-`.gitignore` ignores (e.g. build output) don't count; `pull` and `pull
---overwrite` leave them alone. Files the entry itself gets are always
-committed, also if `.gitignore` would ignore them (e.g. `*.lib`).
+In a directory entry, only the files of the release count: one of them
+changed or deleted is a modification; other files there are not the
+entry's (see below). Files the entry itself gets are always committed,
+also if `.gitignore` would ignore them (e.g. `*.lib`).
 
 What counts is the content, not how it is stored: a file that is
 re-stored differently after `.gitattributes` changed (moved to Git LFS,
 line endings normalized) is still unmodified.
+
+### Files of your own in a directory
+
+A directory entry doesn't need a directory of its own: the files of the
+release can be next to files of yours – a `CMakeLists.txt`, a `README`,
+patches, build output. They are yours, tracked or not: `status`
+doesn't report them, `pull` and `restore` leave them alone, `pull`
+commits only the files of the release (other changes you staged there
+stay staged), `rm` removes only the release's files, and `mv` moves the
+directory with everything in it.
+
+A new release with a file where one of yours is – the same name, also in
+another case (`README.md` and `README.MD` are one file on Windows and
+macOS), or a file of yours where the release has a directory – is
+refused, by `add` and by `pull`, naming the files in the way. With
+`--overwrite` the release's files replace them and become the entry's.
+
+Which files are the release's comes from the recorded `tree`: what the
+release gave, after the filter. When files of yours are committed in the
+directory, that tree isn't committed itself, so a fresh clone doesn't
+have it. There, `status` says so and doesn't check the directory for
+local modifications; `verify` gets the tree again – filtering the assets
+of the release it was synced with, from the download cache or the
+platform – and so do `pull`, `restore`, `rm`, `diff` and `difftool`
+when they need it. It is then kept in the clone (as
+`refs/assetsync/base/<tree>`, never pushed). If that is no longer
+possible – the release is gone or its assets were re-uploaded, or the
+filter was changed without a `pull` – `pull` refuses; with `--overwrite`
+it adds the files of the new release and deletes none.
 
 ## Commands
 
@@ -332,7 +361,7 @@ one commit.
 |---|---|
 | `--all` | all entries with something to pull (with `--overwrite` also modified ones) |
 | `--release TAG\|PATTERN` | this release instead of the one the source selects, once – see below; a pattern takes the newest matching release; not with `--all` |
-| `--overwrite` | discard local modifications: restore or update the file (directory) anyway; in a directory also untracked files are deleted (ignored ones stay) |
+| `--overwrite` | discard local modifications: restore or update the file (directory) anyway; in a directory also replace files of yours in the way of the release's |
 | `--no-edit` | commit with the proposed message, without opening the editor |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` shows it (assets, source, release selection, filter, the release synced) |
 | `--no-commit` | update and stage only; a plain `git commit` then offers the proposed message (via `.git/SQUASH_MSG`) |
@@ -371,8 +400,9 @@ git assetsync diff [PATH…] [--committed | --upstream [--release TAG|PATTERN]] 
 Shows the local modifications of the entries (default: all) – the
 difference between what their release gave when they were synced (the
 recorded `blob` / `tree`) and the working tree, which [should be
-none](#no-local-modifications). In a directory, untracked files count as
-added (ignored ones don't). Like `status`, it works offline.
+none](#no-local-modifications). In a directory only the files of the
+release are compared – files of yours there aren't shown. Like `status`,
+it works offline.
 
 | Option | Shows |
 |---|---|
@@ -464,13 +494,14 @@ git assetsync restore -SW lib/data.bin
 git commit -m "Restore lib/data.bin"
 ```
 
-In a directory entry, the files of the release are written back, files
-the release doesn't give are deleted (ignored ones stay), and executable
-bits are set as synced. Files are written as the current `.gitattributes`
-say (line endings, Git LFS). `restore` works offline: what an entry was
-synced with is in the repository (`blob`/`tree`) – if it isn't (e.g. it
-was never committed in this clone), `restore` says so, and `pull
---overwrite` gets it again.
+In a directory entry, the files of the release are written back, with
+executable bits as synced; files of yours there stay. Files are written
+as the current `.gitattributes` say (line endings, Git LFS). `restore`
+works offline: what an entry was synced with is in the repository
+(`blob`/`tree`) – for a directory that may have to be got again in a
+fresh clone (see [Files of your own in a
+directory](#files-of-your-own-in-a-directory)); if that isn't possible,
+`restore` says so, and `pull --overwrite` gets the release again.
 
 | Option | Meaning |
 |---|---|
@@ -525,13 +556,14 @@ commit --no-edit` takes it as it is).
 | `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
 | `--filter NAME` | the named [filter](#filters) to apply to the assets |
 | `--force` | replace an existing entry for `PATH` (its file or directory too, unless it has local modifications); take more than 10 assets or 100 MiB |
-| `--overwrite` | replace an existing file that differs, or the files of a directory that isn't empty; with `--force` also local modifications of the entry replaced |
+| `--overwrite` | replace an existing file that differs, or – in a directory – files in the way of the release's; with `--force` also local modifications of the entry replaced |
 | `-n`, `--dry-run` | only show which release, assets and filter would be taken; nothing is downloaded |
 
 An existing file at `PATH` is only replaced with `--overwrite`, unless it
-is already what the release gives. An existing directory with files in it
-becomes the entry's only with `--overwrite` – then files there that the
-release doesn't give are deleted (ignored ones stay). An entry that exists
+is already what the release gives. In an existing directory, the files of
+the release go next to those there; files of yours in their way are only
+replaced with `--overwrite` (see [Files of your own in a
+directory](#files-of-your-own-in-a-directory)). An entry that exists
 already is replaced only with `--force`; its file (directory) as well, as
 long as it is what its release gave – local modifications need
 `--overwrite` too. For big binary files
@@ -557,11 +589,11 @@ git assetsync rm PATH… [-f] [-n]
 ```
 
 Like `git rm`: removes the entries from `.git-assetsync` together with
-their files and stages both (commit when you like). It refuses – for all
-paths given – if one has uncommitted changes (in a directory also
-untracked files); `-f` removes them anyway, and the changes are lost. A
-committed modification doesn't count, and a file already deleted is
-fine. Ignored files in a directory stay. To keep the files and only
+their files and stages both (commit when you like) – of a directory, the
+files its release gave; files of yours there stay (`rm` says how many).
+It refuses – for all paths given – if one of those files has uncommitted
+changes; `-f` removes them anyway, and the changes are lost. A committed
+modification doesn't count, and a file already deleted is fine. To keep the files and only
 remove the entries, use [`unlink`](#unlink).
 
 | Option | Meaning |
@@ -588,7 +620,8 @@ git assetsync mv OLD NEW [-n]
 ```
 
 Moves a file or directory (with `git mv`) and its entry, and stages both.
-`NEW` may be an existing directory.
+`NEW` may be an existing directory. A directory moves with everything in
+it, files of yours too (`mv` says how many).
 
 ## Advanced commands
 

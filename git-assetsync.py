@@ -29,7 +29,7 @@ assets of a project on GitHub or GitLab:
         synced = <tag of the release the file comes from>
         digest = sha256:<hash of that asset>
         blob = <id of the file as committed>
-    [dir "third_party/zlib"]       ; the directory belongs to the entry
+    [dir "third_party/zlib"]       ; files of a directory (others may be there)
         source = madler/zlib
         asset = zlib-*.tar.gz      ; optional: the assets (glob); without: all
         filter = zlib-headers      ; optional: the filter applied to the assets
@@ -43,9 +43,10 @@ assets of a project on GitHub or GitLab:
 An entry records what the committed file (directory) comes from, so the
 local state is known offline; only the check for new releases asks the
 platform. It must stay exactly what its release gives: pull refuses local
-modifications (in a directory: also untracked files; ignored ones don't
-count); restore brings back what the release gave, pull --overwrite
-updates anyway.
+modifications; restore brings back what the release gave, pull --overwrite
+updates anyway. In a directory only the files the release gave count:
+files of others there are left alone (one in the way of a new file of the
+release only goes with --overwrite).
 
 Filter steps (no code is run): extract [PATTERN...] (unpack the matching
 files, default all, which must be archives: zip, tar, tar.gz/bz2/xz,
@@ -96,8 +97,9 @@ Basic commands - what you need day to day:
                                 releases, shortened: assetsync.notesLines per
                                 release, default 20, assetsync.notesTotalLines
                                 in all, default 60); refused
-                                if modified (committed or not); a directory
-                                is replaced as a whole
+                                if modified (committed or not); in a
+                                directory its files are replaced or deleted,
+                                files of others stay
         --all                   all files with something to pull
         --release TAG|PATTERN   this release instead of the selected one (a
                                 pattern: the newest matching), once: the
@@ -143,9 +145,9 @@ Basic commands - what you need day to day:
 
     add PATH SOURCE             take the file PATH from an asset of the
                                 release SOURCE selects - or with PATH/ (or
-                                an existing directory) the directory, which
-                                then belongs to the entry; SOURCE: the name
-                                of a [source], or a URL (owner/repo:
+                                an existing directory) the files of a
+                                directory, next to files there; SOURCE: the
+                                name of a [source], or a URL (owner/repo:
                                 github.com) - the source with that URL and
                                 release selection, else a new one named
                                 'owner/repo' (a number appended if taken);
@@ -171,9 +173,9 @@ Basic commands - what you need day to day:
         -n, --dry-run           only show what would be done
 
     rm PATH...                  remove entries and their files, staged (like
-                                `git rm`; refused with uncommitted changes -
-                                in a directory also untracked files - unless
-                                -f; ignored files stay)
+                                `git rm`; refused with uncommitted changes
+                                unless -f; in a directory, files of others
+                                stay)
         -f, --force             remove them anyway (the changes are lost)
         -n, --dry-run           only show what would be removed
     unlink PATH...              remove entries (the files are kept); also
@@ -2069,6 +2071,17 @@ class Repo:
                 return info.split(" ")[0]
         return None
 
+    def index_items(self, rel):
+        """[(mode, id, path)] of the files at rel in the index."""
+        p = self.git(["ls-files", "-s", "-z", "--", lit(rel)])
+        items = []
+        for item in p.stdout.decode("utf-8", "replace").split("\0"):
+            if item:
+                info, _, path = item.partition("\t")
+                mode, oid, _ = info.split(" ")
+                items.append((mode, oid, path))
+        return items
+
     def worktree_items(self, rel):
         """[(mode, id, path)] of the files at rel as `git add -A` would
         stage them (untracked ones included, ignored ones not), computed with
@@ -2091,6 +2104,14 @@ class Repo:
             return None
         oid = out(p)
         return out(self.git(["cat-file", "-t", oid])), oid
+
+    def has_tree(self, oid):
+        return self.git(["cat-file", "-e", f"{oid}^{{tree}}"], check=False).returncode == 0
+
+    def keep_tree(self, tree):
+        """Keep the base tree of a directory entry in this clone, safe from
+        `git gc`: refs/assetsync/base/<tree> (never pushed)."""
+        self.git(["update-ref", f"refs/assetsync/base/{tree}", tree])
 
     def tree_names(self, tree):
         """Paths of the files below a tree."""
@@ -2417,8 +2438,8 @@ class Registry:
 
 class Entry:
     """One [file] or [dir] entry: a file of this repository taken from a
-    release asset, or a directory taken from release assets (it belongs to
-    the entry completely)."""
+    release asset, or the files of a directory taken from release assets
+    (files of others may be there too)."""
 
     def __init__(self, reg, rel):
         self.reg, self.rel = reg, rel
@@ -2521,6 +2542,7 @@ class State:
     filter_changed: bool = False  # or another filter
     pending: bool = False     # something for pull to do
     modified: bool = False    # local modifications (not allowed)
+    unchecked: bool = False   # a directory whose base isn't in this clone: not checked
     base_now: Optional[str] = None    # base as it would be stored now
 
 
@@ -2600,26 +2622,79 @@ def local_state_file(repo, st):
         st.local = "clean" if matches_base(repo, st, cur) else "modified"
 
 
+def base_paths(repo, entry):
+    """Paths (in the repository) of the files a directory entry got from its
+    release - those of its base tree; None if that tree isn't in this clone
+    (committed together with files of others, it never is: see ensure_base)."""
+    if not entry.blob:
+        return set()
+    if not repo.has_tree(entry.blob):
+        return None
+    return {f"{entry.rel}/{p}" for p in repo.tree_names(entry.blob)}
+
+
+def ensure_base(repo, reg, entry):
+    """base_paths() of a directory entry; a base tree that isn't here is
+    built again from the assets it was synced with, like verify does, and
+    kept (keep_tree). An error if that isn't possible."""
+    paths = base_paths(repo, entry)
+    if paths is not None:
+        return paths
+    what = f"which files are those of {entry.synced} isn't known in this clone"
+    expand_steps(entry.steps, reg.filters)
+    if filter_hash(entry.steps, reg.filters, repo) != entry.filterhash:
+        raise FsError(f"{what}, and its filter changed since the sync")
+    origin = platform_of(entry.url, entry.spec.get("type"))
+    release = origin.by_tag(entry.synced)
+    if not release:
+        raise FsError(f"{what}, and release {entry.synced} of {origin.label} no longer exists")
+    assets = select_assets(release, entry.asset, origin.label, True)
+    digest, items = filter_items(repo, reg, entry, origin, release, assets)
+    tree = repo.make_tree([(m, o, path[len(entry.rel) + 1:]) for m, o, path in items])
+    if digest != (entry.digest or "").lower() or tree != entry.blob:
+        raise FsError(f"{what}, and {release.tag} gives something else now")
+    repo.keep_tree(tree)
+    return base_paths(repo, entry)
+
+
+def release_tree(repo, rel, items, paths):
+    """Tree of those items (mode, id, path in the repository) at paths."""
+    return repo.make_tree([(m, o, p[len(rel) + 1:]) for m, o, p in items if p in paths])
+
+
 def local_state_dir(repo, st):
-    """As local_state_file(), for a directory: all files git sees there
-    count - untracked ones too, not ignored ones."""
+    """As local_state_file(), for a directory: only the files it got from its
+    release (its base) count - other files there are someone else's.
+    Without the base in this clone: not checked (st.unchecked)."""
     entry = st.entry
+    paths = base_paths(repo, entry)
+    if paths is None:
+        st.unchecked = True
+        return
     known = bool(entry.blob)
     obj = repo.head_object(entry.rel)
-    head = st.head_blob = obj[1] if obj and obj[0] == "tree" else None
-    if obj and not head:
+    head = None
+    if obj and obj[0] == "tree":
+        items = [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(obj[1])
+                 if k == "blob"]
+        if any(p in paths for _, _, p in items):
+            head = release_tree(repo, entry.rel, items, paths)
+    st.head_blob = head
+    if obj and obj[0] != "tree":
         st.committed = "adapted"             # committed as a file
     elif head and known:
         st.committed = "unmodified" if tree_matches_base(repo, st, head) else "adapted"
-    files = repo.dir_files(entry.rel)
-    dirty = repo.git(["status", "--porcelain", "-z", "--untracked-files=all", "--",
-                      lit(entry.rel)]).stdout.strip(b"\0")
+    files = [p for p in paths if (repo.top / p).is_file()]
     if not files:
         st.worktree = "deleted" if head else "missing"
     elif not head:
         st.worktree = "added"
-    elif dirty:
-        st.worktree = "modified"
+    else:
+        p = repo.git(["diff", "--name-only", "--no-renames", "-z", "HEAD", "--",
+                      lit(entry.rel)], check=False)
+        changed = p.stdout.decode("utf-8", "replace").split("\0")
+        if any(c in paths for c in changed):
+            st.worktree = "modified"
     if not files:
         st.local = "missing"
     elif not known:
@@ -2627,8 +2702,8 @@ def local_state_dir(repo, st):
     elif st.worktree == "clean":
         st.local = "clean" if st.committed == "unmodified" else "modified"
     else:
-        st.local = "clean" if tree_matches_base(repo, st, repo.worktree_tree(entry.rel)) \
-            else "modified"
+        now = release_tree(repo, entry.rel, repo.worktree_items(entry.rel), paths)
+        st.local = "clean" if tree_matches_base(repo, st, now) else "modified"
 
 
 def evaluate(ctx, repo, entry):
@@ -2865,6 +2940,11 @@ def cmd_status(ctx, repo, args):
             print(f"no synced files ({REGISTRY} not found or empty)")
         return EXIT_OK
     sts = [evaluate(ctx, repo, e) for e in entries]
+    for st in sts:
+        if st.unchecked:
+            st.warnings.append(f"which files are those of {st.entry.synced} isn't known in "
+                               "this clone - local modifications not checked ('git assetsync "
+                               f"verify {path_arg(repo, st.entry.shown)}' gets it)")
     attention = [st for st in sts if st.error or st.pending or st.modified]
     rc = EXIT_ERROR if any(st.error for st in sts) else \
         EXIT_PENDING if args.exit_code and attention else EXIT_OK
@@ -3265,6 +3345,12 @@ def diff_items(ctx, repo, reg, args):
     rc, groups = EXIT_OK, []
     for entry in select_entries(repo, reg, args.paths, containing=True):
         st = evaluate(ctx, repo, entry)
+        if st.unchecked and not st.error:       # a directory: get its base first
+            try:
+                ensure_base(repo, reg, entry)
+                st = evaluate(ctx, repo, entry)
+            except FsError as e:
+                st.error = str(e)
         if st.error:
             report_error(st)
             rc = EXIT_ERROR
@@ -3281,6 +3367,9 @@ def diff_items(ctx, repo, reg, args):
                 other = head_items(repo, entry)
             else:
                 other = repo.worktree_items(entry.rel)
+            if entry.is_dir and not args.upstream:      # its files, not others'
+                own = base_paths(repo, entry) or set()
+                other = [item for item in other if item[2] in own]
             groups.append((st, entry_paths(repo, base_items(repo, entry)),
                            entry_paths(repo, other)))
         except FsError as e:
@@ -3477,16 +3566,22 @@ def report_staged(repo, name, msg, done, rels=None, how="Commit with"):
     print(f"{name}: {done}. {how}:\n    {cmd}\n({note})")
 
 
-def commit_staged(repo, name, msg, args, done, rels=None):
+def commit_staged(repo, name, msg, args, done, rels=None, only=None):
     """Commit the staged files (default: name) and their entries with the
     proposed message (in the editor unless --no-edit). With --no-commit,
-    leave them staged and tell how to commit. done: e.g. 'updated and staged'."""
+    leave them staged and tell how to commit. done: e.g. 'updated and staged';
+    only: of the files below rels, only these paths."""
     rels = [name] if rels is None else rels
     if args.no_commit:
         report_staged(repo, name, msg, paint(done, "green"), rels)
         return EXIT_OK
     msgfile, _ = message_file(repo, name, msg, rels)
-    if not commit_paths(repo, rels + [REGISTRY], msgfile, not args.no_edit):
+    done = commit_paths(repo, rels + [REGISTRY], msgfile, not args.no_edit, only)
+    if done is None:          # e.g. pull --overwrite discarding uncommitted changes only
+        msgfile.unlink()
+        print(f"{name}: nothing to commit (the same as committed)")
+        return EXIT_OK
+    if not done:
         report_staged(repo, name, msg, paint("commit not done", "yellow")
                       + "; changes stay staged", rels, "Commit later with")
         return EXIT_PENDING
@@ -3494,12 +3589,14 @@ def commit_staged(repo, name, msg, args, done, rels=None):
     return EXIT_OK
 
 
-def commit_paths(repo, rels, msgfile, edit):
+def commit_paths(repo, rels, msgfile, edit, only=None):
     """Commit only these paths, as they are staged - like `git commit --
     PATHS`, which, though, takes them from the working tree again: with
     core.filemode=false (Windows) it would lose executable bits set with
     update-index --chmod. The commit is made from a temporary index (HEAD
-    with these paths as staged), so hooks run as usual. True if done."""
+    with these paths as staged), so hooks run as usual. only: of the files
+    below rels, only these (and .git-assetsync). True if done, None if
+    there was nothing to commit."""
     for name, what in (("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"),
                        ("REVERT_HEAD", "revert")):
         if (repo.gitdir / name).exists():
@@ -3507,16 +3604,29 @@ def commit_paths(repo, rels, msgfile, edit):
                   "PATHS`) - finish it first")
             return False
     specs = [lit(r) for r in rels]
-    staged = repo.git(["ls-files", "-s", "-z", "--"] + specs).stdout
+
+    allowed = None if only is None else set(only) | {REGISTRY}
+
+    def wanted(listing, path=lambda item: item):
+        if allowed is None:
+            return listing
+        keep = [i for i in listing.split(b"\0")
+                if i and path(i).decode("utf-8", "replace") in allowed]
+        return b"".join(i + b"\0" for i in keep)
+    staged = wanted(repo.git(["ls-files", "-s", "-z", "--"] + specs).stdout,
+                    lambda i: i.partition(b"\t")[2])
     with repo.temp_index() as env:
         if repo.git(["rev-parse", "-q", "--verify", "HEAD"], check=False).returncode == 0:
             repo.git(["read-tree", "HEAD"], env=env)
         # what HEAD has at these paths, removed; then what is staged
-        old = repo.git(["ls-files", "-z", "--"] + specs, env=env).stdout
+        old = wanted(repo.git(["ls-files", "-z", "--"] + specs, env=env).stdout)
         if old:
             repo.git(["update-index", "-z", "--force-remove", "--stdin"], data=old, env=env)
         if staged:
             repo.git(["update-index", "-z", "--index-info"], data=staged, env=env)
+        if repo.git(["diff-index", "--cached", "--quiet", "HEAD"], env=env,
+                    check=False).returncode == 0:
+            return None
         cmd = ["git", "commit", "-F", str(msgfile)] + (["-e"] if edit else [])
         return subprocess.run(cmd, cwd=repo.top, env=env).returncode == 0
 
@@ -3546,41 +3656,92 @@ def set_executable(path, executable):
     os.chmod(path, mode | 0o111 if executable else mode & ~0o111)
 
 
-def install_dir(repo, rel, target, files):
-    """Make the directory rel exactly files: other files git sees there
-    (tracked or untracked) are deleted, ignored ones stay. Stages it and
-    returns its tree."""
+def remove_empty_dirs(target, paths):
+    """Remove the directories of these files (below target) that are empty
+    now; others' empty directories elsewhere stay."""
+    dirs = {Path(p).parent for p in paths}
+    for d in sorted(dirs, key=lambda x: len(x.parts), reverse=True):
+        while d != target and target in d.parents:
+            try:
+                d.rmdir()               # only an empty one
+            except OSError:
+                break
+            d = d.parent
+
+
+def in_the_way(repo, rel, new, base):
+    """Paths of others in the directory rel that new files (paths in the
+    repository) not in base would replace: the same path (also in another
+    case), a file where a directory is needed, a directory where the file
+    goes. Sorted."""
+    seen = {p.lower(): p for p in repo.dir_files(rel) if p not in base}
+    own = {p.lower() for p in base}     # renamed in case only: its own file, deleted first
+    found = set()
+    for path in sorted(set(new) - set(base)):
+        full = repo.top / path
+        if path.lower() in seen:              # named as it is (also on case-insensitive disks)
+            found.add(seen[path.lower()])
+        elif path.lower() not in own and (full.exists() or full.is_symlink()):
+            found.add(path)
+        parts = path.split("/")
+        for i in range(len(rel.split("/")) + 1, len(parts)):
+            up = "/".join(parts[:i])
+            if (repo.top / up).is_file() or (repo.top / up).is_symlink():
+                found.add(up)
+    return sorted(found)
+
+
+def install_dir(repo, rel, target, files, base, overwrite=False):
+    """Make the files of the directory entry rel exactly files, next to the
+    files of others there: of the files it had (base: their paths in the
+    repository), those the release no longer gives are deleted, the others
+    replaced; files of others are left alone - one in the way of a new file
+    only goes with overwrite. Stages only the entry's files and returns
+    their tree."""
     if target.exists() and not target.is_dir():
         raise FsError(f"'{rel}' is a file")
-    for path in repo.dir_files(rel):
-        if path[len(rel) + 1:] not in files:
+    new = {f"{rel}/{name}": v for name, v in files.items()}
+    others = in_the_way(repo, rel, new, base)
+    if others and not overwrite:
+        shown = ", ".join(others[:3]) + (f" and {len(others) - 3} more" if len(others) > 3 else "")
+        raise FsError(f"'{rel}/': files of others in the way of the release: {shown} - use "
+                      "--overwrite to replace them")
+    for path in others:
+        full = repo.top / path
+        if full.is_dir() and not full.is_symlink():
+            shutil.rmtree(full)
+        else:
+            full.unlink()
+        repo.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", lit(path)])
+    gone = sorted(set(base) - set(new))
+    for path in gone:
+        if (repo.top / path).is_file():
             (repo.top / path).unlink()
-    if target.is_dir():
-        for d in sorted((d for d in target.rglob("*") if d.is_dir()), reverse=True):
-            try:
-                d.rmdir()               # only empty ones
-            except OSError:
-                pass
-    for name, (src, executable) in sorted(files.items()):
-        dest = target / name
+    remove_empty_dirs(target, [repo.top / path for path in gone])
+    if gone:
+        repo.git(["update-index", "-z", "--force-remove", "--stdin"],
+                 data="\0".join(gone).encode("utf-8"))
+    for path, (src, executable) in sorted(new.items()):
+        dest = repo.top / path
         try:
             if dest.is_dir():
-                raise FsError(f"'{rel}/{name}' is a directory in the working tree")
+                raise FsError(f"'{path}' is a directory in the working tree")
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dest)
             set_executable(dest, executable)
         except OSError as e:
-            raise FsError(f"cannot write '{rel}/{name}': {e.strerror}")
-    repo.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", lit(rel)])
-    paths = [f"{rel}/{name}" for name in sorted(files)]
+            raise FsError(f"cannot write '{path}': {e.strerror}")
+    paths = sorted(new)
     # -f: also files the repository ignores (e.g. *.lib) - the entry has them
     repo.git(["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
              data="\0".join(lit(p) for p in paths).encode("utf-8"))
-    executables = [p for p, name in zip(paths, sorted(files)) if files[name][1]]
+    executables = [p for p in paths if new[p][1]]
     if executables:
         repo.git(["update-index", "--chmod=+x", "-z", "--stdin"],
                  data="\0".join(executables).encode("utf-8"))
-    return out(repo.git(["write-tree", f"--prefix={rel}/"]))
+    tree = release_tree(repo, rel, repo.index_items(rel), new)
+    repo.keep_tree(tree)
+    return tree
 
 
 def tree_stats(repo, old, new):
@@ -3602,8 +3763,9 @@ def one_file(files, entry_shown, rel):
     return files
 
 
-def install(repo, st, origin, release, assets, steps, filters, overwrite):
-    """Fetch, filter and install what an entry gets; staged. Returns
+def install(repo, st, origin, release, assets, steps, filters, overwrite, base=()):
+    """Fetch, filter and install what an entry gets; staged. base: for a
+    directory, the paths of the files it has from its release now. Returns
     (digest, base, stats)."""
     entry = st.entry
     trusted = ensure_trusted(repo, steps, filters)
@@ -3612,14 +3774,31 @@ def install(repo, st, origin, release, assets, steps, filters, overwrite):
     with Work(entry.shown, repo.top, env, trusted) as work:
         files, digest = entry_files(origin, release, assets, steps, filters, work)
         if entry.is_dir:
-            tree = install_dir(repo, entry.rel, entry.target, files)
-            return digest, tree, tree_stats(repo, st.head_blob, tree)
+            old = entry.blob if base and repo.has_tree(entry.blob or "") else None
+            tree = install_dir(repo, entry.rel, entry.target, files, base, overwrite)
+            return digest, tree, tree_stats(repo, old, tree)
         one_file(files, entry.shown, entry.rel)
         return digest, install_file(repo, entry.rel, entry.target, files, overwrite), None
 
 
-def pull_one(repo, reg, st, args):
+def pull_one(ctx, repo, reg, st, args):
     entry, rel = st.entry, st.entry.shown
+    # a directory: which files are those of its release (its base) - to be
+    # replaced or deleted - and are they unmodified? Built again if not here
+    base = ()
+    if entry.is_dir and entry.blob and (st.pending or args.overwrite):
+        try:
+            base = ensure_base(repo, reg, entry)
+        except FsError as e:
+            if not args.overwrite:
+                raise FsError(f"{rel}: {e} - with --overwrite the files of {st.release.tag} "
+                              "are added, none deleted")
+            warn(f"{rel}: {e} - adding the files of {st.release.tag}, deleting none")
+        else:
+            if st.unchecked:
+                st = evaluate(ctx, repo, entry)
+                if st.error:
+                    raise FsError(f"{rel}: {st.error}")
     if not st.pending and not st.modified:
         print(f"{rel}: {paint('up to date', 'green')}")
         return EXIT_OK
@@ -3632,11 +3811,6 @@ def pull_one(repo, reg, st, args):
                       f"gives; discard them with 'git assetsync restore -SW "
                       f"{path_arg(repo, rel)}', or update anyway with 'git assetsync pull "
                       f"--overwrite {path_arg(repo, rel)}'")
-    # an entry without a base (written by hand): a directory with files is
-    # only taken over with --overwrite (a file: only if it is the same)
-    if entry.is_dir and not entry.blob and not args.overwrite and repo.dir_files(entry.rel):
-        raise FsError(f"'{rel}' is not empty - with --overwrite it becomes the entry's (files "
-                      "there the release doesn't give are deleted)")
     check_other_entries(reg, [entry.rel], args)
     for w in st.warnings:
         warn(f"{rel}: {w}")
@@ -3651,8 +3825,11 @@ def pull_one(repo, reg, st, args):
         else None
     if discard:
         warn(f"{rel}: discarding local modifications")
+    # a file: replaces the one it had; a directory: files of others only with --overwrite
+    old = base
     digest, base, stats = install(repo, st, st.origin, st.release, st.assets, entry.steps,
-                                  reg.filters, overwrite=args.overwrite or bool(entry.blob))
+                                  reg.filters, args.overwrite or (bool(entry.blob) and
+                                                                  not entry.is_dir), old)
     msg = build_message(st, discard, unchanged=base == entry.blob, stats=stats,
                         between=between, limits=limits)
     entry.set("synced", st.release.tag)
@@ -3660,7 +3837,11 @@ def pull_one(repo, reg, st, args):
     entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
     entry.set(BASE_KEY[entry.kind], base)
     reg.finish()
-    return commit_staged(repo, rel, msg, args, "updated and staged", rels=[entry.rel])
+    only = None
+    if entry.is_dir:          # its files only, not others' staged there
+        only = set(old) | {f"{entry.rel}/{n}" for n in repo.tree_names(base)}
+    return commit_staged(repo, rel, msg, args, "updated and staged", rels=[entry.rel],
+                         only=only)
 
 
 def one_off_hint(ctx, st):
@@ -3702,7 +3883,7 @@ def cmd_pull(ctx, repo, args):
         if args.verbose:
             print(f"{entry.shown}: {paint(origin_text(entry), 'dim')}", flush=True)
         try:
-            result = pull_one(repo, reg, st, args)
+            result = pull_one(ctx, repo, reg, st, args)
             rc = max(rc, result)
             if args.release and (st.pending or st.modified):
                 one_off_hint(ctx, st)
@@ -3836,29 +4017,39 @@ def cmd_add(ctx, repo, args):
         if (len(assets) > MAX_ALL_ASSETS or total > MAX_ALL_SIZE) and not args.force:
             raise FsError(f"that is more than {MAX_ALL_ASSETS} assets or {MAX_ALL_SIZE >> 20} MiB"
                           " - choose some with --asset PATTERN, or take all with --force")
-    # what an entry being replaced has from its release may go; anything else (a file
-    # or directory of the user, local modifications) only with --overwrite
-    overwrite = args.overwrite
-    if rel in reg.files and not overwrite and Entry(reg, rel).blob:
-        old = State(entry=Entry(reg, rel), rel=rel)
-        (local_state_dir if is_dir else local_state_file)(repo, old)
-        if old.local == "modified":
-            raise FsError(f"'{shown_rel}' has local modifications - use --overwrite to "
-                          "discard them")
-        overwrite = True
-    if is_dir and not overwrite and repo.dir_files(rel):
-        raise FsError(f"'{shown_rel}' is not empty - with --overwrite it becomes the entry's "
-                      "(files there the release doesn't give are deleted; ignored ones stay)")
+    # what an entry being replaced has from its release may go; anything else (files
+    # of others in the way, local modifications) only with --overwrite
+    overwrite, base, old_blob = args.overwrite, (), None
+    if rel in reg.files and Entry(reg, rel).blob:
+        old_entry = Entry(reg, rel)
+        old_blob = old_entry.blob
+        if is_dir:            # the files it has from its release: replaced or deleted
+            base = base_paths(repo, old_entry)
+            if base is None and not args.dry_run:
+                try:
+                    base = ensure_base(repo, reg, old_entry)
+                except FsError as e:
+                    if not args.overwrite:
+                        raise FsError(f"'{shown_rel}': {e} - with --overwrite the new files "
+                                      "are added, none deleted")
+                    warn(f"{shown_rel}: {e} - adding the new files, deleting none")
+            base = base or ()
+        if not args.overwrite:
+            old = State(entry=old_entry, rel=rel)
+            (local_state_dir if is_dir else local_state_file)(repo, old)
+            if old.local == "modified":
+                raise FsError(f"'{shown_rel}' has local modifications - use --overwrite to "
+                              "discard them")
+            overwrite = not is_dir      # its file: what its release gave
     if args.dry_run:
         print(f"would add {shown_rel} from {name} {release.tag} "
               f"({', '.join(a.name for a in assets)}, {spec_text(spec)}"
               + (f", filter {args.filter}" if args.filter else "") + ")")
         return EXIT_OK
-    obj = repo.head_object(rel)
-    st = State(entry=SimpleNamespace(shown=shown_rel, rel=rel, target=target, is_dir=is_dir),
-               rel=rel, head_blob=obj[1] if obj and obj[0] == "tree" else None)
+    st = State(entry=SimpleNamespace(shown=shown_rel, rel=rel, target=target, is_dir=is_dir,
+                                     blob=old_blob), rel=rel)
     digest, base, stats = install(repo, st, origin, release, assets, steps, reg.filters,
-                                  overwrite)
+                                  overwrite, base)
     if rel in reg.files:
         reg.remove_file(rel, keep_source=named)
     name = named or reg.add_source(url, spec)
@@ -4125,6 +4316,11 @@ def verify_one(repo, reg, entry):
             return True, f"verified ({release.tag})"
         return False, f"differs from what {release.tag} gives now"
     new = repo.make_tree([(m, o, path[len(entry.rel) + 1:]) for m, o, path in items])
+    if new == entry.blob:     # also when its base wasn't in this clone: now it is
+        repo.keep_tree(new)
+        return True, f"verified ({release.tag})"
+    if not repo.has_tree(entry.blob):
+        return False, f"differs from what {release.tag} gives now"
     if tree_matches_base(repo, st, new):
         return True, f"verified ({release.tag})"
     p = repo.git(["diff-tree", "-r", "--no-renames", "--name-status", entry.blob, new])
@@ -4281,19 +4477,7 @@ def restore_items(repo, entry):
 
 
 def restore_worktree(repo, entry, items):
-    """Write the files of items (and in a directory: delete the others git
-    sees there; ignored ones stay)."""
-    if entry.is_dir:
-        keep = {path for _, _, path in items}
-        for path in repo.dir_files(entry.rel):
-            if path not in keep:
-                (repo.top / path).unlink()
-        dirs = entry.target.rglob("*") if entry.target.is_dir() else []
-        for d in sorted((d for d in dirs if d.is_dir()), reverse=True):
-            try:
-                d.rmdir()               # only empty ones
-            except OSError:
-                pass
+    """Write the files of items (in a directory, files of others stay)."""
     for mode, oid, path in items:
         target = repo.top / path
         if target.is_dir():
@@ -4304,8 +4488,6 @@ def restore_worktree(repo, entry, items):
 
 
 def restore_index(repo, entry, items):
-    if entry.is_dir:
-        repo.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", lit(entry.rel)])
     data = "".join(f"{m} {o}\t{path}\0" for m, o, path in items)
     repo.git(["update-index", "-z", "--add", "--index-info"], data=data.encode("utf-8"))
 
@@ -4314,11 +4496,11 @@ def restore_one(repo, entry, staged, worktree):
     """Restore what the entry was synced with: in the working tree and/or
     the index. Returns what was done, or None if nothing differed."""
     items = restore_items(repo, entry)
-    if entry.is_dir:
-        base = repo.make_tree([(m, o, path[len(entry.rel) + 1:]) for m, o, path in items])
-        p = repo.git(["write-tree", f"--prefix={entry.rel}/"], check=False)
-        in_index = out(p) if p.returncode == 0 else None
-        in_worktree = repo.worktree_tree(entry.rel)
+    if entry.is_dir:          # its files, not those of others there
+        paths = {path for _, _, path in items}
+        base = release_tree(repo, entry.rel, items, paths)
+        in_index = release_tree(repo, entry.rel, repo.index_items(entry.rel), paths)
+        in_worktree = release_tree(repo, entry.rel, repo.worktree_items(entry.rel), paths)
     else:
         (mode, base, _), = items
         in_index = out(repo.git(["ls-files", "-s", "--", lit(entry.rel)])).split(" ")[1:2]
@@ -4337,7 +4519,8 @@ def restore_one(repo, entry, staged, worktree):
 def cmd_restore(ctx, repo, args):
     """Like `git restore`, but from what the entries were synced with (their
     base): the working tree by default, the index with --staged, both with
-    -S -W. Offline; .git-assetsync doesn't change."""
+    -S -W. Offline (unless the base of a directory must be got again, see
+    ensure_base); .git-assetsync doesn't change."""
     reg = Registry(repo)
     worktree = args.worktree or not args.staged
     rc = EXIT_OK
@@ -4349,6 +4532,8 @@ def cmd_restore(ctx, repo, args):
             if not entry.blob:
                 raise FsError(f"not synced yet - use 'git assetsync pull "
                               f"{path_arg(repo, entry.shown)}'")
+            if entry.is_dir:
+                ensure_base(repo, reg, entry)
             done = restore_one(repo, entry, args.staged, worktree)
         except FsError as e:
             error(f"{entry.shown}: {e}")
@@ -4377,41 +4562,63 @@ def cmd_unlink(ctx, repo, args):
     return EXIT_OK
 
 
+def changed_paths(repo, rel):
+    """Paths at or below rel with uncommitted changes - untracked files too,
+    not ignored ones."""
+    p = repo.git(["status", "--porcelain", "-z", "--untracked-files=all", "--", lit(rel)])
+    result, skip = set(), False
+    for item in p.stdout.decode("utf-8", "replace").split("\0"):
+        if skip or not item:
+            skip = False
+            continue
+        result.add(item[3:])
+        skip = item[0] in "RC"          # a rename: the old path follows
+    return result
+
+
 def cmd_rm(ctx, repo, args):
-    """Like `git rm`: remove entries and their files, staged. Refused for
-    all if one has uncommitted changes (in a directory: also untracked
+    """Like `git rm`: remove entries and their files, staged - of a
+    directory, the files it has from its release; files of others there
+    stay. Refused for all if one has uncommitted changes (also untracked
     files), unless -f; committed modifications don't count."""
     reg = Registry(repo)
     entries = select_entries(repo, reg, args.paths)
+    own = {}
     for entry in entries:
         problem = path_problem(entry.rel)
         if problem:
             raise FsError(f"{entry.shown}: {problem} - remove its entry with 'git assetsync "
                           f"unlink {shlex.quote(entry.rel)}'")
-        changes = repo.git(["status", "--porcelain", "-z", "--untracked-files=all", "--",
-                            lit(entry.rel)]).stdout.strip(b"\0")
-        if changes and not args.force:
+        try:
+            own[entry.rel] = ensure_base(repo, reg, entry) if entry.is_dir else {entry.rel}
+        except FsError as e:
+            raise FsError(f"{entry.shown}: {e} - remove its entry with 'git assetsync unlink "
+                          f"{path_arg(repo, entry.shown)}' and its files by hand")
+        if own[entry.rel] & changed_paths(repo, entry.rel) and not args.force:
             raise FsError(f"{entry.shown}: has uncommitted changes - use -f to remove it anyway")
     for entry in entries:
         if args.dry_run:
             print(f"would remove {entry.shown}")
             continue
-        repo.git(["rm", "-r", "-q", "-f", "--ignore-unmatch", "--", lit(entry.rel)])
-        if entry.is_dir and entry.target.is_dir():      # untracked files (not ignored ones)
-            for path in repo.dir_files(entry.rel):
-                (repo.top / path).unlink()
-            for d in sorted((d for d in entry.target.rglob("*") if d.is_dir()), reverse=True):
-                try:
-                    d.rmdir()               # only empty ones
-                except OSError:
-                    pass
+        paths = sorted(own[entry.rel])
+        if paths:
+            repo.git(["rm", "-q", "-f", "--ignore-unmatch", "--pathspec-from-file=-",
+                      "--pathspec-file-nul"], data="\0".join(lit(p) for p in paths).encode("utf-8"))
+            for path in paths:                  # untracked ones
+                if (repo.top / path).is_file():
+                    (repo.top / path).unlink()
+        kept = ""
+        if entry.is_dir:
+            remove_empty_dirs(entry.target, [repo.top / path for path in paths])
+            others = repo.dir_files(entry.rel) if entry.target.is_dir() else []
+            kept = f" ({plural(len(others), 'other file')} kept)" if others else ""
             try:
                 entry.target.rmdir()
             except OSError:
                 pass
         shown_rel = entry.shown
         reg.remove_file(entry.rel)
-        print(f"{paint('removed', 'green')} {shown_rel}")
+        print(f"{paint('removed', 'green')} {shown_rel}{kept}")
     if not args.dry_run:
         reg.finish()
     return EXIT_OK
@@ -4437,6 +4644,12 @@ def cmd_mv(ctx, repo, args):
     if args.dry_run:
         print(f"would move {old} -> {new}")
         return EXIT_OK
+    # a directory moves as a whole, files of others in it along
+    entry, along = Entry(reg, old), ""
+    if entry.is_dir:
+        own = base_paths(repo, entry)
+        others = [p for p in repo.dir_files(old) if own is not None and p not in own]
+        along = f"; {plural(len(others), 'other file')} moved along" if others else ""
     if repo.git(["ls-files", "--error-unmatch", "--", lit(old)], check=False).returncode == 0:
         dst.parent.mkdir(parents=True, exist_ok=True)
         repo.git(["mv", "--", old, new])      # takes paths literally
@@ -4445,7 +4658,7 @@ def cmd_mv(ctx, repo, args):
         (repo.top / old).rename(dst)
     reg.rename_file(old, new)
     reg.finish()
-    print(f"{paint('moved', 'green')} {old} -> {new} (entry kept)")
+    print(f"{paint('moved', 'green')} {old} -> {new} (entry kept{along})")
     return EXIT_OK
 
 
@@ -4954,7 +5167,8 @@ def main(argv=None):
                    help="the named filter (see 'filter add') to apply to the assets")
     p.add_argument("path", metavar="PATH",
                    help="file in this repository; with a trailing '/' or an existing "
-                        "directory: a directory that belongs to the entry")
+                        "directory: a directory for the files of the release (files of "
+                        "others there stay)")
     p.add_argument("source", metavar="SOURCE",
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
     p.add_argument("--asset", metavar="PATTERN",

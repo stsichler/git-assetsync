@@ -94,8 +94,8 @@ from other Git repositories see git-filesync.
   7-Zip installed – 7z archives safely, take a subdirectory, strip leading
   directories, include or exclude files by pattern, move and copy files
   into a new structure; filters are named, used by any number of entries
-  and by each other (e.g. per asset); a directory belongs to its entry and
-  is replaced as a whole on update
+  and by each other (e.g. per asset); in a directory, files of your own
+  can be next to those of the release, which an update replaces or deletes
 - Converting files with commands of your own (bin2c, hex2c, …), per file
   or for all at once – run only if you trust the filter in your clone
 - Follows the latest release, the newest release whose tag matches a
@@ -204,8 +204,8 @@ Each commit contains the file and its updated entry in `.git-assetsync`.
 newest release whose tag matches, `--release v1.0` pins the file to that
 release. `git assetsync source set-release` changes that later.
 
-A directory, unpacked from an archive by a filter – with a trailing `/`,
-it belongs to the entry completely:
+A directory, unpacked from an archive by a filter – with a trailing `/`; files
+of your own may be there too:
 
 ```sh
 git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
