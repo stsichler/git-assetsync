@@ -76,8 +76,9 @@ Commands (run inside the repository; without a command: status). PATH may
 be a file or a directory (= all entries below it); a path inside a
 directory entry stands for that entry in status, diff, difftool, verify
 and pull (commands that change entries refuse it). Options follow the
-command. Only pull commits (like git pull, one commit per entry); the
-other commands only change the working tree or stage, and you commit.
+command. Only pull commits (like git pull, one commit for all entries it
+updates); the other commands only change the working tree or stage, and
+you commit.
 
 Basic commands - what you need day to day:
 
@@ -92,7 +93,8 @@ Basic commands - what you need day to day:
         --no-fetch              don't ask the platform for new releases
 
     pull PATH... | --all        update the files (directories) to the selected
-                                release and commit with a message naming it
+                                release and commit them, in one commit, with
+                                a message naming each release
                                 (with its release notes and those of skipped
                                 releases, shortened: assetsync.notesLines per
                                 release, default 20, assetsync.notesTotalLines
@@ -305,9 +307,6 @@ Advanced commands - change entries, sources and filters; set up:
 
     Common options:
         --color[=WHEN], --no-color  always, never or auto (default)
-        --remote                ignore mappings to local folders (status,
-                                pull, diff, add, set, verify, source
-                                releases, ...)
 
 Exit codes: 0 ok, 1 unfinished (not committed, --exit-code), 2 error.
 
@@ -892,7 +891,7 @@ class LocalFolder:
 
 PLATFORMS = {"github": GitHub, "gitlab": GitLab}
 # source URLs mapped to local folders (see map): normalized URL -> (folder,
-# flat); loaded by main() unless --remote is given
+# flat); loaded by main()
 MAPPINGS = {}
 MAP_REGEX = r"^assetsync\..+\.(localpath|layout)$"
 
@@ -3108,17 +3107,13 @@ def print_long(ctx, repo, sts, verbose):
             folders.setdefault(st.origin.label, st.origin.dir)
     for label, folder in sorted(folders.items()):
         print(paint(f"releases of {label} from the local folder {folder} (git assetsync source map; "
-                    "--remote: the platform)", "cyan"))
+                    "--unset: the platform)", "cyan"))
     if folders:
         print()
     if not ctx.fetch:
         print("new releases not checked (--no-fetch)")
     elif not up_rows and len(ok) == len(sts):
-        dirs = sum(1 for st in sts if st.entry.is_dir)
-        files = len(sts) - dirs
-        what = and_list(([plural(files, "file")] if files else [])
-                        + ([plural(dirs, "directory").replace("directorys", "directories")]
-                           if dirs else []))
+        what = entries_text([st.entry for st in sts])
         print("nothing to pull" + ("" if adapted or dirty else
                                    f", {'all ' if len(sts) > 1 else ''}{what} unmodified"))
 
@@ -3993,6 +3988,8 @@ def install(repo, st, origin, release, assets, steps, filters, overwrite, base=(
 
 
 def pull_one(ctx, repo, reg, st, args):
+    """Update one entry (staged, not committed). Returns (its part of the commit
+    message, the paths to commit) - None if there was nothing to do."""
     entry, rel = st.entry, st.entry.shown
     # a directory: which files are those of its release (its base) - to be
     # replaced or deleted - and are they unmodified? Built again if not here
@@ -4012,7 +4009,7 @@ def pull_one(ctx, repo, reg, st, args):
                     raise FsError(f"{rel}: {st.error}")
     if not st.pending and not st.modified:
         print(f"{rel}: {paint('up to date', 'green')}")
-        return EXIT_OK
+        return None
     # like `git pull` with no merge possible: local modifications are never
     # overwritten silently
     if st.modified and not args.overwrite:
@@ -4022,14 +4019,13 @@ def pull_one(ctx, repo, reg, st, args):
                       f"gives; discard them with 'git assetsync restore -SW "
                       f"{path_arg(repo, rel)}', or update anyway with 'git assetsync pull "
                       f"--overwrite {path_arg(repo, rel)}'")
-    check_other_entries(reg, [entry.rel], args)
     for w in st.warnings:
         warn(f"{rel}: {w}")
     discard = st.modified
     if args.dry_run:
         msg = build_message(st, discard).splitlines()[0][len(COMMIT_PREFIX):]
         print(f"would: {msg}" + (" - discarding local modifications" if discard else ""))
-        return EXIT_OK
+        return None
     # before anything changes: the releases in between, and the limits of the notes
     limits = notes_limits(repo)
     between = releases_between(st) if entry.synced and st.release.tag != entry.synced \
@@ -4048,11 +4044,31 @@ def pull_one(ctx, repo, reg, st, args):
     entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
     entry.set(BASE_KEY[entry.kind], base)
     reg.finish()
-    only = None
-    if entry.is_dir:          # its files only, not others' staged there
-        only = set(old) | {f"{entry.rel}/{n}" for n in repo.tree_names(base)}
-    return commit_staged(repo, rel, msg, args, "updated and staged", rels=[entry.rel],
-                         only=only)
+    print(f"{rel}: {paint('updated', 'green')}")
+    if not entry.is_dir:
+        return msg, {entry.rel}
+    # a directory: its files only, not others' staged there
+    return msg, set(old) | {f"{entry.rel}/{n}" for n in repo.tree_names(base)}
+
+
+def entries_text(entries):
+    """'2 files', '1 file and 1 directory', ..."""
+    dirs = sum(1 for e in entries if e.is_dir)
+    files = len(entries) - dirs
+    return and_list(([plural(files, "file")] if files else [])
+                    + ([plural(dirs, "directory").replace("directorys", "directories")]
+                       if dirs else []))
+
+
+def pull_message(entries, msgs):
+    """The commit message of a pull: that of the one entry, or for several a
+    subject naming them, then the message of each (without the prefix)."""
+    if len(msgs) == 1:
+        return msgs[0]
+    names = sorted({e.name for e in entries})
+    subject = (f"{COMMIT_PREFIX}Update {entries_text(entries)} from "
+               + (names[0] if len(names) == 1 else plural(len(names), "source")))
+    return "\n\n".join([subject] + [m[len(COMMIT_PREFIX):].rstrip("\n") for m in msgs]) + "\n"
 
 
 def one_off_hint(ctx, st):
@@ -4081,9 +4097,13 @@ def cmd_pull(ctx, repo, args):
     else:
         raise FsError("specify file(s) or --all")
     prefetch_files(repo, entries)     # each pull changes only its own files
+    # one commit = these files + their entries; other uncommitted entries would
+    # end up in it without their files
+    check_other_entries(reg, [e.rel for e in entries], args)
     ctx.override = args.release
     rc, done = EXIT_OK, 0
-    for n, entry in enumerate(entries, 1):
+    pulled, msgs, paths = [], [], set()
+    for entry in entries:
         st = evaluate(ctx, repo, entry)
         if st.error:
             report_error(st)
@@ -4096,20 +4116,25 @@ def cmd_pull(ctx, repo, args):
             print(f"{entry.shown}: {paint(origin_text(entry), 'dim')}", flush=True)
         try:
             result = pull_one(ctx, repo, reg, st, args)
-            rc = max(rc, result)
             if args.release and (st.pending or st.modified):
                 one_off_hint(ctx, st)
         except FsError as e:   # report and carry on with the other files
             error(str(e))
             rc = EXIT_ERROR
             continue
-        # the commit wasn't done: the others would be refused because of its entry
-        if result == EXIT_PENDING and n < len(entries):
-            warn(f"stopped after {entry.shown} - commit it first, then pull the rest")
-            break
+        if result:
+            pulled.append(entry)
+            msgs.append(result[0])
+            paths |= result[1]
     if args.all and not done and rc == EXIT_OK:
         print(paint("everything up to date", "green"))
-    return rc
+    if not pulled:
+        return rc
+    # one commit for all, of their files and entries only
+    name = pulled[0].shown if len(pulled) == 1 else entries_text(pulled)
+    return max(rc, commit_staged(repo, name, pull_message(pulled, msgs), args,
+                                 "updated and staged", rels=[e.rel for e in pulled],
+                                 only=paths))
 
 
 def add_source(reg, args):
@@ -5366,10 +5391,6 @@ def main(argv=None):
     colorp.add_argument("--no-color", dest="color", action="store_const", const="never",
                         help="same as --color=never")
 
-    remotep = argparse.ArgumentParser(add_help=False)
-    remotep.add_argument("--remote", action="store_true",
-                         help="ignore mappings to local folders (see source map): ask the platform")
-
     argv = list(sys.argv[1:] if argv is None else argv)
     # the help in colors (argparse: Python 3.14 and later) when the output would be
     color = {}
@@ -5387,7 +5408,7 @@ def main(argv=None):
                             parser_class=argparse.ArgumentParser)
     ap.commands = sub
 
-    p = sub.add_parser("status", parents=[colorp, remotep], help="show the state of the synced files")
+    p = sub.add_parser("status", parents=[colorp], help="show the state of the synced files")
     p.add_argument("paths", nargs="*", help="files or directories (default: all)")
     p.add_argument("-s", "--short", action="store_true",
                    help="short format: upstream / committed / working tree columns")
@@ -5398,7 +5419,7 @@ def main(argv=None):
     p.add_argument("--no-fetch", action="store_true",
                    help="don't ask the platform for new releases")
 
-    p = sub.add_parser("pull", parents=[colorp, remotep], help="update files to the selected release")
+    p = sub.add_parser("pull", parents=[colorp], help="update files to the selected release")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories")
     p.add_argument("--all", action="store_true", help="all files with something to pull")
     p.add_argument("--release", metavar="TAG|PATTERN",
@@ -5418,7 +5439,7 @@ def main(argv=None):
             ("difftool", "same in the configured difftool",
              "Show local modifications against what the release gave in the configured "
              "difftool.")):
-        p = sub.add_parser(name, parents=[colorp, remotep], help=hlp, description=desc,
+        p = sub.add_parser(name, parents=[colorp], help=hlp, description=desc,
                            epilog="Options after '--' are passed to git " + name + ".")
         p.add_argument("paths", nargs="*", metavar="PATH",
                        help="files or directories (default: all)")
@@ -5475,7 +5496,7 @@ def main(argv=None):
     p.add_argument("-W", "--worktree", action="store_true",
                    help="restore the working tree (the default; with -S: both)")
 
-    p = sub.add_parser("add", parents=[colorp, remotep],
+    p = sub.add_parser("add", parents=[colorp],
                        help="take a file or directory from release assets")
     p.add_argument("--filter", metavar="NAME",
                    help="the named filter (see 'filter add') to apply to the assets")
@@ -5502,7 +5523,7 @@ def main(argv=None):
                         "gives")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
-    p = sub.add_parser("set", parents=[colorp, remotep],
+    p = sub.add_parser("set", parents=[colorp],
                        help="change entries: source, release selection, asset or filter")
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
     p.add_argument("--source", metavar="URL|SOURCE",
@@ -5528,7 +5549,7 @@ def main(argv=None):
     sub.add_parser("edit", parents=[colorp],
                    help=f"open {REGISTRY} in the editor, then check and stage it")
 
-    p = sub.add_parser("verify", parents=[colorp, remotep],
+    p = sub.add_parser("verify", parents=[colorp],
                        help="filter the synced assets again and compare with what is committed")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
     p.add_argument("-v", "--verbose", action="store_true",
@@ -5550,7 +5571,7 @@ def main(argv=None):
     p.add_argument("dst", metavar="NEW", help="new path or existing directory")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
-    p = sub.add_parser("source", parents=[colorp, remotep],
+    p = sub.add_parser("source", parents=[colorp],
                        help="list or change the [source]s (like 'git remote'), list their releases, map them "
                             "to local folders")
     p.add_argument("-v", "--verbose", action="store_true",
@@ -5599,7 +5620,7 @@ def main(argv=None):
     a.add_argument("--global", dest="glob", action="store_true",
                    help="in the global git config, for all repositories")
 
-    a = actions.add_parser("releases", parents=[colorp, remotep],
+    a = actions.add_parser("releases", parents=[colorp],
                            help="list the releases of a source or project (and their assets)",
                            description="List the releases of a source or project, newest first (and their assets) - also outside a repository, with a URL.")
     a.add_argument("source", metavar="SOURCE|URL",
@@ -5624,7 +5645,7 @@ def main(argv=None):
     a = actions.add_parser("set", parents=[colorp, filterp],
                            help="replace the steps of a filter (in the order given)")
     a.add_argument("name", metavar="NAME")
-    a = actions.add_parser("test", parents=[colorp, remotep],
+    a = actions.add_parser("test", parents=[colorp],
                            help="apply a filter to local files or to the assets of a release, "
                                 "and list or write the result (nothing else changes)")
     a.add_argument("name", metavar="NAME")
@@ -5709,9 +5730,8 @@ def main(argv=None):
             return cmd_cache(args)
         if args.cmd == "source" and args.action == "map":   # --global: also outside one
             return cmd_map(args, repo)
-        if not getattr(args, "remote", False):
-            MAPPINGS.update((norm_url(u), (d, flat)) for _, _, u, d, flat in
-                            local_mappings(cwd=repo.top if repo else None))
+        MAPPINGS.update((norm_url(u), (d, flat)) for _, _, u, d, flat in
+                        local_mappings(cwd=repo.top if repo else None))
         if args.cmd == "source" and args.action == "releases":   # also outside a repository
             return cmd_releases(Context(args), repo, args)
         if repo is None:

@@ -365,7 +365,16 @@ release acme/tool v1.3 13 "$F/tool-1.3.bin"
 N=$(git rev-list --count HEAD)
 quiet git assetsync pull --all --no-edit
 check "pull --all: both updated" "$(cat bin/tool.bin other.bin | oneline)" "tool 1.3 tool 1.3 "
-check "pull --all: a commit per file" "$(($(git rev-list --count HEAD) - N))" "2"
+check "pull --all: one commit for all" "$(($(git rev-list --count HEAD) - N)) $(git log -1 --format=%s)" \
+  "1 [assetsync] Update 2 files from acme/tool"
+check "... with the message of each" "$(git log -1 --format=%B | grep -c '^Update [a-z/.]* to acme/tool v1.3 (was v1.[12])$')" "2"
+# an entry refused: the others are pulled and committed anyway, exit code 2
+asset tool-1.4.bin "tool 1.4"
+release acme/tool v1.4 14 "$F/tool-1.4.bin"
+echo mine > other.bin
+check "pull --all: a refused entry left out" "$(rc git assetsync pull --all --no-edit) $(git log -1 --format=%s) $(cat other.bin)" \
+  "2 [assetsync] Update bin/tool.bin to acme/tool v1.4 (was v1.3) mine"
+git checkout -q other.bin
 
 # release notes, shortened, in the message of an update
 cd "$T"
@@ -780,14 +789,18 @@ rm .git/SQUASH_MSG
 (cd sub && eval "${CMD/ -e / }") >/dev/null 2>&1      # without the editor
 check "... and commits there" "$(git log -1 --format=%s)$(git status --porcelain)" \
   "[assetsync] Update p2.txt to acme/p v3 (was v2)"
-# pull --all stops after a commit that isn't done (the others would be refused)
+# a commit that isn't done leaves all pulled files staged
 asset p.txt "p 4"
 release acme/p v4 13 "$F/p.txt"
 printf '#!/bin/sh\nexit 1\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit
 OUT=$(git assetsync pull --all --no-edit 2>&1)
-check "pull --all: stops after a failed commit" \
-  "$(echo "$OUT" | grep -c '^warning: stopped after p1.txt - commit it first, then pull the rest$') $(cat p2.txt)" "1 p 3"
+check "pull --all: a failed commit leaves them staged" \
+  "$(echo "$OUT" | grep -c '^3 files: commit not done; changes stay staged') $(cat p1.txt p2.txt sub/p3.txt | oneline)$(git status --porcelain | oneline)" \
+  "1 p 4 p 4 p 4 M  .git-assetsync M  p1.txt M  p2.txt M  sub/p3.txt "
 rm .git/hooks/pre-commit; git commit -q --no-edit
+check "... a plain commit takes the proposed message" "$(git log -1 --format=%s)" "[assetsync] Update 3 files from acme/p"
+asset p.txt "p 5"
+release acme/p v5 14 "$F/p.txt"
 # only the pulled file and its entry are committed; other staged changes stay staged
 echo other > other.txt; git add other.txt
 quiet git assetsync pull --no-edit p2.txt
@@ -2208,7 +2221,6 @@ check "map: pulled again" "$(cat t.bin)" "three, rebuilt"
 check "map: releases" "$(git assetsync source releases acme/loc | cut -c1-2 | oneline)" "re v3 v1 v2 "
 check "map: no release" "$(git assetsync pull -n --release v9 t.bin 2>&1 | tr '\\' /)" \
   "error: t.bin: no release with tag 'v9' in acme/loc (local folder $L)"
-check "map: --remote asks the platform" "$(git assetsync status -s --remote 2>/dev/null)" "E   t.bin"
 check "map: verify" "$(git assetsync verify)" "t.bin: verified (v3)"
 # a source given by name
 quiet git assetsync source rename acme/loc loc && git commit -qm rename -- .git-assetsync
@@ -2532,7 +2544,7 @@ check "clone: restore gets the base" "$(git assetsync restore vendor) $(cat vend
 git checkout -q vendor
 cd "$T" && rm -rf r31c && git clone -q --no-local r31 r31c && cd r31c
 echo changed > vendor/include/a.h
-check "clone: pull --overwrite gets the base" "$(git assetsync pull --overwrite --no-edit vendor 2>/dev/null; cat vendor/include/a.h)" \
+check "clone: pull --overwrite gets the base" "$(git assetsync pull --overwrite --no-edit vendor 2>/dev/null | tail -1; cat vendor/include/a.h)" \
   "vendor/: nothing to commit (the same as committed)
 a2"
 # ... unless the release it was synced with is gone: pull refuses, --overwrite only adds

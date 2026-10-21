@@ -241,8 +241,8 @@ kind of output, same exit codes, same caution with uncommitted changes.
 
 **Only `pull` commits**, like `git pull` – and for the same reason: it
 brings in changes from elsewhere, and its commit message comes from there
-(the release, its notes and those of releases skipped), one commit per
-entry, so `git log PATH` shows every update. All other commands carry out a
+(the release, its notes and those of releases skipped) – one commit for
+all entries it updates. All other commands carry out a
 decision of yours, often together with changes of your own, so – like `git
 add`, `git rm`, `git mv`, `git restore` – they only change the working tree
 or stage, and you commit: `add`, `rm`, `mv`, `set`, `unlink`, `edit`,
@@ -270,7 +270,6 @@ an entry, take many assets).
 | Option | Meaning |
 |---|---|
 | `--color[=WHEN]`, `--no-color` | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
-| `--remote` | ignore [mappings to local folders](#source-map): ask GitHub or GitLab (commands that look at releases: `status`, `pull`, `diff`, `difftool`, `add`, `set`, `verify`, `source`, `source releases`, `filter test`) |
 
 ### `status`
 
@@ -334,9 +333,11 @@ git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [--no
 ```
 
 Updates each given file or directory to what the release its source
-selects gives (after the filter), and commits it together with its entry
-in `.git-assetsync` – one commit per entry. A directory is replaced as a
-whole: files the new release no longer has are removed, new ones added.
+selects gives (after the filter), and commits them together with their
+entries in `.git-assetsync` – one commit for all, whose message has a part
+for each entry (with one entry, just that). In a directory, the files of
+the release are replaced: those the new release no longer has are
+removed, new ones added.
 The editor opens with the [proposed message](#proposed-commit-messages)
 unless `--no-edit` is given. An entry that is up to date is reported as
 such; one whose filter was changed (with [`set`](#set)) is filtered again,
@@ -369,8 +370,6 @@ one commit.
 If the commit is not done (e.g. the editor is closed with an empty
 message, or a hook rejects it), the changes stay staged and `pull` tells
 how to commit them with the proposed message; the exit code is then 1.
-`pull --all` stops there: the other entries would be refused as long as
-that entry isn't committed.
 
 **Another release, once:** `pull --release TAG PATH…` updates the files to
 that release instead of the selected one – also an older one, e.g. to go
@@ -789,7 +788,8 @@ git assetsync source map acme/tool --unset                # remove it again
   local folder, not published)`.
 - Everything works offline; nothing goes into the [download
   cache](#download-cache). `status` names the folder, `source releases` lists the
-  folders; `--remote` asks the platform instead, for one command.
+  folders; `source map … --unset` takes the releases from the platform
+  again.
 - Before pushing, the [push check](#hooks) warns
   about entries whose release isn't published yet.
 
