@@ -1821,7 +1821,7 @@ check "filter test: unknown filter" "$(git assetsync filter test nope "$F/pkg.zi
 check "filter test: error as in pull" "$(git assetsync filter test hdr "$F/fw.bin" 2>&1 | grep '^error')" \
   "error: filter hdr: 'extract': 'fw.bin' is not an archive (zip, tar, tar.gz/bz2/xz, .gz/.bz2/.xz, 7z) - choose the archives with a pattern"
 check "filter test: extract by pattern, the rest kept" \
-  "$(git assetsync filter add zips --extract '*.zip' >/dev/null && git assetsync filter test zips "$F/fw.bin" "$F/pkg.zip" 2>/dev/null | grep -c 'fw.bin$\|a.h$')" "2"
+  "$(git assetsync filter add zips --extract '*.zip' >/dev/null && git assetsync filter test zips "$F/fw.bin" "$F/pkg.zip" 2>/dev/null | grep -cE 'fw\.bin$|a\.h$')" "2"
 check "filter add: --extract with patterns" "$(git config -f .git-assetsync --get-all filter.zips.step)" "extract '*.zip'"
 git reset -q .git-assetsync && git checkout -q .git-assetsync
 check "filter test: nothing changed" "$(git status --porcelain)" ""
