@@ -263,7 +263,7 @@ Two options mean the same in all commands (and in git-filesync):
 **`--overwrite`** lets a command replace local content – a file of yours,
 local modifications – with what the release gives; **`--force`** lets it
 do something it refuses by default, without losing local content (replace
-an entry, take many assets).
+an entry, add the lines to hooks of other tools).
 
 ### Common options
 
@@ -540,8 +540,7 @@ commit --no-edit` takes it as it is).
   pattern is recorded, and a later release with more than one asset is an
   error until you choose one (`git assetsync set PATH --asset PATTERN`).
   For a directory, all matching assets are taken; without `--asset` all
-  assets of the release – they are listed first, and more than 10 assets
-  or 100 MiB need `--force`.
+  assets of the release – they are listed first.
 - **`--filter NAME`** applies the named [filter](#filters) `NAME` to the
   assets – to unpack them, select and move files. Define it first with
   [`filter add`](#filter).
@@ -553,7 +552,7 @@ commit --no-edit` takes it as it is).
 | `--prerelease` | prereleases count too (with a pattern, or instead of the latest release) |
 | `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
 | `--filter NAME` | the named [filter](#filters) to apply to the assets |
-| `--force` | replace an existing entry for `PATH` (its file or directory too, unless it has local modifications); take more than 10 assets or 100 MiB |
+| `--force` | replace an existing entry for `PATH` (its file or directory too, unless it has local modifications) |
 | `--overwrite` | replace an existing file that differs, or – in a directory – files in the way of the release's; with `--force` also local modifications of the entry replaced |
 | `-n`, `--dry-run` | only show which release, assets and filter would be taken; nothing is downloaded |
 
@@ -1046,9 +1045,7 @@ end). In a `pre-push` hook, they must come first: git passes the
 pushed refs on stdin, which the push check reads – the lines keep them for
 the commands after them (such as `git lfs pre-push`), but a command before
 them that reads stdin leaves nothing for the check. Hooks installed by an
-older version are updated in place (`updated`); run `hooks install` again
-after updating from a version before 0.13.1, whose `pre-push` hook didn't
-keep stdin. `hooks uninstall` removes the hooks, or only its lines from
+older version are updated in place (`updated`). `hooks uninstall` removes the hooks, or only its lines from
 hooks that contain other commands as well. Until 0.15, the commands were
 `install-hooks` and `uninstall-hooks`; hooks installed by them keep
 working. With `core.hooksPath` set, the

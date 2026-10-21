@@ -1023,21 +1023,15 @@ check "pre-push hook: git-assetsync missing never blocks" \
 check "hooks install: again" "$(git assetsync hooks install | oneline)" \
   "pre-push: already installed post-merge: already installed "
 check "hooks uninstall" "$(git assetsync hooks uninstall | oneline)" "pre-push: removed post-merge: removed "
-# hooks of an older version are updated in place
-printf '#!/bin/sh\necho before\n# git-assetsync: remind about new releases to pull (never blocks)\ngit assetsync status --hook </dev/null || true\necho after\n' > .git/hooks/pre-push
+# our lines as an older version wrote them: updated in place
+printf '#!/bin/sh\necho before\n# git-assetsync: reminders\ngit assetsync hook pre-push "$@" || true\necho after\n' > .git/hooks/pre-push
 check "hooks: outdated" "$(git assetsync hooks | head -1)" "pre-push: outdated (update with 'git assetsync hooks install')"
 check "hooks install: old hook updated" "$(git assetsync hooks install | head -1)" "pre-push: updated"
 check "... in place" "$(grep -v '^#' .git/hooks/pre-push | oneline)" \
   'echo before git_assetsync_refs=$([ $# -eq 0 ] || cat) printf '"'%s\\n'"' "$git_assetsync_refs" | git assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1 [ -z "$git_assetsync_refs" ] || exec <<git_assetsync_refs_end $git_assetsync_refs git_assetsync_refs_end echo after '
 quiet git assetsync hooks uninstall
 check "... uninstall keeps the rest" "$(oneline < .git/hooks/pre-push)" "#!/bin/sh echo before echo after "
-# a hook of our own from before 0.13.1: rewritten, without its 'exit 0' (lines
-# others append after it would never run)
-printf '#!/bin/sh\n# git-assetsync: reminders\ngit assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1\nexit 0\n' > .git/hooks/pre-push
-check "hooks install: our old hook updated" "$(git assetsync hooks install | head -1)" "pre-push: updated"
-check "... without exit 0" "$(grep -c 'exit 0' .git/hooks/pre-push)" "0"
-quiet git assetsync hooks uninstall
-check "... uninstalled: removed" "$(ls .git/hooks/pre-push 2>/dev/null)" ""
+rm .git/hooks/pre-push
 printf '#!/bin/sh\necho mine\n' > .git/hooks/post-merge
 printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-push
 check "hooks: a hook of another tool" "$(git assetsync hooks | head -1)" \
@@ -1471,9 +1465,7 @@ git reset -q --hard; rm -rf all
 i=1; set --
 while [ $i -le 11 ]; do asset "m$i.txt" "m$i"; set -- "$@" "$F/m$i.txt"; i=$((i + 1)); done
 release acme/eleven v1 10 "$@"
-check "more than 10 assets: refused" "$(asd add many/ acme/eleven 2>&1 >/dev/null)" \
-  "error: that is more than 10 assets or 100 MiB - choose some with --asset PATTERN, or take all with --force"
-check "more than 10 assets: --force" "$(asd add --force many/ acme/eleven >/dev/null 2>&1; git ls-files many | lines)" "11"
+check "more than 10 assets: all taken" "$(asd add many/ acme/eleven >/dev/null 2>&1; git ls-files many | lines)" "11"
 check "dir --asset with several matches" "$(asd add -n m1/ acme/eleven --asset 'm1*' | sed 's/(.*,/(...,/')" \
   "would add m1/ from acme/eleven v1 (..., latest release)"
 git reset -q --hard; rm -rf many
@@ -1908,9 +1900,6 @@ git reset -q --hard
 git config -f .git-assetsync dir.v.filter gone
 check "entry: missing filter" "$(git assetsync status v 2>&1 | head -1)" \
   "error: v/: filter 'gone' not found in .git-assetsync (define it with 'git assetsync filter add gone ...')"
-git config -f .git-assetsync dir.v.filter sdk2; git config -f .git-assetsync dir.v.step extract
-check "entry: steps of its own" "$(git assetsync status v 2>&1 | head -1)" \
-  "error: v/: filter steps belong to a named filter - define one with 'git assetsync filter add NAME ...' and use it with 'git assetsync set v --filter NAME'"
 git reset -q --hard
 # a registry with only filters stays
 new_repo r22b

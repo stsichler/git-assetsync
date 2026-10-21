@@ -158,8 +158,7 @@ Basic commands - what you need day to day:
                                 proposed message
         --asset PATTERN         the asset (glob; a file: exactly one match,
                                 default the release's only asset; a
-                                directory: all matching, default all - more
-                                than 10 or 100 MiB only with --force)
+                                directory: all matching, default all)
         --filter NAME           the filter to apply to the assets
         --release TAG|PATTERN   release to take (exact tag: pinned) or the
                                 newest one matching (default: the latest)
@@ -393,8 +392,6 @@ NOTES_LINES, NOTES_WIDTH, NOTES_TOTAL_LINES = 20, 200, 60
 LIST_RELEASES = 10
 # unpacking archives: at most this much and this many files (zip bombs)
 MAX_EXTRACT_SIZE, MAX_EXTRACT_FILES = 2 << 30, 100000
-# all assets of a release for a directory (add without --asset): more needs --force
-MAX_ALL_ASSETS, MAX_ALL_SIZE = 10, 100 << 20
 # download cache: files unused for this many days are removed (assetsync.cacheMaxAge),
 # automatically at most once a day; files used in the last minutes are never removed
 CACHE_MAX_AGE, CACHE_PRUNE_EVERY, CACHE_GRACE = 90, 86400, 600
@@ -3047,10 +3044,6 @@ def evaluate(ctx, repo, entry):
         st.error = f"incomplete entry in {REGISTRY} (needs a source with url)"
         return st
     try:
-        if "step" in entry.v:
-            raise FsError("filter steps belong to a named filter - define one with 'git "
-                          "assetsync filter add NAME ...' and use it with 'git assetsync set "
-                          f"{path_arg(repo, entry.rel)} --filter NAME'")
         if entry.filter and entry.filter not in entry.reg.filters:
             raise FsError(f"filter '{entry.filter}' not found in {REGISTRY} (define it with "
                           f"'git assetsync filter add {entry.filter} ...')")
@@ -4389,13 +4382,9 @@ def cmd_add(ctx, repo, args):
     assets = select_assets(release, args.asset, origin.label, is_dir)
     name = named or reg.source_name(url, spec)
     if is_dir and not args.asset and len(assets) > 1:
-        total = sum(a.size or 0 for a in assets)
         print(f"{shown_rel}: all {plural(len(assets), 'asset')} of {name} {release.tag}: "
               + ", ".join(a.name + (f" ({human_size(a.size)})" if a.size is not None else "")
                           for a in assets), flush=True)
-        if (len(assets) > MAX_ALL_ASSETS or total > MAX_ALL_SIZE) and not args.force:
-            raise FsError(f"that is more than {MAX_ALL_ASSETS} assets or {MAX_ALL_SIZE >> 20} MiB"
-                          " - choose some with --asset PATTERN, or take all with --force")
     # what an entry being replaced has from its release may go; anything else (files
     # of others in the way, local modifications) only with --overwrite
     overwrite, base, old_blob = args.overwrite, (), None
@@ -4492,8 +4481,6 @@ def registry_problems(reg):
             problems.append(f"{sect} has no source")
         elif v["source"] not in reg.sources:
             problems.append(f'{sect}: no [source "{v["source"]}"]')
-        if "step" in v:
-            problems.append(f"{sect}: filter steps belong to a named [filter]")
         if v.get("filter") and v["filter"] not in reg.filters:
             problems.append(f'{sect}: no [filter "{v["filter"]}"]')
         if not v.get("synced") or not v.get(BASE_KEY[kind]):
@@ -4742,7 +4729,7 @@ def cmd_verify(ctx, repo, args):
 def describe_cached(item):
     _, size, used, names = item
     what = names[0] + (f" (+{len(names) - 1} more)" if len(names) > 1 else "") if names else \
-        paint("(no details: downloaded before 0.12)", "dim")
+        paint("(no details)", "dim")
     return f"{human_size(size):>10}  {time.strftime('%Y-%m-%d', time.localtime(used))}  {what}"
 
 
@@ -5335,15 +5322,13 @@ def hook_snippet(cmd):
 
 def is_our_hook_line(line):
     s = line.strip()
-    return s.startswith((f"# {HOOK_MARKER}:", "git assetsync hook ",
-                         "git assetsync status --hook")) or \
-        bool(re.search(r"\b(git_)?assetsync_(refs|EOF)", s))   # status --hook: before 0.10
+    return s.startswith((f"# {HOOK_MARKER}:", "git assetsync hook ")) or \
+        "git_assetsync_refs" in s
 
 
 def only_ours(lines):
     """A hook file with nothing but our lines (and what we wrote around them)."""
-    return all(is_our_hook_line(ln) or ln.strip() in ("", "#!/bin/sh", "exit 0")
-               for ln in lines)
+    return all(is_our_hook_line(ln) or ln.strip() in ("", "#!/bin/sh") for ln in lines)
 
 
 def hook_plan(name, text):
@@ -5537,7 +5522,7 @@ def main(argv=None):
     ap.commands = sub
 
     p = sub.add_parser("status", parents=[colorp], help="show the state of the synced files")
-    p.add_argument("paths", nargs="*", help="files or directories (default: all)")
+    p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
     p.add_argument("-s", "--short", action="store_true",
                    help="short format: upstream / committed / working tree columns")
     p.add_argument("-v", "--verbose", action="store_true",
@@ -5645,7 +5630,7 @@ def main(argv=None):
     p.add_argument("--type", choices=sorted(PLATFORMS),
                    help="platform of the URL's host (default: derived from it)")
     p.add_argument("--force", action="store_true",
-                   help="replace an existing entry; take more than 10 assets or 100 MiB")
+                   help="replace an existing entry")
     p.add_argument("--overwrite", action="store_true",
                    help="replace an existing file (directory content) with what the release "
                         "gives")
