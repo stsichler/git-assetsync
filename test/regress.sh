@@ -334,7 +334,8 @@ check "status: exit code 0" "$(rc git assetsync status)" "0"
 check "status --exit-code: 1" "$(rc git assetsync status --exit-code)" "1"
 check "pull without paths refused" "$(rc git assetsync pull)" "2"
 check "pull without paths: message" "$(git assetsync pull 2>&1)" "error: specify file(s) or --all"
-pullc bin/tool.bin
+check "pull -v: where it comes from first" "$(git assetsync pull -v --no-edit bin/tool.bin 2>/dev/null | head -1)" \
+  "bin/tool.bin: tool-*.bin from acme/tool, latest release; synced v1.0"
 check "pull: content" "$(cat bin/tool.bin)" "tool 1.1"
 check "pull: commit message" "$(msg)" \
   "[assetsync] Update bin/tool.bin to acme/tool v1.1 (was v1.0) Release: https://github.com/acme/tool/releases/tag/v1.1 Asset:   tool-1.1.bin "
@@ -1957,6 +1958,8 @@ addc f.txt acme/vf --asset vf.txt
 addc d/ acme/vf --asset pkg.zip --filter hdr
 check "verify: all verified" "$(git assetsync verify | oneline)" "d/: verified (v1) f.txt: verified (v1) "
 check "verify: exit code 0" "$(rc git assetsync verify)" "0"
+check "verify -v: where they come from" "$(git assetsync verify -v | oneline)" \
+  "d/: pkg.zip from acme/vf, latest release, filter hdr; synced v1 d/: verified (v1) f.txt: vf.txt from acme/vf, latest release; synced v1 f.txt: verified (v1) "
 ASSETSYNC_TRUST=all addc r.txt acme/vf --asset vf.txt --filter rnd
 ASSETSYNC_TRUST=all addc rd/ acme/vf --asset vf.txt --filter rnddir
 check "verify: not reproducible (file)" "$(git assetsync verify r.txt)" "r.txt: differs from what v1 gives now"

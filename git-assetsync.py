@@ -96,6 +96,9 @@ command.
                                 one as pending (to stay: set --release)
         --overwrite             discard local modifications
         --no-edit               commit without opening the editor
+        -v, --verbose           first name where each entry comes from: its
+                                asset(s), source, release selection, filter,
+                                the release synced (as status -v)
         --no-commit             only stage; a plain `git commit` offers the
                                 proposed message (via .git/SQUASH_MSG)
         -n, --dry-run           only report what would happen
@@ -248,6 +251,8 @@ command.
                                 again and compare with the recorded base:
                                 is the committed state reproducible? (exit
                                 1 if not); nothing in the repository changes
+        -v, --verbose           first name where each entry comes from (as
+                                status -v)
 
     releases SOURCE|URL         list the releases, newest first, marked:
                                 latest, prerelease (GitLab: upcoming), draft,
@@ -2154,6 +2159,15 @@ def spec_text(spec):
     return f"newest release matching {rule}{pre}"
 
 
+def origin_text(entry):
+    """Where an entry comes from, as status -v, pull -v and verify -v show it:
+    'tool-*.bin from acme/tool, latest release, filter x; synced v1.2'."""
+    synced = f"synced {entry.synced}" if entry.synced else "not synced yet"
+    what = entry.asset or ("all assets" if entry.is_dir else "only asset")
+    steps = f", filter {entry.filter}" if entry.filter else ""
+    return f"{what} from {entry.name}, {spec_text(entry.spec)}{steps}; {synced}"
+
+
 def path_problem(rel):
     """Why rel can't be a synced file, None if it can. Entries come from a
     committed file, possibly written by others: a pull must never write
@@ -2740,12 +2754,8 @@ def print_long(ctx, repo, sts, verbose):
         rows = []
         for st in ok:
             e = st.entry
-            synced = f"synced {e.synced}" if e.synced else "not synced yet"
             label = st.committed or ("uncommitted" if e.blob else "not synced")
-            what = e.asset or ("all assets" if e.is_dir else "only asset")
-            steps = f", filter {e.filter}" if e.filter else ""
-            rows.append((label, e.shown,
-                         f"{what} from {e.name}, {spec_text(e.spec)}{steps}; {synced}", "dim"))
+            rows.append((label, e.shown, origin_text(e), "dim"))
         section("Files:", [], rows, None)
 
     up_rows = []
@@ -3650,6 +3660,8 @@ def cmd_pull(ctx, repo, args):
         if args.all and not st.pending and not (args.overwrite and st.modified):
             continue
         done += 1
+        if args.verbose:
+            print(f"{entry.shown}: {paint(origin_text(entry), 'dim')}", flush=True)
         try:
             result = pull_one(repo, reg, st, args)
             rc = max(rc, result)
@@ -4094,6 +4106,8 @@ def cmd_verify(ctx, repo, args):
         try:
             if problem:
                 raise FsError(problem)
+            if args.verbose:
+                print(f"{entry.shown}: {paint(origin_text(entry), 'dim')}", flush=True)
             ok, text = verify_one(repo, reg, entry)
         except FsError as e:
             error(f"{entry.shown}: {e}")
@@ -4807,6 +4821,8 @@ def main(argv=None):
                         "newest matching), once - the selection stays as it is")
     p.add_argument("--overwrite", action="store_true", help="discard local modifications")
     p.add_argument("--no-edit", action="store_true", help="commit without opening the editor")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="first name where each entry comes from (as status -v)")
     p.add_argument("--no-commit", action="store_true",
                    help="only stage; a plain 'git commit' offers the proposed message")
     p.add_argument("-n", "--dry-run", action="store_true",
@@ -4926,6 +4942,8 @@ def main(argv=None):
     p = sub.add_parser("verify", parents=[colorp, remotep],
                        help="filter the synced assets again and compare with what is committed")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
+    p.add_argument("-v", "--verbose", action="store_true",
+                   help="first name where each entry comes from (as status -v)")
 
     p = sub.add_parser("releases", parents=[colorp, remotep],
                        help="list the releases of a source (and their assets)")

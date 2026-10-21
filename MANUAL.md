@@ -272,7 +272,7 @@ exit with 2.
 ### `pull`
 
 ```
-git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [--no-edit]
+git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [--no-edit] [-v]
                    [--no-commit] [-n]
 ```
 
@@ -305,6 +305,7 @@ one commit.
 | `--release TAG\|PATTERN` | this release instead of the one the source selects, once – see below; a pattern takes the newest matching release; not with `--all` |
 | `--overwrite` | discard local modifications: restore or update the file (directory) anyway; in a directory also untracked files are deleted (ignored ones stay) |
 | `--no-edit` | commit with the proposed message, without opening the editor |
+| `-v`, `--verbose` | first name where each entry comes from, as `status -v` shows it (assets, source, release selection, filter, the release synced) |
 | `--no-commit` | update and stage only; a plain `git commit` then offers the proposed message (via `.git/SQUASH_MSG`) |
 | `-n`, `--dry-run` | only report what would happen; nothing is downloaded or changed |
 
@@ -764,7 +765,7 @@ filter firmware: not trusted (used by src/fw/)
 ### `verify`
 
 ```
-git assetsync verify [PATH…]
+git assetsync verify [PATH…] [-v]
 ```
 
 Checks that the committed state is reproducible: for each entry (default:
@@ -788,6 +789,9 @@ the filter changed since the sync (`pull` first). Filters that run
 commands must be [trusted](#trust). The exit code is 0 if everything is
 verified, 1 if something differs, 2 on errors – so a CI job can check that
 nobody changed a file by hand and that the filters are deterministic.
+With `-v` (`--verbose`), each entry is first named with where it comes
+from, as `status -v` shows it: its assets, source, release selection,
+filter and the release it was synced with.
 
 ### `install-hooks`, `uninstall-hooks`
 
