@@ -1465,6 +1465,13 @@ and `diff --upstream` always ask the platform which release to take;
 assets already in the [download cache](#download-cache) are not
 downloaded again.
 
+Commands that only look – `status`, `diff`, `difftool`, `verify` and the
+hooks – change nothing in the repository: the objects they need for
+comparing go to a temporary object directory, removed afterwards (only
+`verify` keeps a directory's base it got again). They read only the files
+of the entries, not those of others in a directory, and only the ones
+that differ from what the release gave are looked at more closely.
+
 ### Colors
 
 Output is colored like `git status`: pending updates yellow, committed

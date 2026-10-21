@@ -1370,6 +1370,14 @@ check "... also committed" "$(st)" ""
 echo changed >> lib/zlib/include/zlib.h
 check "dir: changed file: modified" "$(st)" "  M"
 check "dir: NOT ALLOWED" "$(git assetsync status | grep -cE "^${TAB}modified:[[:space:]]+lib/zlib/  \(NOT ALLOWED\)")" "1"
+# commands that only look store nothing in the repository (also with files of
+# others there, untracked ones too)
+echo untracked > lib/zlib/other.txt
+OBJ=$(find .git/objects -type f | lines)
+quiet git assetsync status; quiet git assetsync status -s; quiet git assetsync diff
+quiet git assetsync difftool -y -- -x true; quiet git assetsync verify lib/zlib
+check "status, diff, verify: no new objects" "$(find .git/objects -type f | lines)" "$OBJ"
+rm lib/zlib/other.txt
 check "dir: pull refused" "$(rc git assetsync pull --no-edit lib/zlib)" "2"
 git commit -qam "local change"
 check "dir: committed modification" "$(st)" " A"
@@ -1473,6 +1481,8 @@ git reset -q --hard
 # line endings and LFS in a directory
 printf 'a\r\nb\r\n' > z2.txt; mkdir -p eol && mv z2.txt eol/crlf.txt
 printf 'bin\000ary\n' > eol/data.bin
+mkdir -p eol/sub && printf 'x\r\ny\r\n' > eol/sub/keep.txt && printf 'two\r\n' > eol/two.txt
+printf 'bin\000two\n' > eol/two.bin
 mkarchive "$F/eol.tar.gz" eol
 release acme/eol-dir v1 10 "$F/eol.tar.gz"
 new_repo r18b
@@ -1480,12 +1490,15 @@ printf '* text=auto\n' > .gitattributes
 if git lfs version >/dev/null 2>&1; then printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >> .gitattributes; fi
 git add .gitattributes && git commit -qm attrs
 filt ex --extract
+mkdir -p d/sub && printf '*.txt -text\n' > d/sub/.gitattributes && git add d && git commit -qm "attributes of mine"
 addc d/ acme/eol-dir --filter ex
 check "dir: text=auto: normalized" "$(git cat-file -p HEAD:d/crlf.txt | od -c | grep -c '\\r')" "0"
 if git lfs version >/dev/null 2>&1; then
   check "dir: LFS: pointer" "$(git cat-file -p HEAD:d/data.bin | head -1)" "version https://git-lfs.github.com/spec/v1"
 fi
 check "dir: eol/LFS: clean" "$(st) $(git status --porcelain)" " "
+check "dir: a .gitattributes of mine there counts" "$(git cat-file -p HEAD:d/sub/keep.txt | od -c | grep -c '\\r')" "1"
+check "dir: eol/LFS: verify stores them alike" "$(git assetsync verify d)" "d/: verified (v1)"
 
 # GitLab: a directory of several assets (no digests)
 asset g1.txt g1; asset g2.txt g2
