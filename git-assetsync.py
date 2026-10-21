@@ -203,6 +203,19 @@ command.
                                 platform of the host (--unset: derived)
                                 (all: only .git-assetsync is staged; pull
                                 updates the files and commits the change)
+    source map [URL|SOURCE [DIR]]
+                                take the releases of a source from the local
+                                folder DIR instead (local development and
+                                tests; never committed): one subdirectory
+                                per release, named like its tag, with the
+                                assets; newest = newest file date. Without
+                                DIR: list the mappings
+        --flat                  DIR holds the assets of all releases as files;
+                                a file belongs to the release named like it
+                                without its extension (.tar.gz etc. count as
+                                one): rel1.7z, rel1.xml -> release rel1
+        --global                for all repositories (default: this one)
+        --unset                 remove the mapping
 
     filter                      list the filters (and who uses them)
     filter show NAME            the steps of a filter
@@ -243,19 +256,6 @@ command.
         --assets                also list the assets, with their sizes
         -n N, --all             the newest N releases (default 10), or all
         --type github|gitlab    platform of the URL's host
-
-    map [URL|SOURCE [DIR]]      take the releases of a source from the local
-                                folder DIR instead (local development and
-                                tests; never committed): one subdirectory
-                                per release, named like its tag, with the
-                                assets; newest = newest file date. Without
-                                DIR: list the mappings
-        --flat                  DIR holds the assets of all releases as files;
-                                a file belongs to the release named like it
-                                without its extension (.tar.gz etc. count as
-                                one): rel1.7z, rel1.xml -> release rel1
-        --global                for all repositories (default: this one)
-        --unset                 remove the mapping
 
     cache                       the download cache: where, how big, the limits
     cache list                  its files, most recently used first
@@ -803,7 +803,7 @@ class LocalFolder:
     def check_project(self):
         if not self.dir.is_dir():
             raise FsError(f"local folder {self.dir} of {self.label} not found (see "
-                          "'git assetsync map')")
+                          "'git assetsync source map')")
 
     @staticmethod
     def files_in(d):
@@ -2786,7 +2786,7 @@ def print_long(ctx, repo, sts, verbose):
         if isinstance(st.origin, LocalFolder):
             folders.setdefault(st.origin.label, st.origin.dir)
     for label, folder in sorted(folders.items()):
-        print(paint(f"releases of {label} from the local folder {folder} (git assetsync map; "
+        print(paint(f"releases of {label} from the local folder {folder} (git assetsync source map; "
                     "--remote: the platform)", "cyan"))
     if folders:
         print()
@@ -2864,7 +2864,7 @@ def cmd_map(args, repo):
     top = repo.top if repo else None
     url = map_url(repo, args.source) if args.source else None
     if args.flat and not args.dir:
-        raise FsError("--flat goes with the folder: map --flat URL|SOURCE DIR")
+        raise FsError("--flat goes with the folder: source map --flat URL|SOURCE DIR")
     if not args.dir and not args.unset:      # listing: all scopes visible here
         print_mappings(local_mappings(cwd=top), url)
         return EXIT_OK
@@ -4180,7 +4180,7 @@ def cmd_releases(ctx, repo, args):
     if not args.all:
         rels = rels[:args.max_count]
     if isinstance(origin, LocalFolder):
-        print(paint(f"releases in the local folder {origin.dir} (git assetsync map)", "cyan"))
+        print(paint(f"releases in the local folder {origin.dir} (git assetsync source map)", "cyan"))
     if not rels:
         print(f"no releases in {origin.where}")
         return EXIT_OK
@@ -4777,7 +4777,7 @@ def main(argv=None):
 
     remotep = argparse.ArgumentParser(add_help=False)
     remotep.add_argument("--remote", action="store_true",
-                         help="ignore mappings to local folders (see map): ask the platform")
+                         help="ignore mappings to local folders (see source map): ask the platform")
 
     ap = argparse.ArgumentParser(prog="git assetsync",
                                  description="Keep files in sync with release assets of "
@@ -4986,6 +4986,20 @@ def main(argv=None):
     a.add_argument("name", metavar="NAME", help="key of the [source]")
     a.add_argument("value", metavar="github|gitlab", nargs="?")
     a.add_argument("--unset", action="store_true", help="derive the platform from the host")
+    a = actions.add_parser("map", parents=[colorp],
+                           help="take the releases of a source from a local folder (local "
+                                "development, tests); this repository's config, --global: all")
+    a.add_argument("source", nargs="?", metavar="URL|SOURCE",
+                   help="source URL, or the name of a [source] (without DIR: list its mappings)")
+    a.add_argument("dir", nargs="?", metavar="DIR",
+                   help="local folder: one subdirectory per release, named like its tag, "
+                        "with the assets")
+    a.add_argument("--flat", action="store_true",
+                   help="DIR has the assets of all releases as files: a release is named like "
+                        "the file without its extension (rel1.7z, rel1.xml -> rel1)")
+    a.add_argument("--unset", action="store_true", help="remove the mapping")
+    a.add_argument("--global", dest="glob", action="store_true",
+                   help="in the global git config, for all repositories")
 
     p = sub.add_parser("filter", parents=[colorp],
                        help="list, show or change the named filters [filter \"NAME\"]")
@@ -5025,21 +5039,6 @@ def main(argv=None):
     p.add_argument("names", nargs="*", metavar="NAME", help="filters to trust")
     p.add_argument("--all", action="store_true", help="trust all filters that run commands")
     p.add_argument("--revoke", action="store_true", help="no longer trust the filters NAME")
-
-    p = sub.add_parser("map", parents=[colorp],
-                       help="take the releases of a source from a local folder (local "
-                            "development, tests); this repository's config, --global: all")
-    p.add_argument("source", nargs="?", metavar="URL|SOURCE",
-                   help="source URL, or the name of a [source] (without DIR: list its mappings)")
-    p.add_argument("dir", nargs="?", metavar="DIR",
-                   help="local folder: one subdirectory per release, named like its tag, "
-                        "with the assets")
-    p.add_argument("--flat", action="store_true",
-                   help="DIR has the assets of all releases as files: a release is named like "
-                        "the file without its extension (rel1.7z, rel1.xml -> rel1)")
-    p.add_argument("--unset", action="store_true", help="remove the mapping")
-    p.add_argument("--global", dest="glob", action="store_true",
-                   help="in the global git config, for all repositories")
 
     p = sub.add_parser("cache", parents=[colorp],
                        help="show, list or clean up the download cache")
@@ -5085,7 +5084,7 @@ def main(argv=None):
         setup_colors(args.color, repo.top if repo else None)
         if args.cmd == "cache":               # also outside a repository
             return cmd_cache(args)
-        if args.cmd == "map":                 # --global also outside a repository
+        if args.cmd == "source" and args.action == "map":   # --global: also outside one
             return cmd_map(args, repo)
         if not getattr(args, "remote", False):
             MAPPINGS.update((norm_url(u), (d, flat)) for _, _, u, d, flat in

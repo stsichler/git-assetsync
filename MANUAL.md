@@ -12,7 +12,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`restore`](#restore) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`map`](#map) · [`cache`](#cache)
+  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`restore`](#restore) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`source map`](#source-map) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`cache`](#cache)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -194,7 +194,7 @@ line endings normalized) is still unmodified.
 | `trust [NAME…]` | list the filters that run commands; trust them in this repository |
 | `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
-| `map [URL\|SOURCE [DIR]]` | take the releases of a source from a local folder (local development, tests) |
+| `source map [URL\|SOURCE [DIR]]` | take the releases of a source from a local folder (local development, tests) |
 | `cache [ACTION]` | the download cache: show, list, prune, clear |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
@@ -213,7 +213,7 @@ an entry, take many assets).
 | Option | Meaning |
 |---|---|
 | `--color[=WHEN]`, `--no-color` | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
-| `--remote` | ignore [mappings to local folders](#map): ask GitHub or GitLab (commands that look at releases: `status`, `pull`, `diff`, `difftool`, `add`, `set`, `verify`, `releases`, `source`, `filter test`) |
+| `--remote` | ignore [mappings to local folders](#source-map): ask GitHub or GitLab (commands that look at releases: `status`, `pull`, `diff`, `difftool`, `add`, `set`, `verify`, `releases`, `source`, `filter test`) |
 
 ### `status`
 
@@ -805,7 +805,7 @@ assetsync: run 'git assetsync pull <file>' to update
 
 **Push check:** the `pre-push` hook also looks at the commits being pushed:
 an entry synced from a release that isn't on GitHub or GitLab – typically
-pulled from a [local folder](#map) – or whose assets differ from those of
+pulled from a [local folder](#source-map) – or whose assets differ from those of
 the release there is reported:
 
 ```
@@ -853,10 +853,10 @@ keep stdin. `uninstall-hooks` removes the hooks, or only its lines from
 hooks that contain other commands as well. With `core.hooksPath` set, the
 hooks go there (with a warning, since other repositories may use it).
 
-### `map`
+### `source map`
 
 ```
-git assetsync map [URL|SOURCE [DIR]] [--flat] [--global] [--unset]
+git assetsync source map [URL|SOURCE [DIR]] [--flat] [--global] [--unset]
 ```
 
 Takes the releases of a source from the local folder `DIR` instead of
@@ -875,11 +875,11 @@ for all repositories without a mapping of their own – never in
 ```
 
 ```sh
-git assetsync map acme/tool ~/build/tool-releases   # by the name of the [source] (or its URL)
-git assetsync status                                # pending: bin/tool (v1.2 -> v1.3-rc1, local folder)
-git assetsync pull bin/tool                         # takes v1.3-rc1 from the folder
-git assetsync map                                   # list the mappings (scope, overridden ones marked)
-git assetsync map acme/tool --unset                 # remove it again
+git assetsync source map acme/tool ~/build/tool-releases  # by the name of the [source] (or its URL)
+git assetsync status                                      # pending: bin/tool (v1.2 -> v1.3-rc1, local folder)
+git assetsync pull bin/tool                               # takes v1.3-rc1 from the folder
+git assetsync source map                                  # list the mappings (scope, overridden ones marked)
+git assetsync source map acme/tool --unset                # remove it again
 ```
 
 - Each **subdirectory** is a release, named like its tag; its files are
@@ -897,11 +897,11 @@ git assetsync map acme/tool --unset                 # remove it again
   ```
 
   ```sh
-  git assetsync map --flat acme/fw ~/build/fw-out
+  git assetsync source map --flat acme/fw ~/build/fw-out
   ```
 
   The layout is kept with the mapping (`assetsync.<url>.layout = flat`);
-  `map` without `--flat` switches back to subdirectories.
+  `source map` without `--flat` switches back to subdirectories.
 - A release is dated by its **newest file**: the latest release is the one
   built last, also when a build overwrites the files of an existing
   folder (then `status` shows its assets as replaced). The [release
@@ -1381,7 +1381,7 @@ and working tree files (directories) are still what their release gives is
 decided from the recorded `blob` (`tree`). Only the check for new releases
 needs GitHub or GitLab; `--no-fetch` skips it (`new releases not
 checked`). `diff` and `diff --committed` work offline, too, and so does
-everything with a source [mapped to a local folder](#map). `add`, `pull`
+everything with a source [mapped to a local folder](#source-map). `add`, `pull`
 and `diff --upstream` always ask the platform which release to take;
 assets already in the [download cache](#download-cache) are not
 downloaded again.

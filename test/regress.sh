@@ -2125,10 +2125,10 @@ mkdir -p "$L/v1" "$L/v2"
 printf 'one\n' > "$L/v1/t.bin"; printf 'two\n' > "$L/v2/t.bin"
 touch -t 202610121200 "$L/v1/t.bin"; touch -t 202610101200 "$L/v2/t.bin"   # v1 is newer
 new_repo r26
-check "map" "$(git assetsync map https://github.com/acme/loc "$L" | tr '\\' /)" \
+check "map" "$(git assetsync source map https://github.com/acme/loc "$L" | tr '\\' /)" \
   "[local] https://github.com/acme/loc -> $L"
 check "map: in .git/config" "$(git config assetsync.https://github.com/acme/loc.localpath | tr '\\' /)" "$L"
-check "map: list" "$(git assetsync map | tr '\\' /)" "[local] https://github.com/acme/loc -> $L"
+check "map: list" "$(git assetsync source map | tr '\\' /)" "[local] https://github.com/acme/loc -> $L"
 reset_calls
 addc t.bin https://github.com/acme/loc
 check "map: newest by file date, not by name" "$(reg file.t.bin.synced) $(cat t.bin)" "v1 one"
@@ -2154,11 +2154,11 @@ check "map: --remote asks the platform" "$(git assetsync status -s --remote 2>/d
 check "map: verify" "$(git assetsync verify)" "t.bin: verified (v3)"
 # a source given by name
 quiet git assetsync source rename acme/loc loc && git commit -qm rename -- .git-assetsync
-check "map: --unset by source name" "$(git assetsync map loc --unset)" \
+check "map: --unset by source name" "$(git assetsync source map loc --unset)" \
   "removed local mapping for https://github.com/acme/loc"
-check "map: by source name" "$(git assetsync map loc "$L" | cut -d' ' -f1-2)" \
+check "map: by source name" "$(git assetsync source map loc "$L" | cut -d' ' -f1-2)" \
   "[local] https://github.com/acme/loc"
-check "map: not a directory" "$(git assetsync map loc "$L/v1/t.bin" 2>&1 | grep -c 'is not a directory')" "1"
+check "map: not a directory" "$(git assetsync source map loc "$L/v1/t.bin" 2>&1 | grep -c 'is not a directory')" "1"
 # flat: the files of all releases in one folder, rel20260410.7z -> rel20260410
 FL=$T/flatrel
 mkdir -p "$FL/sub" && printf 'ignored\n' > "$FL/sub/x.xml"
@@ -2170,8 +2170,8 @@ touch -t 202501011200 "$FL/rel20250101.tar.gz"
 touch -t 202602131200 "$FL/rel20260213.7z" "$FL/rel20260213.xml"
 touch -t 202604101200 "$FL/rel20260410.7z" "$FL/rel20260410.xml"
 cd "$T"; new_repo r26f
-check "map --flat" "$(git assetsync map --flat https://github.com/acme/flat "$FL" | tr '\\' / | sed 's/^.* -> //')" "$FL (flat)"
-check "map --flat: list" "$(git assetsync map | grep -c '(flat)$')" "1"
+check "map --flat" "$(git assetsync source map --flat https://github.com/acme/flat "$FL" | tr '\\' / | sed 's/^.* -> //')" "$FL (flat)"
+check "map --flat: list" "$(git assetsync source map | grep -c '(flat)$')" "1"
 check "flat: releases by file name" "$(git assetsync releases acme/flat --assets | sed 1d | awk '{print $1}' | oneline)" \
   "rel20260410 rel20260410.7z rel20260410.xml rel20260213 rel20260213.7z rel20260213.xml rel20250101 rel20250101.tar.gz "
 check "flat: one asset of two" "$(git assetsync add v.xml https://github.com/acme/flat 2>&1 | grep -c 'assets')" "1"
@@ -2180,11 +2180,11 @@ check "flat: newest release, the asset chosen" "$(reg file.v.xml.synced) $(cat v
 check "flat: pinned tag" "$(git assetsync pull -n --release rel20260213 v.xml | head -1)" \
   "would: Update v.xml to acme/flat rel20260213 (was rel20260410)"
 check "flat: .tar.gz is one extension" "$(git assetsync releases acme/flat | grep -c '^rel20250101 ')" "1"
-check "map --flat: only with DIR" "$(git assetsync map --flat acme/flat 2>&1)" \
-  "error: --flat goes with the folder: map --flat URL|SOURCE DIR"
-quiet git assetsync map https://github.com/acme/flat "$FL"
+check "map --flat: only with DIR" "$(git assetsync source map --flat acme/flat 2>&1)" \
+  "error: --flat goes with the folder: source map --flat URL|SOURCE DIR"
+quiet git assetsync source map https://github.com/acme/flat "$FL"
 check "map again without --flat: folders" "$(git config assetsync.https://github.com/acme/flat.layout; git assetsync releases acme/flat | sed -n 2p | cut -d' ' -f1)" "sub"
-quiet git assetsync map https://github.com/acme/flat --unset
+quiet git assetsync source map https://github.com/acme/flat --unset
 check "map --unset: layout too" "$(git config --get-regexp 'assetsync\..*flat' | lines)" "0"
 cd "$T/r26"
 # the pre-push check: the release must be on the server, with these assets

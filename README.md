@@ -121,7 +121,7 @@ from other Git repositories see git-filesync.
 - A download cache, so another filter or a second repository needs no new
   download; cleaned up automatically (files unused for 90 days, optionally
   a size limit)
-- Local folders as releases (`map`, like git-filesync's): test a build in
+- Local folders as releases (`source map`, like git-filesync's): test a build in
   another repository before publishing it; the pre-push hook warns about
   entries whose release isn't published yet
 - Colored output, reminder hooks, CI-friendly exit codes
@@ -229,7 +229,7 @@ git assetsync add third_party/zlib/ https://github.com/madler/zlib --asset 'zlib
 | `trust [NAME…]` | list the filters that run commands; trust them in this repository |
 | `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
-| `map [URL\|SOURCE [DIR]]` | take releases from a local folder, to test a build before publishing it |
+| `source map [URL\|SOURCE [DIR]]` | take releases from a local folder, to test a build before publishing it |
 | `cache [ACTION]` | the download cache: show, list, prune, clear |
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
