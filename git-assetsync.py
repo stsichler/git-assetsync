@@ -13,17 +13,18 @@ A repository lists its synced files and directories in .git-assetsync at
 its root (git-config format, like .gitmodules), each taken from release
 assets of a project on GitHub or GitLab:
 
-    [source "owner/tool"]
+    [source "owner/tool"]      ; a project (one per URL), like a remote
         url = https://github.com/owner/tool
-        release = tool-*       ; optional: the newest release (by date) whose
-                               ; tag matches; an exact tag pins the source
-                               ; to that release; without: the latest release
-        prerelease = true      ; optional: prereleases (GitLab: upcoming
-                               ; releases) count too
         type = github          ; optional: github or gitlab, for hosts other
                                ; than github.com, gitlab.com and gitlab.*
     [file "bin/tool.bin"]
         source = owner/tool
+        release = tool-*           ; optional: the newest release (by date)
+                                   ; whose tag matches; an exact tag pins
+                                   ; the file to that release; without: the
+                                   ; latest release
+        prerelease = true          ; optional: prereleases (GitLab: upcoming
+                                   ; releases) count too
         asset = tool-*-linux.bin   ; optional: asset of the release (glob, must
                                    ; match one); without: its only asset
         synced = <tag of the release the file comes from>
@@ -150,9 +151,9 @@ Basic commands - what you need day to day:
                                 an existing directory) the files of a
                                 directory, next to files there; SOURCE: the
                                 name of a [source], or a URL (owner/repo:
-                                github.com) - the source with that URL and
-                                release selection, else a new one named
-                                'owner/repo' (a number appended if taken);
+                                github.com) - the source with that URL, else
+                                a new one named 'owner/repo' (a number
+                                appended if taken);
                                 PATH and .git-assetsync are staged like `git
                                 add` - a plain `git commit` offers the
                                 proposed message
@@ -164,8 +165,9 @@ Basic commands - what you need day to day:
                                 newest one matching (default: the latest)
         --prerelease            prereleases count too (with a pattern, or
                                 instead of the latest)
-        --type github|gitlab    platform of the URL's host (default: derived
-                                from it: github.com, gitlab.com, gitlab.*)
+        --type github|gitlab    platform of the URL's host, for a new source
+                                (default: derived from it: github.com,
+                                gitlab.com, gitlab.*)
         --force                 replace an existing entry (unless modified)
         --overwrite             replace an existing file, or files in an
                                 existing directory (they become the
@@ -187,15 +189,13 @@ Basic commands - what you need day to day:
 
 Advanced commands - change entries, sources and filters; set up:
 
-    set PATH... OPTIONS         change entries, like source does for sources:
-                                only .git-assetsync is staged, pull updates
-        --source URL|SOURCE     take the files from another source (as for
-                                add, with --release/--prerelease/--type); if
-                                they are all files of their source, the
-                                source itself is changed
-        --release TAG|PATTERN, --latest, --prerelease, --no-prerelease,
-        --type github|gitlab    (without --source) another release
-                                selection or platform for these files only
+    set PATH... OPTIONS         change entries: only .git-assetsync is
+                                staged, pull updates
+        --source URL|SOURCE     take the files from another project (a fork,
+                                moved) or [source], as for add (--type: of a
+                                new one)
+        --release TAG|PATTERN, --latest, --prerelease, --no-prerelease
+                                another release selection
         --asset PATTERN, --no-asset  another asset (--no-asset: the only one,
                                 for a directory all)
         --filter NAME, --no-filter  another filter, or none
@@ -206,16 +206,10 @@ Advanced commands - change entries, sources and filters; set up:
                                 about gaps) and stage it; for usual changes
                                 set, source, filter, unlink and mv are safer
 
-    source                      list the [source]s (-v: with URL, release
-                                selection, the release it selects now
-                                (--no-fetch: not asked), file count)
+    source                      list the [source]s (-v: with URL, type and
+                                file count)
     source rename OLD NEW       rename a [source] and all references to it
     source set-url NAME URL     change the URL of a [source]
-    source set-release NAME TAG|PATTERN | --unset
-                                select another release: a tag pins the
-                                source to it, a pattern takes the newest
-                                matching, --unset the latest again
-        --prerelease, --no-prerelease  prereleases count too, or not
     source set-type NAME github|gitlab | --unset
                                 platform of the host (--unset: derived)
                                 (all: only .git-assetsync is staged; pull
@@ -235,7 +229,7 @@ Advanced commands - change entries, sources and filters; set up:
         --unset                 remove the mapping
     source releases SOURCE|URL  list the releases, newest first, marked:
                                 latest, prerelease (GitLab: upcoming), draft,
-                                selected by which [source]; also outside a
+                                selected by which entries; also outside a
                                 repository (with a URL)
         --assets                also list the assets, with their sizes
         -n N, --all             the newest N releases (default 10), or all
@@ -2451,8 +2445,8 @@ class Repo:
 SECTIONS = ("source", "file", "dir", "filter")
 # kinds of entries: their section and the key of their base
 BASE_KEY = {"file": "blob", "dir": "tree"}
-# keys of a [source] that select its release
-SPEC_KEYS = ("release", "prerelease", "type")
+# keys of an entry that select its release
+SPEC_KEYS = ("release", "prerelease")
 
 
 def parse_registry(raw):
@@ -2490,9 +2484,13 @@ def registry_entries(parsed):
     return entries, kinds
 
 
-def source_spec(source):
-    """The release selection keys a [source] has (or a command asks for)."""
-    return {k: source[k] for k in SPEC_KEYS if source.get(k)}
+def entry_spec(values, source):
+    """How an entry selects its release: its release selection keys, and the
+    type of its [source] (for the platform)."""
+    spec = {k: values[k] for k in SPEC_KEYS if values.get(k)}
+    if source.get("type"):
+        spec["type"] = source["type"]
+    return spec
 
 
 def spec_text(spec):
@@ -2589,11 +2587,10 @@ class Registry:
             self._cfg(key, value)
             self.files.setdefault(rel, {})[name] = value
 
-    def find_source(self, url, spec, exclude=None):
-        """Key of a [source] with url and exactly the selection keys of spec."""
+    def find_source(self, url, exclude=None):
+        """Key of the [source] with url (one per URL)."""
         for name, s in self.sources.items():
-            if name != exclude and norm_url(s.get("url", "")) == norm_url(url) and \
-                    source_spec(s) == spec:
+            if name != exclude and norm_url(s.get("url", "")) == norm_url(url):
                 return name
         return None
 
@@ -2606,22 +2603,21 @@ class Registry:
             name, n = f"{base}-{n}", n + 1
         return name
 
-    def source_name(self, url, spec):
-        """Key of the [source] for url+spec (found by URL, not by key),
-        or the key a new one would get."""
-        return self.find_source(url, spec) or self.new_source_name(url)
+    def source_name(self, url):
+        """Key of the [source] with url, or the key a new one would get."""
+        return self.find_source(url) or self.new_source_name(url)
 
-    def add_source(self, url, spec):
-        """Key of the [source] for url+spec, created if necessary."""
-        name = self.find_source(url, spec)
+    def add_source(self, url, kind=None):
+        """Key of the [source] with url, created (with type kind) if needed."""
+        name = self.find_source(url)
         if name:
             return name
         name = self.new_source_name(url)
         self._cfg(f"source.{name}.url", url)
         self.sources[name] = {"url": url}
-        for k, v in spec.items():
-            self._cfg(f"source.{name}.{k}", v)
-            self.sources[name][k] = v
+        if kind:
+            self._cfg(f"source.{name}.type", kind)
+            self.sources[name]["type"] = kind
         return name
 
     def set_source(self, name, key, value):
@@ -2633,11 +2629,6 @@ class Registry:
         else:
             self._cfg(f"source.{name}.{key}", value)
             self.sources[name][key] = value
-
-    def set_spec(self, name, spec):
-        """Set the release selection keys of a [source] to spec."""
-        for key in SPEC_KEYS:
-            self.set_source(name, key, spec.get(key))
 
     def remove_source(self, name):
         self._cfg("--remove-section", f"source.{name}")
@@ -2772,7 +2763,7 @@ class Entry:
 
     name = property(lambda self: self.v.get("source", ""))   # key of the [source]
     url = property(lambda self: self.source.get("url", ""))
-    spec = property(lambda self: source_spec(self.source))
+    spec = property(lambda self: entry_spec(self.v, self.source))
     asset = property(lambda self: self.v.get("asset", ""))
     synced = property(lambda self: self.v.get("synced", ""))
     digest = property(lambda self: self.v.get("digest", ""))
@@ -2831,7 +2822,7 @@ class State:
     warnings: list = field(default_factory=list)
     fetched: bool = False     # upstream checked
     origin: Any = None
-    release: Any = None       # the release the source selects now
+    release: Any = None       # the release the entry selects now
     assets: list = field(default_factory=list)   # its assets the entry takes
     asset: Optional[Asset] = None   # the first of them (the one of a file)
     committed: Optional[str] = None   # see evaluate()
@@ -4208,7 +4199,7 @@ def one_off_hint(ctx, st):
         return
     if selected.tag != st.release.tag:
         rel = path_arg(st.entry.reg.repo, st.entry.shown)
-        print(f"note: {st.entry.shown}: its source still selects {selected.tag} - 'git "
+        print(f"note: {st.entry.shown}: it still selects {selected.tag} - 'git "
               f"assetsync pull {rel}' goes back to it; to stay on {st.release.tag}: 'git "
               f"assetsync set {rel} --release {shlex.quote(st.release.tag)}'")
 
@@ -4265,25 +4256,28 @@ def cmd_pull(ctx, repo, args):
                                  only=paths))
 
 
-def add_source(reg, args):
-    """(url, spec, name) for add. The name of a [source]: that source, unless
-    --release/--prerelease ask for another selection - then its URL with
-    that selection (names are 'owner/repo' like the short form of a URL). A
-    URL: name None, the source is found (by URL and selection) or created
-    later."""
-    given = source_spec({"release": args.release, "type": args.type,
-                         "prerelease": "true" if args.prerelease else None})
+def given_source(reg, args):
+    """(url, spec, name) for add, set --source and filter test: the source
+    args.source names - a [source] or a URL (owner/repo: github.com) - and
+    the release selection the options ask for. name: of its [source] (one
+    per URL), None if there is none yet (add creates it, with --type). The
+    type of an existing source is changed with 'source set-type' only."""
+    spec = {"release": args.release, "prerelease": "true" if args.prerelease else None}
+    spec = {k: v for k, v in spec.items() if v}
     if args.source in reg.sources:            # name of an existing [source]
-        s = reg.sources[args.source]
-        spec = source_spec(s)
-        if not s.get("url"):
+        url, name = reg.sources[args.source].get("url"), args.source
+        if not url:
             raise FsError(f'[source "{args.source}"] in {REGISTRY} has no url')
-        if all(spec.get(k) == v for k, v in given.items()):
-            return s["url"], spec, args.source
-        if spec.get("type") and not given.get("type"):
-            given["type"] = spec["type"]
-        return s["url"], given, None
-    return source_url(args.source), given, None
+    else:
+        url = source_url(args.source)
+        name = reg.find_source(url)
+    kind = reg.sources[name].get("type") if name else None
+    if args.type and name and args.type != kind:
+        raise FsError(f"source {name} is of type {kind or '(derived from the host)'} - change "
+                      f"it with 'git assetsync source set-type {name} {args.type}'")
+    if kind or args.type:
+        spec["type"] = kind or args.type
+    return url, spec, name
 
 
 def large_binary_hint(repo, rels):
@@ -4377,10 +4371,10 @@ def cmd_add(ctx, repo, args):
         raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
                       f"'git assetsync filter add {args.filter} ...'")
     steps = [shlex.join(["apply", "*", args.filter])] if args.filter else []
-    url, spec, named = add_source(reg, args)
+    url, spec, named = given_source(reg, args)
     origin, release = ctx.release(url, spec)
     assets = select_assets(release, args.asset, origin.label, is_dir)
-    name = named or reg.source_name(url, spec)
+    name = named or reg.source_name(url)
     if is_dir and not args.asset and len(assets) > 1:
         print(f"{shown_rel}: all {plural(len(assets), 'asset')} of {name} {release.tag}: "
               + ", ".join(a.name + (f" ({human_size(a.size)})" if a.size is not None else "")
@@ -4420,10 +4414,12 @@ def cmd_add(ctx, repo, args):
                                   overwrite, base)
     if rel in reg.files:
         reg.remove_file(rel, keep_source=named)
-    name = named or reg.add_source(url, spec)
+    name = named or reg.add_source(url, spec.get("type"))
     reg.new_entry(rel, kind)
     entry = Entry(reg, rel)
-    for k, v in (("source", name), ("asset", args.asset), ("filter", args.filter),
+    for k, v in (("source", name), ("release", spec.get("release")),
+                 ("prerelease", spec.get("prerelease")), ("asset", args.asset),
+                 ("filter", args.filter),
                  ("synced", release.tag), ("digest", digest),
                  ("filterhash", filter_hash(steps, reg.filters, repo)), (BASE_KEY[kind], base)):
         if v:
@@ -4518,47 +4514,18 @@ def cmd_edit(ctx, repo, args):
     return EXIT_OK
 
 
-def move_to_source(reg, name, entries, url, spec, named=None):
-    """Point entries of [source] name at the source with url and spec - or
-    exactly at [source] named. If they are all files of the source and no
-    such source exists, the source itself is changed; otherwise they move
-    to it (found or created) and the source is split, or removed when left
-    without files. Returns a description of the change."""
-    source = reg.sources[name]
-    old_url, old = source.get("url", ""), source_spec(source)
-    new_url = norm_url(url) != norm_url(old_url)
-
-    def text(u, sp):
-        return f"{u} ({spec_text(sp)})" if new_url else spec_text(sp)
-    target = named or reg.find_source(url, spec, exclude=name)
-    if not target and set(reg.source_files(name)) == {e.rel for e in entries}:
-        if new_url:
-            reg.set_source(name, "url", url)
-        reg.set_spec(name, spec)
-        return f"{name}: {text(old_url, old)} -> {text(url, spec)}"
-    target = target or reg.add_source(url, spec)
-    for e in entries:
-        reg.set_file(e.rel, "source", target)
-    rest = len(reg.source_files(name))
-    if not rest:
-        reg.remove_source(name)
-    desc = f"{', '.join(e.rel for e in entries)}: {name} -> {target} ({text(url, spec)})"
-    return desc + (f"; {name} keeps {plural(rest, 'other file')}" if rest else "")
-
-
 def cmd_set(ctx, repo, args):
-    """Change entries - their source, release selection or asset - where
-    add would need --force, like 'source' does for sources. Only
-    .git-assetsync is changed (and staged); pull then updates the files.
-    The base (blob, digest) is kept, so local modifications stay
-    recognized; with another URL or asset, which release asset the file
-    comes from is unknown until the next pull (synced removed)."""
-    select = args.release is not None or args.latest or args.prerelease is not None or \
-        args.type is not None
+    """Change entries - their source, release selection, asset or filter -
+    where add would need --force. Only .git-assetsync is changed (and
+    staged); pull then updates the files. The base (blob, digest) is kept,
+    so local modifications stay recognized; with another source or asset,
+    which release asset the file comes from is unknown until the next pull
+    (synced removed)."""
+    select = args.release is not None or args.latest or args.prerelease is not None
     if not (args.source or select or args.asset is not None or args.no_asset or
             args.filter or args.no_filter):
-        raise FsError("nothing to change: give --source, --release/--latest/--prerelease/"
-                      "--type, --asset/--no-asset or --filter/--no-filter")
+        raise FsError("nothing to change: give --source, --release/--latest/--prerelease, "
+                      "--asset/--no-asset or --filter/--no-filter")
     reg = Registry(repo)
     if args.filter and args.filter not in reg.filters:
         raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
@@ -4569,41 +4536,39 @@ def cmd_set(ctx, repo, args):
     entries = select_entries(repo, reg, args.paths)
     would = "would: " if args.dry_run else ""
     changed = False
-    given = add_source(reg, args) if args.source else None      # (url, spec, named)
-    groups = {}
-    for e in entries:
-        groups.setdefault(e.name, []).append(e)
-    for name, ents in groups.items():
-        source = reg.sources.get(name)
-        if not source or not source.get("url"):
-            raise FsError(f"{ents[0].rel}: its [source \"{name}\"] in {REGISTRY} has no url")
-        if given:
-            url, spec, named = given
-        elif select:
-            url, spec, named = source["url"], source_spec(source), None
+    if args.source:           # another project (fork, moved) or [source]
+        url, spec, named = given_source(reg, SimpleNamespace(
+            source=args.source, release=None, prerelease=None, type=args.type))
+        platform_of(url, spec.get("type"))       # a usable URL and type
+        target = named or reg.source_name(url)
+        for e in [e for e in entries if e.name != target]:
+            old, other_url = e.name, norm_url(e.url) != norm_url(url)
+            print(f"{would}{e.shown}: source {old} -> {target}" + ("" if named else f" ({url})"))
+            target = reg.add_source(url, spec.get("type"))
+            e.set("source", target)
+            if other_url:     # another project: which of its assets is not known yet
+                e.set("synced", None)
+            if old in reg.sources and not reg.source_files(old):
+                reg.remove_source(old)
+            changed = True
+    if select:
+        for e in entries:
+            old = {k: e.v[k] for k in SPEC_KEYS if e.v.get(k)}
+            new = dict(old)
             if args.release is not None:
-                spec["release"] = args.release
+                new["release"] = args.release
             if args.latest:
-                spec.pop("release", None)
+                new.pop("release", None)
             if args.prerelease is not None:
                 if args.prerelease:
-                    spec["prerelease"] = "true"
+                    new["prerelease"] = "true"
                 else:
-                    spec.pop("prerelease", None)
-            if args.type is not None:
-                spec["type"] = args.type
-        else:
-            continue
-        if named == name or not named and norm_url(url) == norm_url(source["url"]) \
-                and spec == source_spec(source):
-            continue
-        platform_of(url, spec.get("type"))       # a usable URL and type
-        new_url = norm_url(url) != norm_url(source["url"])
-        print(would + move_to_source(reg, name, ents, url, spec, named))
-        changed = True
-        if new_url:      # another project: which of its assets is not known yet
-            for e in ents:
-                e.set("synced", None)
+                    new.pop("prerelease", None)
+            if new != old:
+                print(f"{would}{e.shown}: {spec_text(old)} -> {spec_text(new)}")
+                for k in SPEC_KEYS:
+                    e.set(k, new.get(k))
+                changed = True
     if args.asset is not None or args.no_asset:
         new = None if args.no_asset else args.asset
         for e in entries:
@@ -4786,7 +4751,7 @@ def cmd_cache(args):
 
 def cmd_releases(ctx, repo, args):
     """List releases newest first, marked: latest (as the platform says),
-    prerelease, draft, and which sources of this repository select them -
+    prerelease, draft, and which entries of this repository select them -
     a help for add and set."""
     reg = Registry(repo) if repo else None
     if reg and args.source in reg.sources:
@@ -4805,18 +4770,19 @@ def cmd_releases(ctx, repo, args):
         return EXIT_OK
     latest = origin.latest()
     selected = {}
-    for name, s in sorted(reg.sources.items()) if reg else []:
-        if norm_url(s.get("url", "")) == norm_url(url):
+    for e in reg.entries() if reg else []:
+        if norm_url(e.url) == norm_url(url):
             try:
-                selected.setdefault(ctx.release(url, source_spec(s))[1].tag, []).append(name)
-            except FsError as e:
-                warn(f"{name}: {e}")
+                selected.setdefault(ctx.release(url, e.spec)[1].tag, []).append(e.shown)
+            except FsError as err:
+                warn(f"{e.shown}: {err}")
     width = max(len(r.tag) for r in rels)
     for r in rels:
         flags = (["latest"] if latest and r.tag == latest.tag else []) + \
             ([("upcoming" if isinstance(origin, GitLab) else "prerelease")] if r.prerelease
              else []) + (["draft"] if r.draft else []) + \
-            ([f"selected by {and_list(selected[r.tag])}"] if r.tag in selected else [])
+            ([f"selected by {and_list(selected[r.tag][:3] + ([f'{len(selected[r.tag]) - 3} more'] if len(selected[r.tag]) > 3 else []))}"]
+             if r.tag in selected else [])
         title = r.title if r.title and r.title != r.tag else ""
         line = f"{paint(f'{r.tag:<{width}}', 'yellow')}  {r.date[:10] or '-':<10}  {title}"
         print(line.rstrip() + (f"  {paint('(' + ', '.join(flags) + ')', 'cyan')}"
@@ -5039,10 +5005,9 @@ def cmd_mv(ctx, repo, args):
 
 
 def source_text(s, name, reg):
-    """'URL (selection, N files)' for source -v."""
-    return (f"{s.get('url', '')} ({spec_text(source_spec(s))}"
-            + (f", type {s['type']}" if s.get("type") else "")
-            + f", {plural(len(reg.source_files(name)), 'file')})")
+    """'URL (type, N files)' for source -v."""
+    return (f"{s.get('url', '')} (" + (f"type {s['type']}, " if s.get("type") else "")
+            + f"{plural(len(reg.source_files(name)), 'file')})")
 
 
 def cmd_source(ctx, repo, args):
@@ -5053,22 +5018,12 @@ def cmd_source(ctx, repo, args):
     action = args.action
     if not action:
         for name, s in sorted(reg.sources.items()):
-            if not args.verbose:
-                print(name)
-                continue
-            now = ""
-            if ctx.fetch and s.get("url"):
-                try:
-                    now = f" - now {ctx.release(s['url'], source_spec(s))[1].tag}"
-                except FsError as e:
-                    warn(f"{name}: {e}")
-            print(f"{name}\t{source_text(s, name, reg)}{now}")
+            print(f"{name}\t{source_text(s, name, reg)}" if args.verbose else name)
         return EXIT_OK
     if args.name not in reg.sources:
         raise FsError(f"no source '{args.name}' in {REGISTRY}"
                       + (f" (known: {', '.join(sorted(reg.sources))})" if reg.sources else ""))
     s = reg.sources[args.name]
-    old = source_spec(s)
     if action == "rename":
         new = args.value
         if not new or "\n" in new:
@@ -5077,49 +5032,22 @@ def cmd_source(ctx, repo, args):
             raise FsError(f"source '{new}' already exists")
         reg.rename_source(args.name, new)
         done = f"renamed {args.name} -> {new}"
-    else:
-        url, spec = s.get("url", ""), dict(old)
-        if action == "set-url":
-            url = source_url(args.value)
-        elif action == "set-release":
-            if args.unset and args.value or not (args.unset or args.value or
-                                                 args.prerelease is not None):
-                raise FsError("give either TAG|PATTERN or --unset (or only --prerelease / "
-                              "--no-prerelease)")
-            if args.value:
-                spec["release"] = args.value
-            elif args.unset:
-                spec.pop("release", None)
-            if args.prerelease is not None:
-                if args.prerelease:
-                    spec["prerelease"] = "true"
-                else:
-                    spec.pop("prerelease", None)
-        else:   # set-type
-            if bool(args.unset) == bool(args.value):
-                raise FsError("give either github|gitlab or --unset")
-            if args.value and args.value not in PLATFORMS:
-                raise FsError(f"unknown type '{args.value}' (supported: "
-                              f"{', '.join(sorted(PLATFORMS))})")
-            if args.value:
-                spec["type"] = args.value
-            else:
-                spec.pop("type", None)
-        other = next((n for n, o in reg.sources.items() if n != args.name
-                      and norm_url(o.get("url", "")) == norm_url(url) and source_spec(o) == spec),
-                     None)
+    elif action == "set-url":
+        url = source_url(args.value)
+        other = reg.find_source(url, exclude=args.name)
         if other:
-            raise FsError(f"source '{other}' already has this URL and selection - move the files "
-                          f"to it with 'git assetsync set <file>... --source {other}'")
-        if action == "set-url":
-            reg.set_source(args.name, "url", url)
-            done = f"{args.name}: url {url}"
-        else:
-            for key in SPEC_KEYS:
-                reg.set_source(args.name, key, spec.get(key))
-            done = f"{args.name}: {spec_text(spec)}" + \
-                (f", type {spec['type']}" if spec.get("type") else "") + \
-                (f" (was: {spec_text(old)})" if action == "set-release" and old != spec else "")
+            raise FsError(f"source '{other}' already has this URL - move the files to it with "
+                          f"'git assetsync set <file>... --source {other}'")
+        reg.set_source(args.name, "url", url)
+        done = f"{args.name}: url {url}"
+    else:   # set-type
+        if bool(args.unset) == bool(args.value):
+            raise FsError("give either github|gitlab or --unset")
+        if args.value and args.value not in PLATFORMS:
+            raise FsError(f"unknown type '{args.value}' (supported: "
+                          f"{', '.join(sorted(PLATFORMS))})")
+        reg.set_source(args.name, "type", args.value or None)
+        done = f"{args.name}: type {args.value or '(derived from the host)'}"
     reg.finish()
     print(f"{paint(done, 'green')}; {REGISTRY} staged")
     files = reg.source_files(args.value if action == "rename" else args.name)
@@ -5202,7 +5130,7 @@ def filter_test(ctx, repo, reg, args):
     with Work(what, repo.top, {}, trusted) as work:
         files = {}
         if args.source:
-            url, spec, _ = add_source(reg, args)
+            url, spec, _ = given_source(reg, args)
             origin, release = ctx.release(url, spec)
             assets = select_assets(release, args.asset, origin.label, True)
             for a in assets:
@@ -5536,7 +5464,7 @@ def main(argv=None):
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories")
     p.add_argument("--all", action="store_true", help="all files with something to pull")
     p.add_argument("--release", metavar="TAG|PATTERN",
-                   help="this release instead of the one the source selects (a pattern: the "
+                   help="this release instead of the one the entry selects (a pattern: the "
                         "newest matching), once - the selection stays as it is")
     p.add_argument("--overwrite", action="store_true", help="discard local modifications")
     p.add_argument("--no-edit", action="store_true", help="commit without opening the editor")
@@ -5649,7 +5577,8 @@ def main(argv=None):
                    help="prereleases count too")
     g.add_argument("--no-prerelease", dest="prerelease", action="store_false",
                    help="prereleases don't count")
-    p.add_argument("--type", choices=sorted(PLATFORMS), help="platform of the source's host")
+    p.add_argument("--type", choices=sorted(PLATFORMS),
+                   help="with --source, a new one: platform of its host")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--asset", metavar="PATTERN", help="another asset (glob, exactly one match)")
     g.add_argument("--no-asset", action="store_true",
@@ -5688,10 +5617,7 @@ def main(argv=None):
                        help="list or change the [source]s (like 'git remote'), list their releases, map them "
                             "to local folders")
     p.add_argument("-v", "--verbose", action="store_true",
-                   help="list with URL, release selection, the release it selects now and "
-                        "file count")
-    p.add_argument("--no-fetch", action="store_true",
-                   help="with -v: don't ask the platform which release is selected now")
+                   help="list with URL, type and file count")
     actions = p.add_subparsers(dest="action", metavar="ACTION")
     a = actions.add_parser("rename", parents=[colorp],
                            help="rename a source and all references to it")
@@ -5700,17 +5626,6 @@ def main(argv=None):
     a = actions.add_parser("set-url", parents=[colorp], help="change the URL of a source")
     a.add_argument("name", metavar="NAME", help="key of the [source]")
     a.add_argument("value", metavar="URL")
-    a = actions.add_parser("set-release", parents=[colorp],
-                           help="select another release: a tag pins the source to it, a "
-                                "pattern takes the newest matching; --unset: the latest")
-    a.add_argument("name", metavar="NAME", help="key of the [source]")
-    a.add_argument("value", metavar="TAG|PATTERN", nargs="?")
-    a.add_argument("--unset", action="store_true", help="follow the latest release again")
-    g = a.add_mutually_exclusive_group()
-    g.add_argument("--prerelease", dest="prerelease", action="store_true", default=None,
-                   help="prereleases count too")
-    g.add_argument("--no-prerelease", dest="prerelease", action="store_false",
-                   help="prereleases don't count (default)")
     a = actions.add_parser("set-type", parents=[colorp],
                            help="platform of the source's host (--unset: derived from it)",
                            description="Set the platform of the source's host (--unset: "
@@ -5765,7 +5680,8 @@ def main(argv=None):
     a.add_argument("files", nargs="*", metavar="FILE",
                    help="input files, as if they were the assets (a directory: its files)")
     a.add_argument("--source", metavar="URL|SOURCE",
-                   help="the input: the assets of the release this source selects (as for add)")
+                   help="the input: the assets of a release of this source (the latest; "
+                        "--release: another, as for add)")
     a.add_argument("--release", metavar="TAG|PATTERN", help="with --source: as for add")
     a.add_argument("--prerelease", action="store_true", help="with --source: as for add")
     a.add_argument("--type", choices=sorted(PLATFORMS), help="with --source: as for add")

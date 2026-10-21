@@ -84,10 +84,10 @@ Git-config format:
 	blob = 8d01b7aa…             # the file as committed (git's blob id)
 [source "acme/multi"]
 	url = https://github.com/acme/multi
-	release = toolA-*            # newest release whose tag matches
-	prerelease = true            # optional: prereleases count too
 [file "firmware/fw.bin"]
 	source = acme/multi
+	release = toolA-*            # newest release whose tag matches
+	prerelease = true            # optional: prereleases count too
 	asset = fw-*.bin
 	synced = toolA-20261016
 	digest = sha256:…
@@ -108,20 +108,19 @@ Git-config format:
 	tree = …                     # the directory as committed (git's tree id)
 ```
 
-- **`[source "NAME"]`** – a project and which of its releases to take.
-  `url` is its web address. Without `release`, the source follows the
-  latest release; `release` is a tag (the source is pinned to that
-  release) or a pattern with `*`, `?` or `[…]` (the newest release whose
-  tag matches). `prerelease = true` lets prereleases count. `type`
-  (`github` or `gitlab`) names the platform; it is only needed for hosts
-  other than github.com, gitlab.com and those whose name starts with
-  `gitlab` (like `gitlab.example.com`). `add` names new sources
-  `owner/repo` after the URL, with a number appended if that name is
-  taken (`acme/tool-2`: same project, other release selection).
+- **`[source "NAME"]`** – a project, like a Git remote: `url` is its web
+  address, one source per URL. `type` (`github` or `gitlab`) names the
+  platform; it is only needed for hosts other than github.com, gitlab.com
+  and those whose name starts with `gitlab` (like `gitlab.example.com`).
+  `add` names new sources `owner/repo` after the URL, with a number
+  appended if that name belongs to another URL.
 - **`[file "PATH"]`** – a file of the repository (path relative to the
-  root) and the asset it comes from: `source` (name of its `[source]`) and
-  `asset` (glob pattern; without it, the release's only asset) say what
-  to take. `synced`, `digest` and `blob`
+  root) and the asset it comes from: `source` (name of its `[source]`),
+  which release – without `release`, the latest; `release` is a tag (the
+  file is pinned to that release) or a pattern with `*`, `?` or `[…]`
+  (the newest release whose tag matches); `prerelease = true` lets
+  prereleases count – and `asset` (glob pattern; without it, the
+  release's only asset) say what to take. `synced`, `digest` and `blob`
   are written by git-assetsync and record what the committed file is
   based on: the release tag, the asset's SHA-256 and the id of the file
   as `git add` stores it (after line-ending conversion and Git LFS). With
@@ -226,7 +225,7 @@ Basic commands – what you need day to day:
 |---|---|
 | [`set PATH… OPTIONS`](#set) | change entries: source, release selection, asset, filter |
 | [`edit`](#edit) | open `.git-assetsync` in the editor, then check and stage it |
-| [`source [ACTION …]`](#source) | list sources; rename them, change URL, release selection or type |
+| [`source [ACTION …]`](#source) | list sources; rename them, change URL or type |
 | [`source map [URL\|SOURCE [DIR]]`](#source-map) | take the releases of a source from a local folder (local development, tests) |
 | [`source releases SOURCE\|URL`](#source-releases) | list the releases of a project, with their assets |
 | [`filter [ACTION …]`](#filter) | list filters; show, test, add, set, rename or remove them |
@@ -298,8 +297,8 @@ Uncommitted changes:
 	modified:   bin/tool  (NOT ALLOWED)
 ```
 
-- **Upstream changes to pull** – `pending`: the source selects another
-  release than the one the entry comes from (`v1.0 -> v1.1`), the asset of
+- **Upstream changes to pull** – `pending`: the entry selects another
+  release than the one it comes from (`v1.0 -> v1.1`), the asset of
   that release was replaced (re-uploaded with other content), or the
   filter was changed (`filter changed`). `new`: an entry without a synced
   release yet, or one not in the working tree yet.
@@ -360,7 +359,7 @@ one commit.
 | Option | Meaning |
 |---|---|
 | `--all` | all entries with something to pull (with `--overwrite` also modified ones) |
-| `--release TAG\|PATTERN` | this release instead of the one the source selects, once – see below; a pattern takes the newest matching release; not with `--all` |
+| `--release TAG\|PATTERN` | this release instead of the one the entry selects, once – see below; a pattern takes the newest matching release; not with `--all` |
 | `--overwrite` | discard local modifications: restore or update the file (directory) anyway; in a directory also replace files of yours in the way of the release's |
 | `--no-edit` | commit with the proposed message, without opening the editor |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` shows it (assets, source, release selection, filter, the release synced) |
@@ -373,20 +372,19 @@ how to commit them with the proposed message; the exit code is then 1.
 
 **Another release, once:** `pull --release TAG PATH…` updates the files to
 that release instead of the selected one – also an older one, e.g. to go
-back after a broken update. The release selection of the source stays as
-it is, so `status` then shows the selected release as pending, and a plain
+back after a broken update. The release selection of the entries stays
+as it is, so `status` then shows the selected release as pending, and a plain
 `pull` (or `pull --all`) goes back to it; `pull --release` says so:
 
 ```console
 $ git assetsync pull --release v1.0 bin/tool
 [main 7d2e0b1] Update bin/tool to acme/tool v1.0 (was v1.1)
  2 files changed, 2 insertions(+), 2 deletions(-)
-note: bin/tool: its source still selects v1.1 - 'git assetsync pull bin/tool' goes back to it; to stay on v1.0: 'git assetsync set bin/tool --release v1.0'
+note: bin/tool: it still selects v1.1 - 'git assetsync pull bin/tool' goes back to it; to stay on v1.0: 'git assetsync set bin/tool --release v1.0'
 ```
 
-To keep the files on that release, pin them instead: [`set
---release`](#set) for some files, [`source set-release`](#source) for all
-files of the source. [`diff --upstream --release TAG PATH…`](#diff)
+To keep the files on that release, pin them instead with [`set
+--release`](#set). [`diff --upstream --release TAG PATH…`](#diff)
 shows beforehand what `pull --release` would bring.
 
 ### `diff`
@@ -528,10 +526,9 @@ commit --no-edit` takes it as it is).
 - **`SOURCE`** is the name of a `[source]` in `.git-assetsync`, or a URL
   (`https://github.com/owner/repo`, `https://gitlab.com/group/project`,
   also with subgroups; the URL of any page of the project works as well);
-  `owner/repo` is short for a repository on github.com. A URL takes the source with that URL and the
-  same release selection, or creates one. A source name takes that source
-  with its release selection – unless `--release`/`--prerelease` ask for
-  another one, then its URL with that selection.
+  `owner/repo` is short for a repository on github.com. A URL takes the
+  source with that URL, or creates one (with `--type`, if given). The
+  release selection – `--release`, `--prerelease` – is the entry's.
 - **`--asset PATTERN`** selects the assets: a glob pattern (`*`, `?`,
   `[…]`), e.g. `--asset 'tool-*-linux-x64.tar.gz'`. Quote it, so the
   shell doesn't expand it. The pattern is recorded and used for later
@@ -625,32 +622,25 @@ it, files of yours too (`mv` says how many).
 ### `set`
 
 ```
-git assetsync set PATH… [--source URL|SOURCE] [--release TAG|PATTERN | --latest]
-                        [--prerelease | --no-prerelease] [--type github|gitlab]
+git assetsync set PATH… [--source URL|SOURCE [--type github|gitlab]] [--release TAG|PATTERN | --latest]
+                        [--prerelease | --no-prerelease]
                         [--asset PATTERN | --no-asset] [--filter NAME | --no-filter] [-n]
 ```
 
 Changes the entries of files and directories – their source, release
-selection, asset or filter –
-where `add` would need `--force`. It does for files what
-[`source`](#source) does for sources: only `.git-assetsync` is changed (and
-staged); `status` then shows what changes, and `pull` updates the files and
-commits the change with them.
+selection, asset or filter – where `add` would need `--force`. Only
+`.git-assetsync` is changed (and staged); `status` then shows what
+changes, and `pull` updates the files and commits the change with them.
 
 | Option | Effect |
 |---|---|
-| `--source URL\|SOURCE` | take the files from another project – a fork, a moved project – or another `[source]`. URL, name and `--release` / `--prerelease` / `--type` are taken as for [`add`](#add) |
-| `--release TAG\|PATTERN`, `--latest` | (without `--source`) another release selection for these files: a tag pins them, a pattern takes the newest matching release, `--latest` follows the latest release |
-| `--prerelease`, `--no-prerelease` | (without `--source`) let prereleases count for these files, or not |
-| `--type github\|gitlab` | (without `--source`) the platform of the host |
+| `--source URL\|SOURCE` | take the files from another project – a fork, a moved project – or another `[source]`, as for [`add`](#add); a source left without files is removed |
+| `--release TAG\|PATTERN`, `--latest` | another release selection for these files: a tag pins them, a pattern takes the newest matching release, `--latest` follows the latest release |
+| `--prerelease`, `--no-prerelease` | let prereleases count for these files, or not |
+| `--type github\|gitlab` | with `--source` a URL of a new source: the platform of its host |
 | `--asset PATTERN`, `--no-asset` | another asset of the release; `--no-asset`: the release's only asset (a directory: all) |
 | `--filter NAME`, `--no-filter` | use another named [filter](#filters), or none |
 | `-n`, `--dry-run` | only show what would change |
-
-If the files are all files of their source and no source with that URL and
-selection exists yet, the source itself is changed; otherwise they move to
-that source (created if necessary), and a source left without files is
-removed.
 
 The base the files are compared with (`blob`, `digest`) is kept, so local
 modifications stay modifications. With another URL or asset, which release
@@ -698,10 +688,9 @@ again.
 ### `source`
 
 ```
-git assetsync source [-v [--no-fetch]]
+git assetsync source [-v]
 git assetsync source rename OLD NEW
 git assetsync source set-url NAME URL
-git assetsync source set-release NAME (TAG|PATTERN | --unset) [--prerelease | --no-prerelease]
 git assetsync source set-type NAME (github|gitlab | --unset)
 ```
 
@@ -712,21 +701,16 @@ updates them and commits the change of the source along with them.
 
 | Action | Meaning |
 |---|---|
-| (none) | list the sources; `-v`: with URL, release selection, file count and the release the source selects now (asked from the platform; `--no-fetch`: not) |
+| (none) | list the sources; `-v`: with URL, type and file count |
 | `rename OLD NEW` | rename a source and all references to it |
 | `set-url NAME URL` | change the URL, e.g. after the project moved |
-| `set-release NAME TAG\|PATTERN` | select another release: a tag pins the source to it, a pattern takes the newest matching release (see [Selecting the release](#selecting-the-release)) |
-| `set-release NAME --unset` | follow the latest release again |
-| `--prerelease`, `--no-prerelease` | (with `set-release`, also alone) let prereleases count, or not |
 | `set-type NAME github\|gitlab` | the platform of the host; `--unset`: derived from the host again |
 
-Two sources with the same URL and release selection are not allowed: a
-change that would make one the same as another is refused, with a hint
-to move the files to the other one (`set <file>... --source <source>`).
-
-To give only some files of a source another release selection, use
-[`set`](#set), e.g. `git assetsync set lib/x.h --release v2.0` – they get a
-source of their own.
+There is one source per URL: `set-url` to the URL of another source is
+refused, with a hint to move the files to that one (`set <file>...
+--source <source>`). Which release a file takes is its own (see
+[Selecting the release](#selecting-the-release)): to change it, use
+[`set`](#set), e.g. `git assetsync set lib/x.h --release v2.0`.
 
 ### `source map`
 
@@ -1055,8 +1039,8 @@ hooks go there (with a warning, since other repositories may use it).
 
 ### Selecting the release
 
-The `release` key of a source (or `add --release`) decides which release
-its files take:
+The `release` key of an entry (`add --release`, `set --release`) decides
+which release its file or directory takes:
 
 | `release` | Release taken |
 |---|---|
@@ -1080,12 +1064,11 @@ than one, that is an error – also when an older release would have one, so
 a renamed asset doesn't go unnoticed. Change the pattern with
 `git assetsync set PATH --asset 'NEW-*'` and pull.
 
-To switch a source to another release selection, use
-[`source set-release`](#source) (e.g.
-`git assetsync source set-release acme/tool v2.0`) and pull its files; the
-change is committed with them. For some of its files only, use
-[`set --release`](#set). To take another release only once (the
-selection stays), use [`pull --release`](#pull).
+To switch entries to another release selection, use [`set
+--release`](#set) (e.g. `git assetsync set bin/tool --release v2.0`, or
+for several, `set lib/ bin/ --latest`) and pull them; the change is
+committed with them. To take another release only once (the selection
+stays), use [`pull --release`](#pull).
 
 ### Filters
 

@@ -202,7 +202,7 @@ Release notes:
 Each commit contains the file and its updated entry in `.git-assetsync`.
 `--release` selects other releases: `--release 'tool-*'` follows the
 newest release whose tag matches, `--release v1.0` pins the file to that
-release. `git assetsync source set-release` changes that later.
+release. `git assetsync set PATH --release …` changes that later.
 
 A directory, unpacked from an archive by a filter – with a trailing `/`; files
 of your own may be there too:
@@ -232,7 +232,7 @@ Advanced commands:
 |---|---|
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
 | `edit` | open `.git-assetsync` in the editor, then check and stage it |
-| `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
+| `source [ACTION …]` | list sources; rename them, change URL or type |
 | `source map [URL\|SOURCE [DIR]]` | take releases from a local folder, to test a build before publishing it |
 | `source releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |

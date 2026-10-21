@@ -310,7 +310,7 @@ check "add stages, like git add" "$(git status --porcelain | oneline)" "A  .git-
 check "add: says how to commit" "$(echo "$OUT" | grep -cxE '    git commit|\(it offers the proposed commit message; a copy stays in \.git/ASSETSYNC_SQUASH_MSG\)')" "2"
 check "add: file is the asset" "$(cat bin/tool.bin)" "tool 1.0"
 check "add: source" "$(reg source.acme/tool.url)" "https://github.com/acme/tool"
-check "add: no release key (latest)" "$(reg source.acme/tool.release)" ""
+check "add: no release key (latest)" "$(reg file.bin/tool.bin.release)" ""
 check "add: entry" "$(reg file.bin/tool.bin.source) $(reg file.bin/tool.bin.asset) $(reg file.bin/tool.bin.synced)" \
   "acme/tool tool-*.bin v1.0"
 check "add: digest" "$(reg file.bin/tool.bin.digest)" "sha256:$(sha "$F/tool-1.0.bin")"
@@ -447,19 +447,19 @@ done
 new_repo r2
 quiet asd add a.zip acme/multi --asset '*.zip' --release 'toolA-*'
 check "pattern: newest by date, not by name" "$(cat a.zip)" "toolA-20261015"
-check "pattern: release key" "$(reg source.acme/multi.release)" "toolA-*"
+check "pattern: release key, in the entry" "$(reg file.a.zip.release) $(reg source.acme/multi.release)" "toolA-* "
 quiet asd add a2.zip acme/multi --asset '*.zip'
 check "source name without options: that source" "$(cat a2.zip) $(reg file.a2.zip.source)" "toolA-20261015 acme/multi"
 quiet asd add latest.zip https://github.com/acme/multi --asset '*.zip'
 check "latest: no prerelease, no draft" "$(cat latest.zip)" "toolA-20261015"
-check "URL without options: another source" "$(reg file.latest.zip.source) $(reg source.acme/multi-2.release)" "acme/multi-2 "
+check "URL: the source with that URL, one per URL" "$(reg file.latest.zip.source) $(reg file.latest.zip.release)" "acme/multi "
 quiet asd add b.zip acme/multi --asset '*.zip' --release toolB-20261017
 check "exact tag: pinned" "$(cat b.zip)" "toolB-20261017"
-check "source name with other --release: its URL, another source" "$(reg file.b.zip.source) $(reg source.acme/multi-3.release)" \
-  "acme/multi-3 toolB-20261017"
+check "source name with --release: the same source" "$(reg file.b.zip.source) $(reg file.b.zip.release)" \
+  "acme/multi toolB-20261017"
 quiet asd add pre.zip acme/multi --asset '*.zip' --release 'toolA-*' --prerelease
 check "pattern with --prerelease" "$(cat pre.zip)" "toolA-20261019"
-check "prerelease key" "$(git config -f .git-assetsync --get-regexp 'source\..*\.prerelease' | cut -d' ' -f2)" "true"
+check "prerelease key" "$(reg file.pre.zip.prerelease)" "true"
 quiet asd add prelatest.zip acme/multi --asset '*.zip' --prerelease
 check "--prerelease without pattern: newest incl. prereleases" "$(cat prelatest.zip)" "toolA-20261019"
 quiet asd add pinpre.zip acme/multi --asset '*.zip' --release toolA-20261019
@@ -678,7 +678,7 @@ check "same URL and selection: one source" "$(git config -f .git-assetsync --get
 check "source by name" "$(rc asd add three.bin acme/pair --asset one.bin)" "0"
 git reset -q --hard
 quiet asd add x.bin acme/pair --asset one.bin --release v1
-check "source name with another --release: a new source" "$(reg file.x.bin.source) $(reg source.acme/pair-2.release)" "acme/pair-2 v1"
+check "source name with --release: the same source" "$(reg file.x.bin.source) $(reg file.x.bin.release)" "acme/pair v1"
 git reset -q --hard; rm -f x.bin
 check "already synced: refused" "$(asd add one.bin acme/pair --asset two.bin 2>&1)" \
   "error: 'one.bin' is already synced (use --force to replace its entry)"
@@ -735,7 +735,7 @@ check "uncommitted other entry: pull refused" "$(git assetsync pull --no-edit su
 quiet git assetsync pull --no-commit sub/one.bin
 check "--no-commit: staged together" "$(git status --porcelain | oneline)" "M  .git-assetsync M  sub/one.bin "
 git commit -q --no-edit
-check "uncommitted [source] changes go along" "$(git config -f .git-assetsync source.acme/pair.release v2 && git add .git-assetsync && pullc two.bin; git status --porcelain)" ""
+check "uncommitted [source] changes go along" "$(git config -f .git-assetsync source.acme/pair.note x && git add .git-assetsync && pullc two.bin; git status --porcelain)" ""
 check "... in the commit" "$(git show --format= --name-only HEAD | sort | oneline)" ".git-assetsync two.bin "
 
 
@@ -1102,9 +1102,9 @@ quiet asd add pre.bin https://gitlab.com/grp/proj --asset gl.bin --release 'v*' 
 check "GitLab: upcoming with --prerelease" "$(cat pre.bin)" "gl 3 upcoming"
 check "GitLab: pattern by date, without upcoming" \
   "$(asd add -n x.bin https://gitlab.com/grp/proj --asset gl.bin --release 'v*' 2>&1)" \
-  "would add x.bin from grp/proj-3 v2 (gl.bin, newest release matching v*)"
+  "would add x.bin from grp/proj v2 (gl.bin, newest release matching v*)"
 check "GitLab: exact tag" "$(asd add -n x.bin https://gitlab.com/grp/proj --asset gl.txt --release v1 2>&1)" \
-  "would add x.bin from grp/proj-3 v1 (gl.txt, release v1)"
+  "would add x.bin from grp/proj v1 (gl.txt, release v1)"
 git reset -q --hard; rm -f pre.bin
 
 # subgroups; tags with '/'
@@ -1181,37 +1181,34 @@ release acme/src v0 09 "$F/s1.txt"
 new_repo r15
 addc a.txt acme/src
 addc b.txt acme/src --release v0
-check "source: list" "$(git assetsync source | oneline)" "acme/src acme/src-2 "
-check "source -v" "$(git assetsync source -v | oneline)" \
-  "acme/src${TAB}https://github.com/acme/src (latest release, 1 file) - now v1 acme/src-2${TAB}https://github.com/acme/src (release v0, 1 file) - now v0 "
-reset_calls
-check "source -v --no-fetch: not asked" "$(git assetsync source -v --no-fetch | head -1) $(calls)" \
-  "acme/src${TAB}https://github.com/acme/src (latest release, 1 file) 0"
+check "source: one per URL" "$(git assetsync source | oneline)" "acme/src "
+check "source -v" "$(git assetsync source -v | oneline)" "acme/src${TAB}https://github.com/acme/src (2 files) "
 
-# set-release: staged only; pull updates the file and commits both
-OUT=$(git assetsync source set-release acme/src 'v*' --prerelease)
-check "set-release: output" "$(echo "$OUT" | head -1)" \
-  "acme/src: newest release matching v* (prereleases too) (was: latest release); .git-assetsync staged"
-check "set-release: keys" "$(reg source.acme/src.release) $(reg source.acme/src.prerelease)" "v* true"
-check "set-release: staged" "$(git status --porcelain | oneline)" "M  .git-assetsync "
-check "set-release: pending" "$(st a.txt)" "P"
+# the release selection is the entry's: set --release, staged only; pull
+# updates the file and commits both
+OUT=$(git assetsync set a.txt --release 'v*' --prerelease)
+check "set --release: output" "$(echo "$OUT" | head -1)" \
+  "a.txt: latest release -> newest release matching v* (prereleases too)"
+check "set --release: keys of the entry" "$(reg file.a.txt.release) $(reg file.a.txt.prerelease) $(reg file.b.txt.release)" "v* true v0"
+check "set --release: staged" "$(git status --porcelain | oneline)" "M  .git-assetsync "
+check "set --release: pending" "$(st a.txt) $(st b.txt)" "P "
 pullc a.txt
-check "set-release + pull: one commit" "$(cat a.txt) $(git show --name-only --format= HEAD | sort | oneline)" "s1 v2 .git-assetsync a.txt "
-check "set-release --no-prerelease only" "$(git assetsync source set-release acme/src --no-prerelease >/dev/null; reg source.acme/src.release) $(reg source.acme/src.prerelease)" "v* "
-check "set-release --unset: latest again" "$(git assetsync source set-release acme/src --unset >/dev/null; reg source.acme/src.release)" ""
+check "set --release + pull: one commit" "$(cat a.txt) $(git show --name-only --format= HEAD | sort | oneline)" "s1 v2 .git-assetsync a.txt "
+check "set --no-prerelease only" "$(git assetsync set a.txt --no-prerelease >/dev/null; reg file.a.txt.release) $(reg file.a.txt.prerelease)" "v* "
+check "set --latest: latest again" "$(git assetsync set a.txt --latest >/dev/null; reg file.a.txt.release)" ""
 pullc a.txt
 check "... pulled back to the latest" "$(cat a.txt)" "s1 v1"
-check "set-release: same selection as another source" "$(git assetsync source set-release acme/src-2 --unset 2>&1)" \
-  "error: source 'acme/src' already has this URL and selection - move the files to it with 'git assetsync set <file>... --source acme/src'"
-check "set-release: nothing given" "$(git assetsync source set-release acme/src 2>&1)" \
-  "error: give either TAG|PATTERN or --unset (or only --prerelease / --no-prerelease)"
-check "unknown source" "$(git assetsync source set-release nope v1 2>&1)" \
-  "error: no source 'nope' in .git-assetsync (known: acme/src, acme/src-2)"
+check "unknown source" "$(git assetsync source set-url nope https://github.com/a/b 2>&1)" \
+  "error: no source 'nope' in .git-assetsync (known: acme/src)"
 
 # rename, set-url, set-type
-quiet git assetsync source rename acme/src-2 pinned
-check "rename: section and references" "$(reg source.pinned.release) $(reg file.b.txt.source)" "v0 pinned"
-check "rename: to an existing name" "$(git assetsync source rename pinned acme/src 2>&1)" "error: source 'acme/src' already exists"
+quiet git assetsync source rename acme/src pinned
+check "rename: section and references" "$(reg source.pinned.url) $(reg file.a.txt.source) $(reg file.b.txt.source)" \
+  "https://github.com/acme/src pinned pinned"
+check "rename: to an existing name" "$(git assetsync source rename pinned pinned 2>&1)" "error: source 'pinned' already exists"
+check "add --type: not for an existing source of another type" \
+  "$(asd add -n c.txt acme/src --type gitlab 2>&1)" \
+  "error: source pinned is of type (derived from the host) - change it with 'git assetsync source set-type pinned gitlab'"
 git commit -q -m "rename source"
 check "rename: still clean" "$(git assetsync status -s)" ""
 asset s1.txt "moved v1"
@@ -1220,6 +1217,10 @@ quiet git assetsync source set-url pinned https://github.com/acme/moved.git
 check "set-url" "$(reg source.pinned.url)" "https://github.com/acme/moved"
 check "set-url: pending (other asset)" "$(st b.txt)" "P"
 git reset -q --hard
+addc o.txt acme/moved
+check "set-url: a URL another source has" "$(git assetsync source set-url pinned acme/moved 2>&1)" \
+  "error: source 'acme/moved' already has this URL - move the files to it with 'git assetsync set <file>... --source acme/moved'"
+git reset -q --hard HEAD~1
 check "set-type" "$(git assetsync source set-type pinned gitlab >/dev/null; reg source.pinned.type)" "gitlab"
 check "set-type --unset" "$(git assetsync source set-type pinned --unset >/dev/null; reg source.pinned.type)" ""
 check "set-type: unknown" "$(git assetsync source set-type pinned svn 2>&1)" "error: unknown type 'svn' (supported: github, gitlab)"
@@ -1252,36 +1253,32 @@ new_repo r16
 addc x.bin acme/set --asset x.bin --release v1
 addc y.bin acme/set --asset y.bin --release v1
 check "nothing to change" "$(git assetsync set x.bin 2>&1)" \
-  "error: nothing to change: give --source, --release/--latest/--prerelease/--type, --asset/--no-asset or --filter/--no-filter"
+  "error: nothing to change: give --source, --release/--latest/--prerelease, --asset/--no-asset or --filter/--no-filter"
 check "same selection: nothing to change" "$(git assetsync set x.bin --release v1)" "nothing to change"
 
-# another release selection for one file of two: the source is split
+# another release selection for one file of two: only its entry
 OUT=$(git assetsync set x.bin --latest)
-check "set --latest: split" "$(echo "$OUT" | head -1)" \
-  "x.bin: acme/set -> acme/set-2 (latest release); acme/set keeps 1 other file"
+check "set --latest: the entry" "$(echo "$OUT" | head -1) $(reg file.x.bin.release) $(reg file.y.bin.release)" \
+  "x.bin: release v1 -> latest release  v1"
 check "set: staged only" "$(git status --porcelain | oneline)" "M  .git-assetsync "
 check "set: base kept" "$(reg file.x.bin.synced)" "v1"
 check "set: pending" "$(st x.bin)" "P"
 check "set: other file unchanged" "$(st y.bin)" ""
 pullc x.bin
-check "set + pull" "$(cat x.bin) $(git log -1 --format=%s)" "x v2 [assetsync] Update x.bin to acme/set-2 v2 (was v1)"
-# all files of a source: the source itself changes
-check "set: whole source" "$(git assetsync set y.bin --latest | head -1)" \
-  "y.bin: acme/set -> acme/set-2 (latest release)"
-check "... moved to the matching source, old one removed" "$(reg file.y.bin.source) $(reg source.acme/set.url)" "acme/set-2 "
-git reset -q --hard
+check "set + pull" "$(cat x.bin) $(git log -1 --format=%s)" "x v2 [assetsync] Update x.bin to acme/set v2 (was v1)"
 check "set -n: nothing changed" "$(git assetsync set -n y.bin --latest | head -1; git status --porcelain)" \
-  "would: y.bin: acme/set -> acme/set-2 (latest release)"
+  "would: y.bin: release v1 -> latest release"
 
 # another project (a fork): base kept, the asset counts as unknown
 OUT=$(git assetsync set x.bin --source me/set-fork)
-# (x.bin is the only file of its source: the source itself changes)
 check "set --source: output" "$(echo "$OUT" | head -1)" \
-  "acme/set-2: https://github.com/acme/set (latest release) -> https://github.com/me/set-fork (latest release)"
+  "x.bin: source acme/set -> me/set-fork (https://github.com/me/set-fork)"
+check "... a new source, the old one stays while used" "$(reg file.x.bin.source) $(reg source.me/set-fork.url) $(reg source.acme/set.url)" \
+  "me/set-fork https://github.com/me/set-fork https://github.com/acme/set"
 check "set --source: synced removed, base kept" "$(reg file.x.bin.synced)|$(reg file.x.bin.blob)" "|$(git rev-parse HEAD:x.bin)"
 check "set --source: still unmodified" "$(git assetsync status x.bin | grep -c 'pending:    x.bin  (entry changed, release v2)')" "1"
 pullc x.bin
-check "set --source + pull" "$(cat x.bin) $(git log -1 --format=%s)" "fork x v2 [assetsync] Update x.bin to acme/set-2 v2"
+check "set --source + pull" "$(cat x.bin) $(git log -1 --format=%s)" "fork x v2 [assetsync] Update x.bin to me/set-fork v2"
 # local modifications stay modifications
 echo mine > x.bin && git commit -qam mine
 quiet git assetsync set x.bin --source https://github.com/acme/set
@@ -1323,11 +1320,11 @@ check "releases --assets" "$(asd source releases acme/rl --assets | tail -5 | on
 new_repo r17
 addc a.bin acme/rl --asset small.bin
 addc b.bin acme/rl --asset small.bin --release 'v*' --prerelease
-check "releases: selected by sources" "$(git assetsync source releases acme/rl | grep '^v2-rc1 ' | oneline)" \
-  "v2-rc1  2026-10-12  Rel 2 RC  (prerelease, selected by acme/rl-2) "
+check "releases: selected by entries" "$(git assetsync source releases acme/rl | grep '^v2-rc1 ' | oneline)" \
+  "v2-rc1  2026-10-12  Rel 2 RC  (prerelease, selected by b.bin) "
 check "releases: latest selected" "$(git assetsync source releases acme/rl | grep '^v1.1 ')" \
-  "v1.1    2026-10-11  (latest, selected by acme/rl)"
-check "releases of a source by name" "$(git assetsync source releases acme/rl-2 -n 1)" \
+  "v1.1    2026-10-11  (latest, selected by a.bin)"
+check "releases of a source by name" "$(git assetsync source releases acme/rl -n 1)" \
   "v3  2026-10-13  (draft)"
 check "releases: GitLab, upcoming" "$(asd source releases https://gitlab.com/grp/proj -n 2 | oneline)" \
   "v3  2026-10-30  (upcoming) v2  2026-10-11  (latest) "
@@ -2070,7 +2067,7 @@ new_repo r25
 filt unzip --extract
 addc f.txt acme/df
 addc d/ acme/dd --release v1 --filter unzip
-quiet git assetsync source set-release acme/dd --unset && git commit -qm latest -- .git-assetsync
+quiet git assetsync set d --latest && git commit -qm latest -- .git-assetsync
 check "diff: nothing to show" "$(git assetsync diff)" ""
 check "diff: exit code 0" "$(rc git assetsync diff -- --exit-code)" "0"
 # local changes: base -> working tree
@@ -2116,10 +2113,10 @@ check "pull --release: dry run" "$(git assetsync pull -n --release v1 f.txt | he
   "would: Update f.txt to acme/df v1 (was v2)"
 out=$(git assetsync pull --no-edit --release v1 f.txt)
 check "pull --release: hint" "$(printf '%s\n' "$out" | tail -1)" \
-  "note: f.txt: its source still selects v2 - 'git assetsync pull f.txt' goes back to it; to stay on v1: 'git assetsync set f.txt --release v1'"
+  "note: f.txt: it still selects v2 - 'git assetsync pull f.txt' goes back to it; to stay on v1: 'git assetsync set f.txt --release v1'"
 check "pull --release: content" "$(cat f.txt | oneline)" "one two "
 check "pull --release: synced" "$(reg file.f.txt.synced)" "v1"
-check "pull --release: selection unchanged" "$(reg source.acme/df.release)" ""
+check "pull --release: selection unchanged" "$(reg file.f.txt.release)" ""
 check "pull --release: message" "$(git log -1 --format=%s)" "[assetsync] Update f.txt to acme/df v1 (was v2)"
 check "pull --release: status pending" "$(git assetsync status -s f.txt)" "P   f.txt"
 check "pull --release: up to date" "$(git assetsync pull --release v1 f.txt)" "f.txt: up to date"
@@ -2302,10 +2299,10 @@ release acme/e v1 10 "$F/e.txt"
 addc e.txt acme/e
 check "edit: unchanged" "$(git assetsync edit)" ".git-assetsync: no changes"
 # "editors": scripts that change the file they get
-printf 'git config -f "$1" source.acme/e.release v1\n' > "$T/ed-pin.sh"
+printf 'git config -f "$1" file.e.txt.release v1\n' > "$T/ed-pin.sh"
 check "edit: staged" "$(GIT_EDITOR="sh '$T/ed-pin.sh'" git assetsync edit)" \
   '.git-assetsync staged (use "git assetsync status" to see what changes, "git assetsync pull <file>..." to update)'
-check "edit: the change" "$(reg source.acme/e.release) $(git status --porcelain | oneline)" "v1 M  .git-assetsync "
+check "edit: the change" "$(reg file.e.txt.release) $(git status --porcelain | oneline)" "v1 M  .git-assetsync "
 git commit -qm pinned
 printf 'git config -f "$1" source.other.url https://github.com/acme/other\ngit config -f "$1" file.x.txt.source nosuch\ngit config -f "$1" dir.e.txt/sub.source acme/e\n' > "$T/ed-gaps.sh"
 OUT=$(GIT_EDITOR="sh '$T/ed-gaps.sh'" git assetsync edit 2>&1)
@@ -2337,7 +2334,7 @@ done
 printf 'x\n' > "$F/sk.txt"; release --notes "$F/sk-notes.md" acme/sk other-1 12T18:00:00Z "$F/sk.txt"
 new_repo r28
 addc s.txt acme/sk --release v1
-quiet git assetsync source set-release acme/sk 'v*' && git commit -qm pattern -- .git-assetsync
+quiet git assetsync set s.txt --release 'v*' && git commit -qm pattern -- .git-assetsync
 pullc s.txt
 check "skipped: listed (pattern, no prerelease)" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v2"
 check "skipped: their notes too, newest first" \
@@ -2353,7 +2350,7 @@ check "notesLines=0: no notes, still the list" "$(git log -1 --format=%B | grep 
 check "notesLines: not a number" "$(git -c assetsync.notesLines=many assetsync pull --no-edit --release v1 s.txt 2>&1 | grep -c "assetsync.notesLines: 'many' is not a number of lines")" "1"
 # prereleases count when the source takes them; one release forward: as before
 quiet git assetsync pull --no-edit --release v1 s.txt
-quiet git assetsync source set-release acme/sk --unset --prerelease && git commit -qm pre -- .git-assetsync
+quiet git assetsync set s.txt --latest --prerelease && git commit -qm pre -- .git-assetsync
 pullc s.txt
 check "skipped: prereleases when taken" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v3, other-1, v2"
 quiet git assetsync pull --no-edit --release v3 s.txt; pullc s.txt
@@ -2493,7 +2490,7 @@ echo changed >> third/README.md
 check "a file of others changed: no modification" "$(st third)" ""
 git add third/README.md
 # the next release: its files replaced and deleted, those of others left alone
-quiet git assetsync source set-release acme/ov --unset && git commit -qm latest -- .git-assetsync
+quiet git assetsync set third --latest && git commit -qm latest -- .git-assetsync
 release acme/ov v2 11 "$F/ov-2.tar.gz"
 pullc third
 check "pull: the release's files replaced and deleted" "$(cd third && find . -type f | sort | oneline)$(cat third/include/a.h)" \
