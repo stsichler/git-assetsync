@@ -1999,6 +1999,7 @@ class Repo:
     pointers = {}           # see lfs_pointers()
     modes = None            # see head_modes()
     filemode = None         # see worktree_mode()
+    index_all: Any = False  # see index_items()
     index = None            # see index_path()
     objects = None          # see scratch()
     notes_limits = None     # see notes_limits()
@@ -2052,9 +2053,16 @@ class Repo:
             work = dict(zip(files, p.stdout.decode("utf-8", "replace").split()))
         self.fetched = {r: (head.get(r), work.get(r)) for r in rels}
         self.lfs_pointers(head[r] for r in rels if head.get(r) and head[r] != bases[r])
-        self.now.update(self.stored_now(
-            (bases[r], r) for r in rels if bases[r] and
-            any(o and o != bases[r] for o in self.fetched[r])))
+        pairs = [(bases[r], r) for r in rels
+                 if bases[r] and any(o and o != bases[r] for o in self.fetched[r])]
+        try:
+            self.now.update(self.stored_now(pairs))
+        except FsError:       # a base not here: left to the entry, which reports it
+            for pair in pairs:
+                try:
+                    self.now.update(self.stored_now([pair]))
+                except FsError:
+                    pass
 
     def head_blob(self, rel):
         """Blob id of the file rel in HEAD, None if HEAD has none."""
@@ -2335,7 +2343,13 @@ class Repo:
         return None
 
     def index_items(self, rel):
-        """[(mode, id, path)] of the files at rel in the index."""
+        """[(mode, id, path)] of the files at rel in the index (with
+        index_all set: from one listing of the whole index, for many)."""
+        if self.index_all:
+            if not isinstance(self.index_all, list):
+                self.index_all = False
+                self.index_all = self.index_items(".")
+            return [i for i in self.index_all if i[2] == rel or i[2].startswith(rel + "/")]
         p = self.git(["ls-files", "-s", "-z", "--", lit(rel)])
         items = []
         for item in p.stdout.decode("utf-8", "replace").split("\0"):
@@ -4791,26 +4805,24 @@ def and_list(items):
     return ", ".join(items[:-1]) + " and " + items[-1] if len(items) > 1 else "".join(items)
 
 
-def restore_worktree(repo, entry, items):
-    """Write the files of items (in a directory, files of others stay)."""
-    for mode, oid, path in items:
-        target = repo.top / path
-        if target.is_dir():
+def write_files(repo, items):
+    """Write the blobs of items (mode, id, path) to the working tree as `git
+    checkout` would (filters, line endings, executable bits) - with one
+    checkout-index from a temporary index, for all."""
+    if not items:
+        return
+    for _, _, path in items:
+        if (repo.top / path).is_dir():
             raise FsError(f"'{path}' is a directory in the working tree")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(repo.checkout_form(oid, path))
-        set_executable(target, mode == "100755")
+    with repo.temp_index() as env:
+        repo.git(["update-index", "-z", "--index-info"], env=env,
+                 data="".join(f"{m} {o}\t{path}\0" for m, o, path in items).encode("utf-8"))
+        repo.git(["checkout-index", "-a", "-f"], env=env)
 
 
-def restore_index(repo, entry, items):
-    data = "".join(f"{m} {o}\t{path}\0" for m, o, path in items)
-    repo.git(["update-index", "-z", "--add", "--index-info"], data=data.encode("utf-8"))
-
-
-def restore_one(repo, entry, staged, worktree):
-    """Restore what the entry was synced with: in the working tree and/or
-    the index - only the files that differ from it (the others aren't read
-    again). Returns what was done ([] if nothing differed)."""
+def restore_plan(repo, entry, staged, worktree):
+    """What restore would do for an entry: (base items, {side: what it has
+    now}, the blobs to look at more closely - those differing)."""
     base = base_items(repo, entry)
     paths = {path for _, _, path in base}
     sides = {}
@@ -4822,41 +4834,47 @@ def restore_one(repo, entry, staged, worktree):
         else:
             blob = repo.worktree_blob(entry.target)
             sides["worktree"] = [("", blob, entry.rel)] if blob else []
-
-    def same(item, current):
-        return item[1] == current[1] and (item[0] == current[0] or not entry.is_dir)
-    # the files that don't have their base blob: is it there, stored differently
-    # (.gitattributes changed since the sync: LFS, line endings)? - all at once
     have = {side: {p: (m, o) for m, o, p in items} for side, items in sides.items()}
     check = {(oid, path) for mode, oid, path in base for side in sides
-             if not same((mode, oid), have[side].get(path, (None, None)))}
-    try:
-        now = repo.stored_now(check)
-    except FsError as e:
-        raise FsError(f"its synced version is not available ({e}) - get it again with "
-                      f"'git assetsync pull --overwrite {path_arg(repo, entry.shown)}'")
-    done = []
-    for side, restore in (("index", restore_index), ("worktree", restore_worktree)):
-        if side in sides:
-            fix = [(mode, now[(oid, path)], path) for mode, oid, path in base
-                   if (oid, path) in now
-                   and not same((mode, oid), have[side].get(path, (None, None)))
-                   and not same((mode, now[(oid, path)]), have[side].get(path, (None, None)))]
-            if fix:
-                restore(repo, entry, fix)
-                done.append(side)
-    return done
+             if not restore_same(entry, (mode, oid), have[side].get(path, (None, None)))}
+    return base, have, check
+
+
+def restore_same(entry, item, current):
+    return item[1] == current[1] and (item[0] == current[0] or not entry.is_dir)
+
+
+def restore_fixes(entry, plan, now):
+    """{side: [(mode, id, path)]} to restore: the files that are neither their
+    base blob nor that stored as it would be now (now: stored_now())."""
+    base, have, _ = plan
+    fixes = {}
+    for side in have:
+        fix = [(mode, now[(oid, path)], path) for mode, oid, path in base
+               if (oid, path) in now
+               and not restore_same(entry, (mode, oid), have[side].get(path, (None, None)))
+               and not restore_same(entry, (mode, now[(oid, path)]),
+                                    have[side].get(path, (None, None)))]
+        if fix:
+            fixes[side] = fix
+    return fixes
 
 
 def cmd_restore(ctx, repo, args):
     """Like `git restore`, but from what the entries were synced with (their
     base): the working tree by default, the index with --staged, both with
     -S -W. Offline (unless the base of a directory must be got again, see
-    ensure_base); .git-assetsync doesn't change."""
+    ensure_base); .git-assetsync doesn't change. What differs is found for
+    all entries at once, and written at once."""
     reg = Registry(repo)
     worktree = args.worktree or not args.staged
     rc = EXIT_OK
-    for entry in select_entries(repo, reg, args.paths):
+    entries = select_entries(repo, reg, args.paths)
+    prefetch_files(repo, entries)
+    repo.head_modes()
+    repo.index_all = True
+    plans = []
+    for entry in entries:
         try:
             problem = path_problem(entry.rel)
             if problem:
@@ -4866,13 +4884,36 @@ def cmd_restore(ctx, repo, args):
                               f"{path_arg(repo, entry.shown)}'")
             if entry.is_dir:
                 ensure_base(repo, reg, entry)
-            done = restore_one(repo, entry, args.staged, worktree)
+            plans.append((entry, restore_plan(repo, entry, args.staged, worktree)))
         except FsError as e:
             error(f"{entry.shown}: {e}")
             rc = EXIT_ERROR
-            continue
+    repo.index_all = False
+    try:
+        now = repo.stored_now(set().union(*(plan[2] for _, plan in plans)))
+    except FsError:           # one isn't available: which one, entry by entry
+        now = {}
+        for entry, plan in list(plans):
+            try:
+                now.update(repo.stored_now(plan[2]))
+            except FsError as e:
+                error(f"{entry.shown}: its synced version is not available ({e}) - get it "
+                      f"again with 'git assetsync pull --overwrite {path_arg(repo, entry.shown)}'")
+                plans.remove((entry, plan))
+                rc = EXIT_ERROR
+    fixes = [(entry, restore_fixes(entry, plan, now)) for entry, plan in plans]
+    index = [i for _, f in fixes for i in f.get("index", [])]
+    if index:
+        repo.git(["update-index", "-z", "--add", "--index-info"],
+                 data="".join(f"{m} {o}\t{p}\0" for m, o, p in index).encode("utf-8"))
+    try:
+        write_files(repo, [i for _, f in fixes for i in f.get("worktree", [])])
+    except FsError as e:
+        error(str(e))
+        return EXIT_ERROR
+    for entry, f in fixes:
         what = {("index",): "restored in the index", ("worktree",): "restored",
-                ("index", "worktree"): "restored and staged"}.get(tuple(done))
+                ("index", "worktree"): "restored and staged"}.get(tuple(f))
         if what:
             print(f"{entry.shown}: {paint(what, 'green')} ({entry.name} {entry.synced})")
         else:
