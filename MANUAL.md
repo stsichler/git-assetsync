@@ -287,14 +287,14 @@ Upstream changes to pull:
 	new:        firmware/fw.bin  (release toolA-20261016)
 
 Locally modified files:
-  (use "git assetsync diff --committed <file>..." to see the modifications)
+  (use "git assetsync diff <file>..." to see the modifications)
   (use "git assetsync restore -SW <file>..." to restore the release asset)
 	modified:   lib/data.bin  (NOT ALLOWED)
+	deleted:    bin/tool  (NOT ALLOWED)
 
-Uncommitted changes:
-  (use "git assetsync diff <file>..." to see all local changes)
-  (use "git restore <file>..." to discard uncommitted changes)
-	modified:   bin/tool  (NOT ALLOWED)
+Not committed yet:
+  (use "git commit" to commit them)
+	new file:   third_party/zlib/
 ```
 
 - **Upstream changes to pull** – `pending`: the entry selects another
@@ -302,11 +302,11 @@ Uncommitted changes:
   that release was replaced (re-uploaded with other content), or the
   filter was changed (`filter changed`). `new`: an entry without a synced
   release yet, or one not in the working tree yet.
-- **Locally modified files** – the committed file (directory) differs from
-  what the release gives.
-- **Uncommitted changes** – the working tree file (directory) differs from
-  the committed one (`modified`, `deleted`, `new file`); marked NOT
-  ALLOWED if it differs from what the release gives, too.
+- **Locally modified files** – the file (directory) differs from what the
+  release gave: in the working tree or committed – both are not allowed,
+  and `restore -SW` (then a commit) brings it back either way.
+- **Not committed yet** – an entry added (or pulled with `--no-commit`)
+  and staged, not committed yet.
 
 With nothing to report: `nothing to pull, all N files unmodified` (or
 directories). Errors
@@ -316,7 +316,7 @@ shown as usual. The hints in parentheses follow `advice.statusHints`.
 
 | Option | Meaning |
 |---|---|
-| `-s`, `--short` | one line per file with something to report, three columns like `git status -s`: upstream (`P` pending, `N` new, `E` error), committed (`A` modified), working tree (`M` modified, `D` deleted, `?` not committed yet) |
+| `-s`, `--short` | one line per file with something to report, two columns like `git status -s`: upstream (`P` pending, `N` new, `E` error) and local (`M` modified, committed or not; `D` deleted; `?` not committed yet) |
 | `-v`, `--verbose` | also list all files with asset, source, release selection and synced release |
 | `--exit-code` | exit with 1 if something is to pull or a file is modified |
 | `--no-fetch` | don't ask GitHub or GitLab for new releases: only local modifications are shown, see [Offline operation](#offline-operation) |
@@ -390,7 +390,7 @@ shows beforehand what `pull --release` would bring.
 ### `diff`
 
 ```
-git assetsync diff [PATH…] [--committed | --upstream [--release TAG|PATTERN]] [-- OPTS]
+git assetsync diff [PATH…] [--upstream [--release TAG|PATTERN]] [-- OPTS]
 ```
 
 Shows the local modifications of the entries (default: all) – the
@@ -402,14 +402,12 @@ it works offline.
 
 | Option | Shows |
 |---|---|
-| (none) | all local modifications: synced -> working tree |
-| `--committed` | only the committed modifications: synced -> `HEAD` |
+| (none) | the local modifications: synced -> working tree |
 | `--upstream` | what `pull` would bring: synced -> what the selected release gives now, after the filter (also after the filter was changed) |
 | `--upstream --release TAG\|PATTERN` | what `pull --release` would bring; `--release` requires `--upstream` |
 
 ```sh
 git assetsync diff                      # local changes: synced -> working tree (local/)
-git assetsync diff --committed          # committed ones only: synced -> HEAD (committed/)
 git assetsync diff --upstream           # what `pull` would bring (upstream/)
 git assetsync diff --upstream --release v1.0 bin/  # what `pull --release v1.0 bin/` would bring
 git assetsync diff --upstream -- --stat # anything after `--` goes to `git diff`
@@ -418,8 +416,7 @@ git assetsync diff --upstream -- --stat # anything after `--` goes to `git diff`
 `diff` runs a single `git diff` over all entries that differ, with their
 paths in the repository: pager, colors, diff drivers and options (after
 `--`, e.g. `--stat`, `--name-status`, `--word-diff`) work as usual. The
-old side is named `synced/`, the new one `local/`, `committed/` or
-`upstream/`. Files in Git LFS are compared by their content, not their
+old side is named `synced/`, the new one `local/` or `upstream/`. Files in Git LFS are compared by their content, not their
 pointers. With `--upstream`, the assets come from the [download
 cache](#download-cache) if possible – and `pull` then needs no new
 download; filters that run commands must be [trusted](#filter-trust). To see
@@ -431,7 +428,7 @@ differences, like `git diff`; otherwise 0, or 2 on errors.
 ### `difftool`
 
 ```
-git assetsync difftool [PATH…] [--committed | --upstream [--release TAG|PATTERN]]
+git assetsync difftool [PATH…] [--upstream [--release TAG|PATTERN]]
                        [-d] [-y | --prompt] [-- OPTS]
 ```
 
@@ -440,7 +437,7 @@ The same as [`diff`](#diff), in your difftool (`diff.tool`, e.g. Meld);
 
 | Option | Effect |
 |---|---|
-| `--committed`, `--upstream`, `--release` | as for `diff` |
+| `--upstream`, `--release` | as for `diff` |
 | `-d`, `--dir-diff` | all files at once, as two directories |
 | `-y`, `--no-prompt` | don't ask before each file |
 | `--prompt` | ask even for explicitly given paths |
@@ -448,8 +445,8 @@ The same as [`diff`](#diff), in your difftool (`diff.tool`, e.g. Meld);
 **File by file** (the default), like `git difftool`: the left side is a
 temporary copy of what the release gave, in a directory named after it
 (`synced-v1.0/`); the right side is the working file itself – so edits
-made in the tool are kept – or with `--upstream` / `--committed` a
-temporary copy (`upstream-v1.1/`, `committed-HEAD/`). A file that is
+made in the tool are kept – or with `--upstream` a temporary copy
+(`upstream-v1.1/`). A file that is
 missing on one side is compared with an empty file. Without path
 arguments, `difftool` asks before each file (`Viewing (1/3):
 'third_party/zlib/zlib.h'` / `Launch 'meld' [Y/n/q]?`; Enter = yes, `q`
@@ -1457,7 +1454,7 @@ an asset byte for byte, mark it `-text` (or `binary`) in `.gitattributes`.
 and working tree files (directories) are still what their release gives is
 decided from the recorded `blob` (`tree`). Only the check for new releases
 needs GitHub or GitLab; `--no-fetch` skips it (`new releases not
-checked`). `diff` and `diff --committed` work offline, too, and so does
+checked`). `diff` works offline, too, and so does
 everything with a source [mapped to a local folder](#source-map). `add`, `pull`
 and `diff --upstream` always ask the platform which release to take;
 assets already in the [download cache](#download-cache) are not

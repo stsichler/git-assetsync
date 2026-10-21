@@ -86,8 +86,10 @@ Basic commands - what you need day to day:
     status [PATH...]            state of the entries like `git status`: new
                                 releases (or another filter) to pull, local
                                 modifications
-        -s, --short             short format: upstream/committed/worktree
-                                columns (upstream: P pending, N new; E error)
+        -s, --short             short format: upstream and local columns
+                                (P pending, N new, E error; M modified -
+                                committed or not -, D deleted, ? not
+                                committed yet)
         -v, --verbose           also list all files with their sources
         --exit-code             exit 1 if something is to pull or a file is
                                 modified
@@ -120,7 +122,6 @@ Basic commands - what you need day to day:
     diff [PATH...] [-- OPTS]    local modifications: what the release gave
                                 (synced) -> working tree; as one `git diff`
                                 (pager, colors; OPTS such as --stat go to it)
-        --committed             only the committed ones (synced -> HEAD)
         --upstream              what pull would bring (synced -> what the
                                 selected release gives now, filtered)
         --release TAG|PATTERN   with --upstream: what pull --release would
@@ -132,7 +133,7 @@ Basic commands - what you need day to day:
                                 to `git difftool` (e.g. -t meld); the working
                                 file itself is passed, the other sides as
                                 temporary copies
-        --committed, --upstream, --release  as for diff
+        --upstream, --release   as for diff
         -d, --dir-diff          all files at once, as two directories (e.g. a
                                 directory entry in Meld; temporary copies)
         -y, --no-prompt         don't ask before each file
@@ -3120,14 +3121,18 @@ def render(parts, stream="out"):
 
 
 def short_code(st):
-    """Three columns like `git status -s`: upstream, committed, working tree."""
+    """Two columns, like `git status -s`: upstream (P pending, N new, E
+    error) and local (M modified - committed or not -, D deleted, ? not
+    committed yet)."""
     if st.error:
-        return "E  "
+        return "E "
     up = upstream_state(st)
     x = {"pending": "P", "new": "N"}[up[0]] if up else " "
-    y = "A" if st.committed == "adapted" else " "
-    z = {"modified": "M", "deleted": "D", "added": "?"}.get(st.worktree, " ")
-    return x + y + z
+    if st.modified:
+        y = "D" if st.local == "missing" or st.worktree == "deleted" else "M"
+    else:
+        y = "?" if st.worktree == "added" else " "
+    return x + y
 
 
 def shown(repo, rel):
@@ -3147,7 +3152,7 @@ def print_short(repo, sts):
     for st in sts:
         code = short_code(st)
         if code.strip():
-            line = paint(code[0], "yellow") + paint(code[1], "cyan") + paint(code[2], "red")
+            line = paint(code[0], "yellow") + paint(code[1], "red")
             if code[0] == "E":
                 line = paint(code, "boldred")
             print(f"{line} {shown(repo, st.entry.shown)}")
@@ -3174,7 +3179,8 @@ def print_long(ctx, repo, sts, verbose):
         rows = []
         for st in ok:
             e = st.entry
-            label = st.committed or ("uncommitted" if e.blob else "not synced")
+            label = ("not synced" if not e.blob else "modified" if st.modified else
+                     "new" if st.worktree == "added" else "unmodified")
             rows.append((label, e.shown, origin_text(e), "dim"))
         section("Files:", [], rows, None)
 
@@ -3189,20 +3195,16 @@ def print_long(ctx, repo, sts, verbose):
              'use "git assetsync pull <file>..." to update'],
             up_rows, "yellow")
 
-    not_allowed = ("NOT ALLOWED", "boldred")
-    adapted = [st for st in ok if st.committed == "adapted"]
+    # a modification - committed or not - is never allowed: one state
+    modified = [st for st in ok if st.modified]
     section("Locally modified files:",
-            ['use "git assetsync diff --committed <file>..." to see the modifications',
+            ['use "git assetsync diff <file>..." to see the modifications',
              'use "git assetsync restore -SW <file>..." to restore the release asset'],
-            [("modified", st.entry.shown) + not_allowed for st in adapted], "cyan")
-
-    labels = {"modified": "modified", "deleted": "deleted", "added": "new file"}
-    dirty = [st for st in ok if st.worktree in labels]
-    section("Uncommitted changes:",
-            ['use "git assetsync diff <file>..." to see all local changes',
-             'use "git restore <file>..." to discard uncommitted changes'],
-            [(labels[st.worktree], st.entry.shown) +
-             (not_allowed if st.local != "clean" else (None, None)) for st in dirty], "red")
+            [("deleted" if st.local == "missing" or st.worktree == "deleted" else "modified",
+              st.entry.shown, "NOT ALLOWED", "boldred") for st in modified], "red")
+    new = [st for st in ok if st.worktree == "added" and not st.modified]
+    section("Not committed yet:", ['use "git commit" to commit them'],
+            [("new file", st.entry.shown, None, None) for st in new], "green")
 
     warnings = [(st.entry.shown, w) for st in ok for w in st.warnings]
     if warnings:
@@ -3224,7 +3226,7 @@ def print_long(ctx, repo, sts, verbose):
         print("new releases not checked (--no-fetch)")
     elif not up_rows and len(ok) == len(sts):
         what = entries_text([st.entry for st in sts])
-        print("nothing to pull" + ("" if adapted or dirty else
+        print("nothing to pull" + ("" if modified or new else
                                    f", {'all ' if len(sts) > 1 else ''}{what} unmodified"))
 
 
@@ -3634,20 +3636,9 @@ def base_items(repo, entry):
     return [(repo.head_mode(entry.rel) or "100644", entry.blob, entry.rel)]
 
 
-def head_items(repo, entry):
-    """[(mode, id, path)] of what HEAD has for the entry."""
-    obj = repo.head_object(entry.rel)
-    if not obj:
-        return []
-    if obj[0] == "tree":
-        return [(m, o, f"{entry.rel}/{path}") for m, k, o, path in repo.tree_entries(obj[1])
-                if k == "blob"]
-    return [(repo.head_mode(entry.rel) or "100644", obj[1], entry.rel)]
-
-
 def diff_items(ctx, repo, reg, args):
     """(rc, [(state, base items, other items)]) of all entries that differ:
-    other = the working tree, HEAD (--committed) or what pull would install
+    other = the working tree or what pull would install
     (--upstream)."""
     rc, raw = EXIT_OK, []
     entries = select_entries(repo, reg, args.paths, containing=True)
@@ -3665,24 +3656,18 @@ def diff_items(ctx, repo, reg, args):
             report_error(st)
             rc = EXIT_ERROR
             continue
-        if not (st.changed if args.upstream else st.committed == "adapted" if args.committed
-                else st.local != "clean"):
+        if not (st.changed if args.upstream else st.local != "clean"):
             continue
         try:
             if args.upstream:
                 for w in st.warnings:
                     warn(f"{entry.shown}: {w}")
                 _, other = filter_items(repo, reg, entry, st.origin, st.release, st.assets)
-            elif args.committed:
-                other = head_items(repo, entry)
             elif entry.is_dir:      # its files, not others'
                 other = repo.worktree_items(entry.rel, base_paths(repo, entry) or set())
             else:                   # prefetched; the mode as git add would take it
                 blob = repo.worktree_blob(entry.target)
                 other = [(repo.worktree_mode(entry.rel), blob, entry.rel)] if blob else []
-            if entry.is_dir and args.committed:
-                own = base_paths(repo, entry) or set()
-                other = [item for item in other if item[2] in own]
             # files the same on both sides aren't shown: not read (LFS) at all
             base = base_items(repo, entry)
             same = set(base) & set(other)
@@ -3693,7 +3678,7 @@ def diff_items(ctx, repo, reg, args):
             rc = EXIT_ERROR
     # working files that differ: stored (in scratch()) with one git command for all
     files = [p for e, _, _, other in raw if not e.is_dir and not args.upstream
-             and not args.committed for _, _, p in other]
+             for _, _, p in other]
     if files:
         repo.git(["hash-object", "-w", "--stdin-paths"],
                  data="".join(f"{p}\n" for p in files).encode("utf-8"))
@@ -3726,7 +3711,7 @@ def cmd_diff(ctx, repo, args):
         return rc
     color = {"always": ["--color=always"], "never": ["--no-color"]}.get(args.color, [])
     prefixes = ["--src-prefix=synced/", "--dst-prefix=" + (
-        "upstream/" if args.upstream else "committed/" if args.committed else "local/")]
+        "upstream/" if args.upstream else "local/")]
     p = subprocess.run(["git", "diff"] + color + prefixes + args.extra
                        + [repo.make_tree(left), repo.make_tree(right)], cwd=repo.top)
     if p.returncode > 1:
@@ -3766,8 +3751,8 @@ def safe_name(text):
 
 def cmd_difftool(ctx, repo, args):
     """diff in the configured difftool: file by file (temp copies named
-    synced-<tag>, upstream-<tag>, committed-HEAD; without --upstream /
-    --committed the real working file, so edits made in the tool are kept),
+    synced-<tag>, upstream-<tag>; without --upstream the real working
+    file, so edits made in the tool are kept),
     or with -d both sides as directories (`git difftool -d` of two trees)."""
     rc, groups = diff_groups(ctx, repo, args)
     if not groups:
@@ -3814,8 +3799,6 @@ def cmd_difftool(ctx, repo, args):
             left = tmpfile(f"synced-{synced}", base)
             if args.upstream:
                 right = tmpfile(f"upstream-{st.release.tag}", other)
-            elif args.committed:
-                right = tmpfile("committed-HEAD", other)
             elif other:
                 right = str(repo.top / path)
             else:
@@ -4141,9 +4124,7 @@ def pull_one(ctx, repo, reg, st, args):
     # like `git pull` with no merge possible: local modifications are never
     # overwritten silently
     if st.modified and not args.overwrite:
-        what = ("committed modifications" if st.committed == "adapted" else
-                "uncommitted changes")
-        raise FsError(f"{rel}: {what} NOT ALLOWED - it must stay what its release "
+        raise FsError(f"{rel}: local modifications NOT ALLOWED - it must stay what its release "
                       f"gives; discard them with 'git assetsync restore -SW "
                       f"{path_arg(repo, rel)}', or update anyway with 'git assetsync pull "
                       f"--overwrite {path_arg(repo, rel)}'")
@@ -5461,7 +5442,7 @@ def main(argv=None):
     p = sub.add_parser("status", parents=[colorp], help="show the state of the synced files")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
     p.add_argument("-s", "--short", action="store_true",
-                   help="short format: upstream / committed / working tree columns")
+                   help="short format: upstream and local columns")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="also list all files with their sources")
     p.add_argument("--exit-code", action="store_true",
@@ -5493,11 +5474,9 @@ def main(argv=None):
                            epilog="Options after '--' are passed to git " + name + ".")
         p.add_argument("paths", nargs="*", metavar="PATH",
                        help="files or directories (default: all)")
-        g = p.add_mutually_exclusive_group()
-        g.add_argument("--upstream", action="store_true",
-                       help="instead of the local modifications: what 'pull' would bring (synced -> selected release)")
-        g.add_argument("--committed", action="store_true",
-                       help="only the committed modifications (synced -> HEAD)")
+        p.add_argument("--upstream", action="store_true",
+                       help="instead of the local modifications: what 'pull' would bring "
+                            "(synced -> selected release)")
         p.add_argument("--release", metavar="TAG|PATTERN",
                        help="with --upstream: what 'pull --release' would bring")
         if name == "difftool":
