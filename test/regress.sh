@@ -2363,7 +2363,16 @@ git config -f .git-assetsync file.f.txt.blob 01234567890123456789012345678901234
 check "restore: base not available" \
   "$(git assetsync restore f.txt 2>&1 | grep -c "error: f.txt: its synced version is not available (.*) - get it again with 'git assetsync pull --overwrite f.txt'")" "1"
 git checkout -q .git-assetsync
-check "restore: a path inside a directory entry" "$(rc git assetsync restore d/a.txt)" "2"
+check "restore: a path inside a directory entry" "$(git assetsync restore d/a.txt 2>&1)" \
+  "error: 'd/a.txt' is part of the directory entry d/ - only the entry as a whole can be changed"
+check "... nor unlink, set" "$(rc git assetsync unlink d/sub) $(rc git assetsync set d/a.txt --no-filter)" "2 2"
+# a path inside a directory entry selects it for status, diff, verify, pull
+echo x > d/a.txt
+check "status: a path inside a directory entry" "$(git assetsync status -s d/sub/b.txt)" "  M d/"
+check "diff: a path inside a directory entry" "$(git assetsync diff d/a.txt -- --stat | head -1 | cut -d'|' -f1 | tr -d ' ')" "d/a.txt"
+check "verify: a path inside a directory entry" "$(git assetsync verify d/a.txt)" "d/: verified (v1)"
+check "pull: a path inside a directory entry" "$(git assetsync pull d/a.txt d/sub 2>&1 | grep -c "^error: d/: uncommitted changes NOT ALLOWED")" "1"
+quiet git assetsync restore d
 
 
 # =============================================================================

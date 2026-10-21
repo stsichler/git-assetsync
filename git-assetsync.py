@@ -68,7 +68,9 @@ steps come from the options of filter add / set, in the order given. Downloads a
 ~/.cache/git-assetsync, %LOCALAPPDATA%\\git-assetsync; see cache).
 
 Commands (run inside the repository; without a command: status). PATH may
-be a file or a directory (= all entries below it); options follow the
+be a file or a directory (= all entries below it); a path inside a
+directory entry stands for that entry in status, diff, difftool, verify
+and pull (commands that change entries refuse it). Options follow the
 command.
 
     status [PATH...]            state of the entries like `git status`: new
@@ -2431,8 +2433,10 @@ class Entry:
         self.reg.set_file(self.rel, name, value)
 
 
-def select_entries(repo, reg, paths):
-    """Entries for the given files/directories (all entries if none given)."""
+def select_entries(repo, reg, paths, containing=False):
+    """Entries for the given files/directories (all entries if none given).
+    A path inside a directory entry: with containing that entry (commands
+    that look at it or pull it), else an error (commands that change it)."""
     if not paths:
         return reg.entries()
     result = []
@@ -2446,7 +2450,14 @@ def select_entries(repo, reg, paths):
             continue
         under = [e for e in reg.entries() if rel == "." or e.rel.startswith(rel + "/")]
         if not under:
-            raise FsError(f"'{rel}' is not synced (use 'git assetsync add' to add it)")
+            around = next((e for e in reg.entries() if rel.startswith(e.rel + "/")), None)
+            if around and containing:
+                under = [around]
+            elif around:
+                raise FsError(f"'{rel}' is part of the directory entry {around.shown} - only "
+                              "the entry as a whole can be changed")
+            else:
+                raise FsError(f"'{rel}' is not synced (use 'git assetsync add' to add it)")
         result += under
     seen, unique = set(), []
     for e in result:
@@ -2820,7 +2831,7 @@ def cmd_status(ctx, repo, args):
     """Like `git status`: exit code 0 unless --exit-code (1 = something to
     pull or a file modified) or an error (2)."""
     reg = Registry(repo)
-    entries = select_entries(repo, reg, args.paths)
+    entries = select_entries(repo, reg, args.paths, containing=True)
     if not entries:
         if not args.short:
             print(f"no synced files ({REGISTRY} not found or empty)")
@@ -3224,7 +3235,7 @@ def diff_items(ctx, repo, reg, args):
     other = the working tree, HEAD (--committed) or what pull would install
     (--upstream)."""
     rc, groups = EXIT_OK, []
-    for entry in select_entries(repo, reg, args.paths):
+    for entry in select_entries(repo, reg, args.paths, containing=True):
         st = evaluate(ctx, repo, entry)
         if st.error:
             report_error(st)
@@ -3646,7 +3657,7 @@ def cmd_pull(ctx, repo, args):
     if args.all:
         entries = reg.entries()
     elif args.paths:
-        entries = select_entries(repo, reg, args.paths)
+        entries = select_entries(repo, reg, args.paths, containing=True)
     else:
         raise FsError("specify file(s) or --all")
     ctx.override = args.release
@@ -4098,7 +4109,7 @@ def cmd_verify(ctx, repo, args):
     was synced with again and compares the result with its base."""
     reg = Registry(repo)
     rc = EXIT_OK
-    entries = select_entries(repo, reg, args.paths)
+    entries = select_entries(repo, reg, args.paths, containing=True)
     if not entries:
         print(f"no synced files ({REGISTRY} not found or empty)")
     for entry in entries:

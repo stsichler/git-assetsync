@@ -199,8 +199,12 @@ line endings normalized) is still unmodified.
 | `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
 
 Without a command, `status` runs. `PATH` may be a file or a directory (all
-entries below it) and is relative to the current directory. Options follow
-the command; `git assetsync <command> -h` lists them.
+entries below it) and is relative to the current directory. A path inside
+a directory entry (`third_party/zlib/zlib.h`) stands for that entry in
+`status`, `diff`, `difftool`, `verify` and `pull`; commands that change
+entries (`set`, `restore`, `rm`, `unlink`) refuse it – an entry is only
+changed as a whole. Options follow the command; `git assetsync <command>
+-h` lists them.
 
 Two options mean the same in all commands (and in git-filesync):
 **`--overwrite`** lets a command replace local content – a file of yours,
