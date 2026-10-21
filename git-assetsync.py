@@ -346,6 +346,7 @@ import textwrap
 import time
 import zipfile
 import zlib
+from collections import Counter
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
@@ -2002,7 +2003,13 @@ OBJECT_VARS = ("GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 class Repo:
     scratch_dir = None      # see scratch()
     fetched = None          # see prefetch(): {path: (blob in HEAD, blob in the working tree)}
+    now = {}                # see prefetch(): {(blob, path): stored_now()}
+    pointers = {}           # see lfs_pointers()
+    modes = None            # see head_modes()
+    filemode = None         # see worktree_mode()
     index = None            # see index_path()
+    objects = None          # see scratch()
+    notes_limits = None     # see notes_limits()
 
     def __init__(self):
         p = git(["rev-parse", "--show-toplevel"], check=False)
@@ -2015,6 +2022,8 @@ class Repo:
         prefix = os.environ.get("GIT_PREFIX")
         self.base = Path.cwd() / prefix if prefix else Path.cwd()
         self.lf_as_is = set()     # see fix_eol(): files with LF that stay so here
+        self.now = {}
+        self.pointers = {}
 
     def git(self, args, **kw):
         return git(args, cwd=self.top, **kw)
@@ -2028,11 +2037,13 @@ class Repo:
         except ValueError:            # Windows: another drive
             raise FsError(f"'{path}' is outside the repository")
 
-    def prefetch(self, rels):
-        """For commands that only look: the blobs of these files in HEAD and in
-        the working tree, with two git commands for all instead of a few
-        per file (head_blob(), worktree_blob() then use them)."""
-        rels = [r for r in rels if "\n" not in r]
+    def prefetch(self, bases):
+        """For commands that only look: the blobs of these files {path: base
+        blob} in HEAD and in the working tree, with two git commands for all
+        instead of a few per file (head_blob(), worktree_blob() then use
+        them) - and for those that differ from their base, how the base would
+        be stored now (stored_now(), for matches_base())."""
+        rels = [r for r in bases if "\n" not in r]
         if not rels:
             return
         p = self.git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], check=False,
@@ -2048,6 +2059,10 @@ class Repo:
                          data="".join(f"{r}\n" for r in files).encode("utf-8"))
             work = dict(zip(files, p.stdout.decode("utf-8", "replace").split()))
         self.fetched = {r: (head.get(r), work.get(r)) for r in rels}
+        self.lfs_pointers(head[r] for r in rels if head.get(r) and head[r] != bases[r])
+        self.now.update(self.stored_now(
+            (bases[r], r) for r in rels if bases[r] and
+            any(o and o != bases[r] for o in self.fetched[r])))
 
     def head_blob(self, rel):
         """Blob id of the file rel in HEAD, None if HEAD has none."""
@@ -2071,6 +2086,89 @@ class Repo:
         LFS clean filter per .gitattributes); returns the blob id."""
         return out(self.git(["hash-object", "-w", f"--path={rel}", str(path)]))
 
+    def attributes_into(self, root, paths):
+        """Copy the repository's .gitattributes files along these paths into
+        root, a temporary working tree, so that git converts there as here."""
+        attrs = {"/".join(path.split("/")[:i] + [".gitattributes"])
+                 for path in paths for i in range(path.count("/") + 1)}
+        for a in sorted(attrs - set(paths)):
+            if (self.top / a).is_file():
+                (root / a).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(self.top / a, root / a)
+
+    def lfs_pointers(self, oids):
+        """{blob: lfs_pointer()} of those of these blobs that are Git LFS
+        pointers (missing ones aren't) - two git commands for all; noted in
+        self.pointers, for lfs_pointer_of()."""
+        oids = sorted(set(oids) - set(self.pointers))
+        found = {}
+        if not oids:
+            return found
+        p = self.git(["cat-file", "--batch-check=%(objectname) %(objectsize)"],
+                     data="".join(f"{o}\n" for o in oids).encode("utf-8"))
+        sizes = {w[0]: int(w[1]) for w in (line.split() for line in out(p).splitlines())
+                 if len(w) == 2 and w[1].isdigit()}
+        self.pointers.update(dict.fromkeys(sizes))      # not those missing (stored later?)
+        small = [o for o, size in sizes.items() if size < 1024]
+        if not small:
+            return found
+        data = self.git(["cat-file", "--batch"], data="".join(f"{o}\n" for o in small)
+                        .encode("utf-8")).stdout
+        pos = 0
+        while pos < len(data):
+            end = data.index(b"\n", pos)
+            oid, _, size = data[pos:end].decode().split(" ")
+            ptr = lfs_pointer(data[end + 1:end + 1 + int(size)])
+            if ptr:
+                found[oid] = self.pointers[oid] = ptr
+            pos = end + 1 + int(size) + 1
+        return found
+
+    def lfs_pointer_of(self, oid):
+        """lfs_pointer() of a blob (None: not a pointer, or not stored)."""
+        if oid not in self.pointers:
+            self.lfs_pointers([oid])
+        return self.pointers.get(oid)
+
+    def stored_now(self, pairs):
+        """as_local() of many blobs at once: {(blob, path): the id its content
+        gets when stored at path now}. Checked out with the filters into a
+        temporary working tree (with the .gitattributes of the repository)
+        and added again there - a few git commands for all, not some per
+        file. LFS pointers go one by one, as as_local() resolves them."""
+        pairs = sorted(set(pairs))
+        result = {}
+        count = Counter(path for _, path in pairs)
+        single = [(o, p) for o, p in pairs if count[p] > 1]     # one blob per path
+        batch = [x for x in pairs if x not in single]
+        if len(batch) < 3:
+            single, batch = single + batch, []
+        pointers = self.lfs_pointers(o for o, _ in batch)
+        single += [x for x in batch if x[0] in pointers]
+        batch = [x for x in batch if x[0] not in pointers]
+        for oid, path in single:
+            result[(oid, path)] = self.as_local(self.read_content(oid, path), path)
+        if batch:
+            with tempfile.TemporaryDirectory(prefix="assetsync-tree-") as td:
+                self.attributes_into(Path(td), [p for _, p in batch])
+                with self.temp_index() as env:
+                    self.git(["update-index", "-z", "--index-info"], env=env,
+                             data="".join(f"100644 {o}\t{p}\0" for o, p in batch).encode("utf-8"))
+                    self.git(["--work-tree", td, "checkout-index", "-a", "-f"], env=env)
+                with self.temp_index() as env:      # a new one: all read again, not by stat
+                    self.git(["--work-tree", td, "add", "-f", "--pathspec-from-file=-",
+                              "--pathspec-file-nul"], env=env,
+                             data="\0".join(lit(p) for _, p in batch).encode("utf-8"))
+                    listing = self.git(["ls-files", "-s", "-z"], env=env).stdout
+            ids = {}
+            for item in listing.decode("utf-8", "replace").split("\0"):
+                info, _, path = item.partition("\t")
+                if path:
+                    ids[path] = info.split(" ")[1]
+            for oid, path in batch:
+                result[(oid, path)] = ids[path]
+        return result
+
     def add_files(self, files):
         """add_file() for many files at once: {path in the repository: file}
         -> {path: blob id}. One `git add` in a temporary working tree that
@@ -2081,12 +2179,7 @@ class Repo:
         with tempfile.TemporaryDirectory(prefix="assetsync-tree-") as td, \
                 self.temp_index() as env:
             root = Path(td)
-            attrs = {"/".join(path.split("/")[:i] + [".gitattributes"])
-                     for path in files for i in range(path.count("/") + 1)}
-            for a in sorted(attrs - set(files)):
-                if (self.top / a).is_file():
-                    (root / a).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(self.top / a, root / a)
+            self.attributes_into(root, files)
             for path, src in files.items():
                 dest = root / path
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -2142,8 +2235,10 @@ class Repo:
         if self.scratch_dir:
             yield
             return
-        objects = Path(out(self.git(["rev-parse", "--git-path", "objects"])))
-        objects = objects if objects.is_absolute() else self.top / objects
+        if self.objects is None:
+            objects = Path(out(self.git(["rev-parse", "--git-path", "objects"])))
+            self.objects = objects if objects.is_absolute() else self.top / objects
+        objects = self.objects
         saved = {k: os.environ.get(k) for k in OBJECT_VARS}
         td = tempfile.mkdtemp(prefix="assetsync-objects-")
         os.environ["GIT_OBJECT_DIRECTORY"] = td
@@ -2219,12 +2314,26 @@ class Repo:
 
     def content_id(self, oid, rel):
         """Blob id of the actual content (differs from oid for an LFS pointer)."""
-        if not lfs_pointer(self.read_blob(oid)):
+        if not self.lfs_pointer_of(oid):
             return oid
         return self.store(self.read_content(oid, rel))
 
+    def head_modes(self):
+        """{path: mode} of all files in HEAD - one git command, for commands
+        that need the modes of many (head_mode())."""
+        if self.modes is None:
+            p = self.git(["ls-tree", "-r", "-z", "--full-tree", "HEAD"], check=False)
+            self.modes = {}
+            for item in p.stdout.decode("utf-8", "replace").split("\0"):
+                info, _, path = item.partition("\t")
+                if info.split(" ")[1:2] == ["blob"]:
+                    self.modes[path] = info.split(" ")[0]
+        return self.modes
+
     def head_mode(self, rel):
         """Mode of the file rel in HEAD, None if HEAD has none."""
+        if self.modes is not None:
+            return self.modes.get(rel)
         parent, _, name = rel.rpartition("/")
         p = self.git(["ls-tree", "-z", f"HEAD:{parent}" if parent else "HEAD"], check=False)
         for item in p.stdout.decode("utf-8", "replace").split("\0"):
@@ -2243,6 +2352,17 @@ class Repo:
                 mode, oid, _ = info.split(" ")
                 items.append((mode, oid, path))
         return items
+
+    def worktree_mode(self, rel):
+        """The mode git add would give the working tree file rel: its
+        executable bit, or with core.filemode=false (Windows) the index's."""
+        if self.filemode is None:
+            self.filemode = out(self.git(["config", "--type=bool", "core.filemode"],
+                                         check=False)) != "false"
+        if self.filemode:
+            return "100755" if os.stat(self.top / rel).st_mode & 0o100 else "100644"
+        items = self.index_items(rel)
+        return items[0][0] if items else "100644"
 
     def worktree_items(self, rel, paths=None):
         """[(mode, id, path)] of the files at rel as `git add -A` would
@@ -2400,7 +2520,8 @@ def origin_text(entry):
 
 def prefetch_files(repo, entries):
     """repo.prefetch() for the file entries among these."""
-    repo.prefetch([e.rel for e in entries if e.kind == "file" and not path_problem(e.rel)])
+    repo.prefetch({e.rel: e.blob for e in entries
+                   if e.kind == "file" and not path_problem(e.rel)})
 
 
 def path_problem(rel):
@@ -2748,13 +2869,13 @@ def matches_base(repo, st, oid):
     if oid == entry.blob:
         return True
     try:
-        data = repo.git(["cat-file", "blob", oid], check=False).stdout
-        ptr = lfs_pointer(data)
+        ptr = repo.lfs_pointer_of(oid)
         # in LFS now: the pointer names the content's hash, no download needed
         if ptr and not entry.steps and entry.digest == f"sha256:{ptr[0]}":
             return True
         if st.base_now is None:
-            st.base_now = repo.as_local(repo.read_content(entry.blob, st.rel), st.rel)
+            st.base_now = repo.now.get((entry.blob, st.rel)) or \
+                repo.as_local(repo.read_content(entry.blob, st.rel), st.rel)
         return oid == st.base_now
     except FsError as e:
         return base_unavailable(st, e)
@@ -2765,7 +2886,7 @@ def tree_matches_base(repo, st, tree):
     the same modes, and each file that differs from its base blob is that
     blob re-stored with the current .gitattributes - checked only for the
     files that differ (re-storing means reading the whole content, through
-    the LFS filters too), up to the first real difference."""
+    the LFS filters too), all at once (stored_now)."""
     entry = st.entry
     if not entry.blob:
         return False
@@ -2776,15 +2897,11 @@ def tree_matches_base(repo, st, tree):
         now = {p: (m, o) for m, k, o, p in repo.tree_entries(tree) if k == "blob"}
         if base.keys() != now.keys() or any(base[p][0] != now[p][0] for p in base):
             return False
-        for path, (_, oid) in sorted(now.items()):
-            if oid == base[path][1]:
-                continue
-            if path not in st.files_now:
-                full = f"{st.rel}/{path}"
-                st.files_now[path] = repo.as_local(repo.read_content(base[path][1], full), full)
-            if oid != st.files_now[path]:
-                return False
-        return True
+        differ = [path for path, (_, oid) in now.items() if oid != base[path][1]]
+        new = repo.stored_now((base[p][1], f"{st.rel}/{p}") for p in differ
+                              if p not in st.files_now)
+        st.files_now.update({path[len(st.rel) + 1:]: oid for (_, path), oid in new.items()})
+        return all(now[p][1] == st.files_now[p] for p in differ)
     except FsError as e:
         return base_unavailable(st, e)
 
@@ -3400,13 +3517,15 @@ def release_lines(release, assets, filter_name=None, stats=None):
 def notes_limits(repo):
     """(lines per release, lines in all) of release notes in commit
     messages: assetsync.notesLines, assetsync.notesTotalLines."""
-    result = []
-    for key, default in (("notesLines", NOTES_LINES), ("notesTotalLines", NOTES_TOTAL_LINES)):
-        v = out(repo.git(["config", f"assetsync.{key}"], check=False)).strip()
-        if v and not v.isdigit():
-            raise FsError(f"assetsync.{key}: '{v}' is not a number of lines")
-        result.append(int(v) if v else default)
-    return tuple(result)
+    if repo.notes_limits is None:     # once per run
+        result = []
+        for key, default in (("notesLines", NOTES_LINES), ("notesTotalLines", NOTES_TOTAL_LINES)):
+            v = out(repo.git(["config", f"assetsync.{key}"], check=False)).strip()
+            if v and not v.isdigit():
+                raise FsError(f"assetsync.{key}: '{v}' is not a number of lines")
+            result.append(int(v) if v else default)
+        repo.notes_limits = tuple(result)
+    return repo.notes_limits
 
 
 def releases_between(st):
@@ -3537,9 +3656,10 @@ def diff_items(ctx, repo, reg, args):
     """(rc, [(state, base items, other items)]) of all entries that differ:
     other = the working tree, HEAD (--committed) or what pull would install
     (--upstream)."""
-    rc, groups = EXIT_OK, []
+    rc, raw = EXIT_OK, []
     entries = select_entries(repo, reg, args.paths, containing=True)
     prefetch_files(repo, entries)
+    repo.head_modes()
     for entry in entries:
         st = evaluate(ctx, repo, entry)
         if st.unchecked and not st.error:       # a directory: get its base first
@@ -3564,16 +3684,31 @@ def diff_items(ctx, repo, reg, args):
                 other = head_items(repo, entry)
             elif entry.is_dir:      # its files, not others'
                 other = repo.worktree_items(entry.rel, base_paths(repo, entry) or set())
-            else:
-                other = repo.worktree_items(entry.rel)
+            else:                   # prefetched; the mode as git add would take it
+                blob = repo.worktree_blob(entry.target)
+                other = [(repo.worktree_mode(entry.rel), blob, entry.rel)] if blob else []
             if entry.is_dir and args.committed:
                 own = base_paths(repo, entry) or set()
                 other = [item for item in other if item[2] in own]
             # files the same on both sides aren't shown: not read (LFS) at all
             base = base_items(repo, entry)
             same = set(base) & set(other)
-            groups.append((st, entry_paths(repo, [i for i in base if i not in same]),
-                           entry_paths(repo, [i for i in other if i not in same])))
+            raw.append((entry, st, [i for i in base if i not in same],
+                        [i for i in other if i not in same]))
+        except FsError as e:
+            error(f"{entry.shown}: {e}")
+            rc = EXIT_ERROR
+    # working files that differ: stored (in scratch()) with one git command for all
+    files = [p for e, _, _, other in raw if not e.is_dir and not args.upstream
+             and not args.committed for _, _, p in other]
+    if files:
+        repo.git(["hash-object", "-w", "--stdin-paths"],
+                 data="".join(f"{p}\n" for p in files).encode("utf-8"))
+    repo.lfs_pointers(o for _, _, b, other in raw for _, o, _ in b + other)   # all at once
+    groups = []
+    for entry, st, base, other in raw:
+        try:
+            groups.append((st, entry_paths(repo, base), entry_paths(repo, other)))
         except FsError as e:
             error(f"{entry.shown}: {e}")
             rc = EXIT_ERROR
@@ -4734,46 +4869,39 @@ def restore_one(repo, entry, staged, worktree):
     the index - only the files that differ from it (the others aren't read
     again). Returns what was done ([] if nothing differed)."""
     base = base_items(repo, entry)
-    stored = {}
-
-    def now(oid, path):
-        """The base blob as it is stored now (.gitattributes may have changed
-        since the sync: LFS, line endings)."""
-        if path not in stored:
-            try:
-                stored[path] = repo.as_local(repo.read_content(oid, path), path)
-            except FsError as e:
-                raise FsError(f"its synced version is not available ({e}) - get it again "
-                              f"with 'git assetsync pull --overwrite "
-                              f"{path_arg(repo, entry.shown)}'")
-        return stored[path]
-
-    def differing(current):
-        have = {p: (m, o) for m, o, p in current}
-        fix = []
-        for mode, oid, path in base:
-            m, o = have.get(path, (None, None))
-            if o and (m == mode or not entry.is_dir) and (o == oid or o == now(oid, path)):
-                continue
-            fix.append((mode, now(oid, path), path))
-        return fix
     paths = {path for _, _, path in base}
-    done = []
+    sides = {}
     if staged:
-        fix = differing([i for i in repo.index_items(entry.rel) if i[2] in paths])
-        if fix:
-            restore_index(repo, entry, fix)
-            done.append("index")
+        sides["index"] = [i for i in repo.index_items(entry.rel) if i[2] in paths]
     if worktree:
         if entry.is_dir:          # its files, not those of others there
-            current = repo.worktree_items(entry.rel, paths)
+            sides["worktree"] = repo.worktree_items(entry.rel, paths)
         else:
             blob = repo.worktree_blob(entry.target)
-            current = [("", blob, entry.rel)] if blob else []
-        fix = differing(current)
-        if fix:
-            restore_worktree(repo, entry, fix)
-            done.append("worktree")
+            sides["worktree"] = [("", blob, entry.rel)] if blob else []
+
+    def same(item, current):
+        return item[1] == current[1] and (item[0] == current[0] or not entry.is_dir)
+    # the files that don't have their base blob: is it there, stored differently
+    # (.gitattributes changed since the sync: LFS, line endings)? - all at once
+    have = {side: {p: (m, o) for m, o, p in items} for side, items in sides.items()}
+    check = {(oid, path) for mode, oid, path in base for side in sides
+             if not same((mode, oid), have[side].get(path, (None, None)))}
+    try:
+        now = repo.stored_now(check)
+    except FsError as e:
+        raise FsError(f"its synced version is not available ({e}) - get it again with "
+                      f"'git assetsync pull --overwrite {path_arg(repo, entry.shown)}'")
+    done = []
+    for side, restore in (("index", restore_index), ("worktree", restore_worktree)):
+        if side in sides:
+            fix = [(mode, now[(oid, path)], path) for mode, oid, path in base
+                   if (oid, path) in now
+                   and not same((mode, oid), have[side].get(path, (None, None)))
+                   and not same((mode, now[(oid, path)]), have[side].get(path, (None, None)))]
+            if fix:
+                restore(repo, entry, fix)
+                done.append(side)
     return done
 
 
