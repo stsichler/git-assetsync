@@ -1481,7 +1481,8 @@ red.
 Colors follow `color.assetsync`, falling back to `color.ui` (default: on
 for terminals); `--color[=always|never|auto]` and `--no-color` override
 that, and `NO_COLOR` turns colors off. Hook output on stderr is colored the
-same way.
+same way, and so is the help (`-h`) – with Python 3.14 or later, which
+colors it; the list of commands in the colors of the rest.
 
 ### CI
 

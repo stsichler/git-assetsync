@@ -328,6 +328,7 @@ import bz2
 import fnmatch
 import gzip
 import hashlib
+import inspect
 import json
 import lzma
 import os
@@ -409,17 +410,39 @@ STYLES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33",
 _color = {"out": False, "err": False}
 
 
+def color_wanted(mode, stream, cwd=None):
+    """Colors on a stream? Decided like git: --color, NO_COLOR,
+    color.assetsync/color.ui."""
+    if mode == "always":
+        return True
+    if mode == "never" or os.environ.get("NO_COLOR"):
+        return False
+    tty = "true" if stream.isatty() else "false"
+    p = git(["config", "--get-colorbool", "color.assetsync", tty], cwd=cwd, check=False)
+    return out(p) == "true"
+
+
+def color_mode(argv):
+    """The --color mode in argv, as the parser will take it (before parsing,
+    for the colors of the help): the last --color[=WHEN] / --no-color."""
+    mode = "auto"
+    for i, a in enumerate(argv):
+        if a == "--":
+            break
+        if a == "--no-color":
+            mode = "never"
+        elif a.startswith("--color="):
+            mode = a[len("--color="):]
+        elif a == "--color":
+            nxt = argv[i + 1] if i + 1 < len(argv) else ""
+            mode = nxt if nxt in ("always", "never", "auto") else "always"
+    return mode
+
+
 def setup_colors(mode, cwd=None):
     """Decide per stream like git: --color, NO_COLOR, color.assetsync/color.ui."""
-    def want(stream):
-        if mode == "always":
-            return True
-        if mode == "never" or os.environ.get("NO_COLOR"):
-            return False
-        tty = "true" if stream.isatty() else "false"
-        p = git(["config", "--get-colorbool", "color.assetsync", tty], cwd=cwd, check=False)
-        return out(p) == "true"
-    _color["out"], _color["err"] = want(sys.stdout), want(sys.stderr)
+    _color["out"], _color["err"] = color_wanted(mode, sys.stdout, cwd), \
+        color_wanted(mode, sys.stderr, cwd)
     if os.name == "nt" and (_color["out"] or _color["err"]):
         os.system("")          # enables ANSI escape processing in the Windows console
 
@@ -1976,6 +1999,8 @@ OBJECT_VARS = ("GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 
 class Repo:
     scratch_dir = None      # see scratch()
+    fetched = None          # see prefetch(): {path: (blob in HEAD, blob in the working tree)}
+    index = None            # see index_path()
 
     def __init__(self):
         p = git(["rev-parse", "--show-toplevel"], check=False)
@@ -1987,6 +2012,7 @@ class Repo:
         # subdirectory in GIT_PREFIX
         prefix = os.environ.get("GIT_PREFIX")
         self.base = Path.cwd() / prefix if prefix else Path.cwd()
+        self.lf_as_is = set()     # see fix_eol(): files with LF that stay so here
 
     def git(self, args, **kw):
         return git(args, cwd=self.top, **kw)
@@ -2000,12 +2026,43 @@ class Repo:
         except ValueError:            # Windows: another drive
             raise FsError(f"'{path}' is outside the repository")
 
+    def prefetch(self, rels):
+        """For commands that only look: the blobs of these files in HEAD and in
+        the working tree, with two git commands for all instead of a few
+        per file (head_blob(), worktree_blob() then use them)."""
+        rels = [r for r in rels if "\n" not in r]
+        if not rels:
+            return
+        p = self.git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], check=False,
+                     data="".join(f"HEAD:{r}\n" for r in rels).encode("utf-8"))
+        head = {}
+        for r, line in zip(rels, p.stdout.decode("utf-8", "replace").splitlines()):
+            oid, _, kind = line.rpartition(" ")
+            head[r] = oid if kind == "blob" else None
+        files = [r for r in rels if (self.top / r).is_file()]
+        work = {}
+        if files:     # with the filters for each path (LFS, line endings), as git add
+            p = self.git(["hash-object", "--stdin-paths"],
+                         data="".join(f"{r}\n" for r in files).encode("utf-8"))
+            work = dict(zip(files, p.stdout.decode("utf-8", "replace").split()))
+        self.fetched = {r: (head.get(r), work.get(r)) for r in rels}
+
+    def head_blob(self, rel):
+        """Blob id of the file rel in HEAD, None if HEAD has none."""
+        if self.fetched is not None and rel in self.fetched:
+            return self.fetched[rel][0]
+        p = self.git(["rev-parse", "--verify", "-q", f"HEAD:{rel}"], check=False)
+        return out(p) if p.returncode == 0 else None
+
     def worktree_blob(self, path):
         """Blob id of the (clean-filtered) working tree file, None if missing.
         For a file tracked in LFS here, this is the id of its LFS pointer."""
+        rel = self.rel(path)
+        if self.fetched is not None and rel in self.fetched:
+            return self.fetched[rel][1]
         if not path.is_file():
             return None
-        return out(self.git(["hash-object", f"--path={self.rel(path)}", str(path)]))
+        return out(self.git(["hash-object", f"--path={rel}", str(path)]))
 
     def add_file(self, path, rel):
         """Store a file as `git add` would store it at rel (eol normalization,
@@ -2122,8 +2179,10 @@ class Repo:
             self.scratch_dir = td
 
     def index_path(self):
-        p = Path(out(self.git(["rev-parse", "--git-path", "index"])))
-        return p if p.is_absolute() else self.top / p
+        if self.index is None:
+            p = Path(out(self.git(["rev-parse", "--git-path", "index"])))
+            self.index = p if p.is_absolute() else self.top / p
+        return self.index
 
     @contextmanager
     def temp_index(self, copy=False):
@@ -2255,7 +2314,13 @@ class Repo:
         """Rewrite a file written by `git config -f` (LF) in working tree form,
         so core.autocrlf repositories don't warn about it."""
         data = path.read_bytes().replace(b"\r\n", b"\n")
+        if self.rel(path) in self.lf_as_is:     # known: no conversion here
+            if data != path.read_bytes():
+                path.write_bytes(data)
+            return
         conv = self.to_worktree(data, self.rel(path))
+        if conv == data:
+            self.lf_as_is.add(self.rel(path))
         if conv != path.read_bytes():
             path.write_bytes(conv)
 
@@ -2329,6 +2394,11 @@ def origin_text(entry):
     what = entry.asset or ("all assets" if entry.is_dir else "only asset")
     steps = f", filter {entry.filter}" if entry.filter else ""
     return f"{what} from {entry.name}, {spec_text(entry.spec)}{steps}; {synced}"
+
+
+def prefetch_files(repo, entries):
+    """repo.prefetch() for the file entries among these."""
+    repo.prefetch([e.rel for e in entries if e.kind == "file" and not path_problem(e.rel)])
 
 
 def path_problem(rel):
@@ -2721,16 +2791,14 @@ def local_state_file(repo, st):
     entry = st.entry
     known = bool(entry.blob)
     cur = repo.worktree_blob(entry.target)
-    p = repo.git(["rev-parse", "--verify", "-q", f"HEAD:{entry.rel}"], check=False)
-    head = st.head_blob = out(p) if p.returncode == 0 else None
+    head = st.head_blob = repo.head_blob(entry.rel)
     if head and known:
         st.committed = "unmodified" if matches_base(repo, st, head) else "adapted"
     if cur is None:
         st.worktree = "deleted" if head else "missing"
     elif not head:
         st.worktree = "added"
-    elif repo.git(["diff", "--quiet", "HEAD", "--", lit(entry.rel)],
-                  check=False).returncode == 1:
+    elif cur != head:         # the content, as git add would store it now
         st.worktree = "modified"
     if cur is None:
         st.local = "missing"
@@ -3061,6 +3129,7 @@ def cmd_status(ctx, repo, args):
     pull or a file modified) or an error (2)."""
     reg = Registry(repo)
     entries = select_entries(repo, reg, args.paths, containing=True)
+    prefetch_files(repo, entries)
     if not entries:
         if not args.short:
             print(f"no synced files ({REGISTRY} not found or empty)")
@@ -3288,7 +3357,9 @@ def cmd_hook(ctx, repo, args):
     """Run by the installed hooks (HOOKS): reminders on stderr; pre-push also
     checks the pushed commits (assetsync.pushCheck = warn | error | off).
     Exit code EXIT_REFUSED only to refuse a push."""
-    hook_reminders([evaluate(ctx, repo, e) for e in Registry(repo).entries()])
+    entries = Registry(repo).entries()
+    prefetch_files(repo, entries)
+    hook_reminders([evaluate(ctx, repo, e) for e in entries])
     if args.name != "pre-push":
         return EXIT_OK
     mode = out(repo.git(["config", "assetsync.pushCheck"], check=False)).lower() or "warn"
@@ -3469,7 +3540,9 @@ def diff_items(ctx, repo, reg, args):
     other = the working tree, HEAD (--committed) or what pull would install
     (--upstream)."""
     rc, groups = EXIT_OK, []
-    for entry in select_entries(repo, reg, args.paths, containing=True):
+    entries = select_entries(repo, reg, args.paths, containing=True)
+    prefetch_files(repo, entries)
+    for entry in entries:
         st = evaluate(ctx, repo, entry)
         if st.unchecked and not st.error:       # a directory: get its base first
             try:
@@ -3774,6 +3847,8 @@ def install_file(repo, rel, target, files, overwrite=False):
     if target.is_dir():
         raise FsError(f"'{rel}' is a directory")
     target.parent.mkdir(parents=True, exist_ok=True)
+    if repo.fetched:
+        repo.fetched.pop(rel, None)         # changes now
     target.write_bytes(repo.checkout_form(blob, rel))
     set_executable(target, executable)
     repo.git(["add", "--", lit(rel)])
@@ -4002,6 +4077,7 @@ def cmd_pull(ctx, repo, args):
         entries = select_entries(repo, reg, args.paths, containing=True)
     else:
         raise FsError("specify file(s) or --all")
+    prefetch_files(repo, entries)     # each pull changes only its own files
     ctx.override = args.release
     rc, done = EXIT_OK, 0
     for n, entry in enumerate(entries, 1):
@@ -5180,20 +5256,51 @@ def cmd_uninstall_hooks(repo, args):
 BASIC_COMMANDS = ("status", "pull", "diff", "difftool", "restore", "add", "rm", "unlink", "mv")
 
 
-def command_list(sub):
+def command_list(sub, t):
     """--help: the commands with their summaries, basic ones first (the
-    rest in the order they were defined, `hook` last). As in git-filesync."""
+    rest in the order they were defined, `hook` last), in the colors of the
+    theme t of argparse (headings, and names like its positionals). As in
+    git-filesync."""
     width = max(shutil.get_terminal_size().columns - 2, 40)
     helps = {a.dest: a.help for a in sub._choices_actions}
 
     def group(title, names):
-        lines = [f"{title}:"]
+        lines = [f"{t.heading}{title}:{t.reset}"]
         for n in names:
-            lines += textwrap.wrap(helps[n], width, initial_indent=f"  {n:<18}",
-                                   subsequent_indent=" " * 20)
+            text = textwrap.wrap(helps[n], width, initial_indent=" " * 20,
+                                 subsequent_indent=" " * 20)
+            text[0] = f"  {t.action}{n}{t.reset}{' ' * (18 - len(n))}" + text[0][20:]
+            lines += text
         return "\n".join(lines)
     advanced = [n for n in helps if n not in BASIC_COMMANDS]
     return group("basic commands", BASIC_COMMANDS) + "\n\n" + group("advanced commands", advanced)
+
+
+THEME_KEYS = ("usage", "prog", "summary_short_option", "summary_long_option", "summary_action",
+              "heading", "action", "reset")
+
+
+class MainParser(argparse.ArgumentParser):
+    """The parser of git assetsync itself: its usage line and the grouped
+    command list in the colors argparse uses for the rest of the help
+    (Python 3.14 and later; before, none). As in git-filesync."""
+    commands: Any = None      # the action of the commands (add_subparsers)
+
+    def theme(self):
+        t = getattr(self._get_formatter(), "_theme", None)
+        return t or SimpleNamespace(**dict.fromkeys(THEME_KEYS, ""))
+
+    def format_usage(self):
+        t = self.theme()
+        return (f"{t.usage}usage: {t.reset}{t.prog}{self.prog}{t.reset} "
+                f"[{t.summary_short_option}-h{t.reset}] [{t.summary_long_option}--version"
+                f"{t.reset}] {t.summary_action}<command>{t.reset} ...\n")
+
+    def format_help(self):
+        return (self.format_usage() + "\n" + super().format_help() + "\n"
+                + command_list(self.commands, self.theme())
+                + "\n\nWithout a command: status. 'git assetsync <command> -h' describes a "
+                  "command\nand lists its options.\n")
 
 
 def describe_commands(parser):
@@ -5226,12 +5333,22 @@ def main(argv=None):
     remotep.add_argument("--remote", action="store_true",
                          help="ignore mappings to local folders (see source map): ask the platform")
 
-    ap = argparse.ArgumentParser(prog="git assetsync",
-                                 description="Keep files in sync with release assets of "
-                                             "other projects.",
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # the help in colors (argparse: Python 3.14 and later) when the output would be
+    color = {}
+    if "color" in inspect.signature(argparse.ArgumentParser).parameters:
+        opts = argv[:argv.index("--")] if "--" in argv else argv
+        color["color"] = ("-h" in opts or "--help" in opts) and \
+            color_wanted(color_mode(argv), sys.stdout)
+    ap = MainParser(prog="git assetsync", usage=argparse.SUPPRESS,
+                    description="Keep files in sync with release assets of other projects.",
+                    **color)
     ap.add_argument("--version", action="version", version=f"git-assetsync {__version__}")
-    sub = ap.add_subparsers(dest="cmd", metavar="<command>")
+    # prog: usage=SUPPRESS would leave the commands' prefix empty; parser_class:
+    # not MainParser for them
+    sub = ap.add_subparsers(dest="cmd", metavar="<command>", prog="git assetsync",
+                            parser_class=argparse.ArgumentParser)
+    ap.commands = sub
 
     p = sub.add_parser("status", parents=[colorp, remotep], help="show the state of the synced files")
     p.add_argument("paths", nargs="*", help="files or directories (default: all)")
@@ -5528,14 +5645,8 @@ def main(argv=None):
     p.add_argument("name", choices=list(HOOKS))
     p.add_argument("hook_args", nargs=argparse.REMAINDER, help="the hook's arguments")
     describe_commands(ap)
-    ap.epilog = command_list(sub) + (
-        "\n\nWithout a command: status. 'git assetsync <command> -h' describes a command\n"
-        "and lists its options.")
-    # the grouped list instead of argparse's; hiding that hides <command> in the usage too
-    sub.help = argparse.SUPPRESS
-    ap.usage = "git assetsync [-h] [--version] <command> ..."
+    sub.help = argparse.SUPPRESS      # the grouped list (MainParser) instead of argparse's
 
-    argv = list(sys.argv[1:] if argv is None else argv)
     extra = []
     if argv and argv[0] in ("diff", "difftool") and "--" in argv:
         i = argv.index("--")

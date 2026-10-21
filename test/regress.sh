@@ -408,6 +408,15 @@ check "help: basic commands first, then the advanced ones" \
   "$(asd -h | grep -E '^(basic|advanced) commands:$|^  [a-z][a-z-]*  ' | sed 's/^  \([a-z-]*\) .*/\1/' | oneline)" \
   "basic commands: status pull diff difftool restore add rm unlink mv advanced commands: set edit verify releases source filter trust cache install-hooks uninstall-hooks hook "
 check "help: also for actions" "$(asd source rename -h | grep -c '^Rename a source and all references to it\.$')" "1"
+# with Python 3.14 or later the help is colored - the command list too - when the
+# output would be (--color, color.ui, NO_COLOR); before, it isn't
+if "$PYTHON" -c 'import argparse, inspect, sys; sys.exit("color" not in inspect.signature(argparse.ArgumentParser).parameters)'; then
+  ESC=$(printf '\033')
+  check "help: the command list colored like the rest" \
+    "$(FORCE_COLOR=1 asd -h --color=always | grep -cE "^  ${ESC}\[[0-9;]*mstatus${ESC}\[0m|^${ESC}\[[0-9;]*musage: ")" "2"
+  check "help: no colors with --no-color, color.ui=never" \
+    "$(FORCE_COLOR=1 asd status -h --no-color | grep -c "$ESC") $(git config color.ui never; FORCE_COLOR=1 asd -h | grep -c "$ESC"; git config --unset color.ui)" "0 0"
+fi
 check "help: the list short, the command's own description complete" \
   "$(asd -h | grep -c '^  difftool  *same in the configured difftool$') $(asd difftool -h | grep -c '^Show local modifications against what the release gave in the configured$')" "1 1"
 
