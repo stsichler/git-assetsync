@@ -276,6 +276,9 @@ command.
                                 platform with these assets (e.g. from a
                                 local folder): assetsync.pushCheck = warn |
                                 error (refuses the push) | off
+        --force                 add our lines to existing hooks of other
+                                tools, right after the #! line (default:
+                                show the lines to add)
     uninstall-hooks             remove them again
     hook pre-push|post-merge    what the installed hooks run
 
@@ -4692,11 +4695,19 @@ def cmd_install_hooks(repo, args):
             text = f.read_bytes().decode("utf-8", "replace")
             lines = text.splitlines(keepends=True)
             at = next((i for i, ln in enumerate(lines) if is_our_hook_line(ln)), None)
+            if at is None and args.force:
+                # right after the shebang: before commands that read the pushed
+                # refs from stdin (git lfs pre-push), or an exec/exit at the end
+                at = 1 if lines and lines[0].startswith("#!") else 0
+                f.write_bytes("".join(lines[:at] + [snippet] + lines[at:]).encode("utf-8"))
+                print(f"{name}: {paint('lines added to the existing hook', 'green')}")
+                continue
             if at is None:
                 where = (" (first: commands after them that read the pushed refs, like git lfs "
                          "pre-push, still get them)" if name == "pre-push" else "")
                 print(f"{name}: {paint('hook exists', 'yellow')}, add these lines to "
-                      f"{f}{where}:\n{snippet}")
+                      f"{f}{where}:\n{snippet}"
+                      "(or run 'git assetsync install-hooks --force' to add them)")
                 continue
             # ours: replace our lines with the current ones, in the same place
             rest = [ln for ln in lines if not is_our_hook_line(ln)]
@@ -5047,7 +5058,10 @@ def main(argv=None):
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would be removed")
     actions.add_parser("dir", parents=[colorp], help="print the cache's directory")
 
-    sub.add_parser("install-hooks", parents=[colorp], help="install the pre-push/post-merge hooks")
+    p = sub.add_parser("install-hooks", parents=[colorp],
+                       help="install the pre-push/post-merge hooks")
+    p.add_argument("--force", action="store_true",
+                   help="add our lines to existing hooks (right after the #! line)")
     sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the hooks again")
     p = sub.add_parser("hook", parents=[colorp], help="what the installed hooks run")
     p.add_argument("name", choices=list(HOOKS))

@@ -1010,7 +1010,17 @@ printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-push
 OUT=$(git assetsync install-hooks)
 check "existing hook: not touched" "$(echo "$OUT" | grep -c 'post-merge: hook exists')" "1"
 check "existing pre-push hook: lines to add first" "$(echo "$OUT" | grep -c 'pre-push: hook exists, add these lines to .* (first: ')" "1"
-rm .git/hooks/pre-push
+check "... and how to have them added" "$(echo "$OUT" | grep -c "^(or run 'git assetsync install-hooks --force' to add them)$")" "2"
+printf '#!/bin/sh\ngit lfs pre-push "$@"\nexec true\n' > .git/hooks/pre-push
+check "install-hooks --force" "$(git assetsync install-hooks --force | oneline)" \
+  "pre-push: lines added to the existing hook post-merge: lines added to the existing hook "
+check "... right after the #! line" "$(sed -n 1,3p .git/hooks/pre-push | cut -c1-16 | oneline) $(tail -2 .git/hooks/pre-push | oneline)" \
+  "#!/bin/sh # git-assetsync: git_assetsync_re  git lfs pre-push \"\$@\" exec true "
+check "... then: already installed" "$(git assetsync install-hooks --force | oneline)" "pre-push: already installed post-merge: already installed "
+quiet git assetsync uninstall-hooks
+check "... uninstall keeps the others' lines" "$(oneline < .git/hooks/pre-push) $(oneline < .git/hooks/post-merge)" \
+  "#!/bin/sh git lfs pre-push \"\$@\" exec true  #!/bin/sh echo mine "
+rm .git/hooks/pre-push .git/hooks/post-merge
 check "colors: --color=always" "$(git assetsync status -s --color=always | grep -c "$(printf '\033')")" "1"
 check "colors: none in pipes" "$(git assetsync status -s | grep -c "$(printf '\033')")" "0"
 

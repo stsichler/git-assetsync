@@ -841,7 +841,9 @@ pre-push` refuses a push, as in git-filesync. They are not meant to be run
 by hand (from a terminal, `hook pre-push` checks `HEAD`).
 
 Existing hooks of others are not changed; `install-hooks` prints the lines
-to add instead. In a `pre-push` hook, put them first: git passes the
+to add instead – or, with `--force`, adds them right after the `#!` line,
+before the hook's own commands (also before an `exec` or `exit` at its
+end). In a `pre-push` hook, they must come first: git passes the
 pushed refs on stdin, which the push check reads – the lines keep them for
 the commands after them (such as `git lfs pre-push`), but a command before
 them that reads stdin leaves nothing for the check. Hooks installed by an
