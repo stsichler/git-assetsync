@@ -341,7 +341,7 @@ import time
 import zipfile
 import zlib
 from collections import Counter
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
@@ -2017,6 +2017,7 @@ class Repo:
         self.lf_as_is = set()     # see fix_eol(): files with LF that stay so here
         self.now = {}
         self.pointers = {}
+        self.missing = set()      # see lfs_pointers()
 
     def git(self, args, **kw):
         return git(args, cwd=self.top, **kw)
@@ -2100,7 +2101,7 @@ class Repo:
         """{blob: lfs_pointer()} of those of these blobs that are Git LFS
         pointers (missing ones aren't) - two git commands for all; noted in
         self.pointers, for lfs_pointer_of()."""
-        oids = sorted(set(oids) - set(self.pointers))
+        oids = sorted(set(oids) - set(self.pointers) - self.missing)
         found = {}
         if not oids:
             return found
@@ -2108,7 +2109,8 @@ class Repo:
                      data="".join(f"{o}\n" for o in oids).encode("utf-8"))
         sizes = {w[0]: int(w[1]) for w in (line.split() for line in out(p).splitlines())
                  if len(w) == 2 and w[1].isdigit()}
-        self.pointers.update(dict.fromkeys(sizes))      # not those missing (stored later?)
+        self.pointers.update(dict.fromkeys(sizes))
+        self.missing.update(set(oids) - set(sizes))     # not stored (yet: see stored())
         small = [o for o, size in sizes.items() if size < 1024]
         if not small:
             return found
@@ -2550,6 +2552,124 @@ def path_problem(rel):
     return None
 
 
+def config_items(raw):
+    """{key: [values]} of `git config --list -z` output (keys as git lists
+    them: section and name lower case)."""
+    items = {}
+    for item in raw.decode("utf-8", "replace").split("\0"):
+        if item:
+            key, has_val, val = item.partition("\n")
+            items.setdefault(key, []).append(val if has_val else None)
+    return items
+
+
+CONFIG_HEADER = re.compile(r'\s*\[\s*([A-Za-z0-9.-]+)\s+"((?:[^"\\]|\\.)*)"\s*\]\s*([;#].*)?')
+CONFIG_KEY = re.compile(r"\s*([A-Za-z][A-Za-z0-9-]*)\s*(=.*)?")
+
+
+def config_value(value):
+    """A value as git config writes it: quoted only if it has to be."""
+    if value != value.strip() or any(c in value for c in ';#"\\\n\t'):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace(
+            "\n", "\\n").replace("\t", "\\t") + '"'
+    return value
+
+
+def edit_config(text, items, ops):
+    """(new text, {key: [values]} expected) of applying ops - the arguments
+    of `git config -f FILE ...`: KEY VALUE, --unset-all KEY, --add KEY VALUE,
+    --remove-section S.SUB, --rename-section S.OLD S.NEW - to the text of a
+    config file and its items, without running git for each. ValueError
+    for what it isn't sure to do as git would (the caller then does)."""
+    lines = [ln.rstrip("\r") for ln in text.split("\n")]
+    items = {k: list(v) for k, v in items.items()}
+
+    def blocks(name):
+        """[start, end) of the lines of each section block NAME (sect.sub)."""
+        sect, _, sub = name.partition(".")
+        found, start = [], None
+        for i, ln in enumerate(lines + ["[end]"]):
+            if ln.lstrip().startswith("["):
+                if start is not None:
+                    found.append((start, i))
+                    start = None
+                m = CONFIG_HEADER.fullmatch(ln)
+                if ln != "[end]" and not m and i < len(lines):
+                    raise ValueError(f"header {ln}")
+                if m and m.group(1).lower() == sect and \
+                        re.sub(r"\\(.)", r"\1", m.group(2)) == sub:
+                    start = i
+            elif ln.rstrip().endswith("\\"):
+                raise ValueError("continued line")
+        if len(found) > 1:
+            raise ValueError(f"{name} more than once")
+        return found
+
+    def key_lines(start, end, key):
+        return [i for i in range(start + 1, end)
+                if (m := CONFIG_KEY.fullmatch(lines[i])) and m.group(1).lower() == key]
+
+    def header(name):
+        sect, _, sub = name.partition(".")
+        return f'[{sect} "' + sub.replace("\\", "\\\\").replace('"', '\\"') + '"]'
+
+    def append(name, key, value):
+        found = blocks(name)
+        line = f"\t{key} = {config_value(value)}"
+        if not found:
+            while lines and not lines[-1].strip():
+                lines.pop()
+            lines.extend([header(name), line, ""])
+            return
+        start, end = found[0]
+        at = end
+        while at > start + 1 and not lines[at - 1].strip():
+            at -= 1
+        lines.insert(at, line)
+    for op in ops:
+        if op[0] == "--remove-section":
+            for start, end in blocks(op[1]):
+                del lines[start:end]
+            items = {k: v for k, v in items.items()
+                     if not k.startswith(op[1].split(".")[0] + "." + op[1].partition(".")[2] + ".")}
+            continue
+        if op[0] == "--rename-section":
+            found = blocks(op[1])
+            if not found or blocks(op[2]):
+                raise ValueError("rename")
+            lines[found[0][0]] = header(op[2])
+            old, new = op[1] + ".", op[2] + "."
+            items = {(new + k[len(old):] if k.startswith(old) else k): v for k, v in items.items()}
+            continue
+        flag, key, value = (op[0], op[1], op[2] if len(op) > 2 else None) \
+            if op[0].startswith("--") else (None, op[0], op[1])
+        name, _, k = key.rpartition(".")
+        if not CONFIG_KEY.fullmatch(k) or "\n" in name:
+            raise ValueError(key)
+        k = k.lower()
+        norm = name.partition(".")[0].lower() + "." + name.partition(".")[2] + "." + k
+        found = blocks(name)
+        idx = key_lines(*found[0], k) if found else []
+        if flag == "--unset-all":
+            for i in reversed(idx):
+                del lines[i]
+            items.pop(norm, None)
+        elif flag == "--add":
+            append(name, k, value)
+            items.setdefault(norm, []).append(value)
+        elif flag is None:
+            if len(idx) > 1:
+                raise ValueError(f"{key} more than once")
+            if idx:
+                lines[idx[0]] = f"\t{k} = {config_value(value)}"
+            else:
+                append(name, k, value)
+            items[norm] = [value]
+        else:
+            raise ValueError(flag)
+    return "\n".join(lines).rstrip("\n") + "\n", items
+
+
 class Registry:
     """The repository's .git-assetsync: [source], [file] and [dir] sections.
     files holds the entries of both kinds, kinds their kind."""
@@ -2559,12 +2679,14 @@ class Registry:
         self.path = repo.top / REGISTRY
         self.sources, self.files, self.kinds, self.filters = {}, {}, {}, {}
         self.dry_run = False      # only change the in-memory state
+        self.items, self.pending = {}, []     # see flush()
         if self.path.exists():
             p = git(["config", "-f", self.path, "--list", "-z"], check=False)
             if p.returncode:
                 raise FsError(f"{REGISTRY}: cannot parse: "
                               + p.stderr.decode("utf-8", "replace").strip())
             parsed = parse_registry(p.stdout)
+            self.items = config_items(p.stdout)
             self.sources = parsed["source"]
             self.files, self.kinds = registry_entries(parsed)
             self.filters = {n: list(v.get("step") or []) for n, v in parsed["filter"].items()}
@@ -2585,11 +2707,33 @@ class Registry:
         return [Entry(self, rel) for rel in sorted(self.files)]
 
     def _cfg(self, *args):
-        if self.dry_run:
+        """A change of the file (git config arguments), done by flush()."""
+        if not self.dry_run:
+            self.pending.append(args)
+
+    def flush(self):
+        """Write the changes: edited in the text all at once, checked with one
+        `git config --list` against what they should give - if that isn't
+        it (a form edit_config() doesn't know), the text is put back and
+        git config does them one by one."""
+        ops, self.pending = self.pending, []
+        if not ops:
             return
         if not self.path.exists():
             self.path.write_bytes(REGISTRY_HEADER.encode())
-        git(["config", "-f", self.path] + list(args))
+        original = self.path.read_bytes()
+        try:
+            text, expected = edit_config(original.decode("utf-8"), self.items, ops)
+            self.path.write_bytes(text.encode("utf-8"))
+            p = git(["config", "-f", self.path, "--list", "-z"], check=False)
+            if p.returncode or config_items(p.stdout) != expected:
+                raise ValueError("not as expected")
+            self.items = expected
+        except ValueError:
+            self.path.write_bytes(original)
+            for args in ops:
+                git(["config", "-f", self.path] + list(args))
+            self.items = config_items(git(["config", "-f", self.path, "--list", "-z"]).stdout)
 
     def set_file(self, rel, name, value):
         """Set (value None: remove) a key of a [file] or [dir]."""
@@ -2722,6 +2866,7 @@ class Registry:
         """Fix line endings and stage the registry (or its removal when empty)."""
         if self.dry_run:
             return
+        self.flush()
         if self.path.exists():
             if not self.sources and not self.files and not self.filters:
                 self.path.unlink()
@@ -3696,6 +3841,7 @@ def diff_items(ctx, repo, reg, args):
     if files:
         repo.git(["hash-object", "-w", "--stdin-paths"],
                  data="".join(f"{p}\n" for p in files).encode("utf-8"))
+        repo.missing.clear()      # stored now
     repo.lfs_pointers(o for _, _, b, other in raw for _, o, _ in b + other)   # all at once
     groups = []
     for entry, st, base, other in raw:
@@ -4112,7 +4258,68 @@ def install(repo, st, origin, release, assets, steps, filters, overwrite, base=(
         return digest, install_file(repo, entry.rel, entry.target, files, overwrite), None
 
 
-def pull_one(ctx, repo, reg, st, args):
+def fetch_file(repo, st, steps, filters, keep):
+    """For a file entry: fetch and filter what it gets - kept (keep: an
+    ExitStack) until install_files() stores and writes it with others.
+    Returns (digest, its name after the filter, (file, executable))."""
+    entry, origin, release = st.entry, st.origin, st.release
+    trusted = ensure_trusted(repo, steps, filters)
+    env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
+           "ASSETSYNC_ENTRY": entry.shown}
+    work = keep.enter_context(Work(entry.shown, repo.top, env, trusted))
+    files, digest = entry_files(origin, release, st.assets, steps, filters, work)
+    (name, value), = one_file(files, entry.shown, entry.rel).items()
+    return digest, name, value
+
+
+def install_files(repo, jobs):
+    """install_file() for many file entries at once - jobs: (path, target,
+    name, (file, executable), overwrite). Stored with one git add
+    (add_files()), staged with one update-index and written to the working
+    tree as git checkout would with one checkout-index (which also notes
+    their stat data in the index). Returns {path: its blob, or the FsError
+    for it}."""
+    ids = repo.add_files({rel: src for rel, _, _, (src, _), _ in jobs})
+    result, ok = {}, []
+    for rel, target, name, (_, executable), overwrite in jobs:
+        cur = repo.worktree_blob(target)
+        if cur and cur != ids[rel] and not overwrite:
+            result[rel] = FsError(f"'{rel}' exists and differs from {name} - use --overwrite "
+                                  "to replace it")
+        elif target.is_dir():
+            result[rel] = FsError(f"'{rel}' is a directory")
+        else:
+            result[rel] = ids[rel]
+            ok.append(("100755" if executable else "100644", ids[rel], rel))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if repo.fetched:
+                repo.fetched.pop(rel, None)         # changes now
+    if ok:
+        repo.git(["update-index", "-z", "--add", "--index-info"],
+                 data="".join(f"{m} {o}\t{r}\0" for m, o, r in ok).encode("utf-8"))
+        repo.git(["checkout-index", "-f", "-z", "--stdin"],
+                 data="\0".join(r for _, _, r in ok).encode("utf-8"))
+    return result
+
+
+def pull_done(repo, reg, job, base, stats=None):
+    """The rest of pulling an entry, once its files are installed: its keys,
+    its part of the commit message. Returns (that part, the paths to commit)."""
+    entry, st, discard, between, limits, digest, old = job
+    msg = build_message(st, discard, unchanged=base == entry.blob, stats=stats,
+                        between=between, limits=limits)
+    entry.set("synced", st.release.tag)
+    entry.set("digest", digest)
+    entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
+    entry.set(BASE_KEY[entry.kind], base)
+    print(f"{entry.shown}: {paint('updated', 'green')}")
+    if not entry.is_dir:
+        return msg, {entry.rel}
+    # a directory: its files only, not others' staged there
+    return msg, set(old) | {f"{entry.rel}/{n}" for n in repo.tree_names(base)}
+
+
+def pull_one(ctx, repo, reg, st, args, keep=None, later=None):
     """Update one entry (staged, not committed). Returns (its part of the commit
     message, the paths to commit) - None if there was nothing to do."""
     entry, rel = st.entry, st.entry.shown
@@ -4156,22 +4363,15 @@ def pull_one(ctx, repo, reg, st, args):
     if discard:
         warn(f"{rel}: discarding local modifications")
     # a file: replaces the one it had; a directory: files of others only with --overwrite
-    old = base
-    digest, base, stats = install(repo, st, st.origin, st.release, st.assets, entry.steps,
-                                  reg.filters, args.overwrite or (bool(entry.blob) and
-                                                                  not entry.is_dir), old)
-    msg = build_message(st, discard, unchanged=base == entry.blob, stats=stats,
-                        between=between, limits=limits)
-    entry.set("synced", st.release.tag)
-    entry.set("digest", digest)
-    entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
-    entry.set(BASE_KEY[entry.kind], base)
-    reg.finish()
-    print(f"{rel}: {paint('updated', 'green')}")
-    if not entry.is_dir:
-        return msg, {entry.rel}
-    # a directory: its files only, not others' staged there
-    return msg, set(old) | {f"{entry.rel}/{n}" for n in repo.tree_names(base)}
+    overwrite = args.overwrite or (bool(entry.blob) and not entry.is_dir)
+    if not entry.is_dir and later is not None:      # installed with the others
+        digest, name, value = fetch_file(repo, st, entry.steps, reg.filters, keep)
+        later.append(((entry, st, discard, between, limits, digest, base),
+                      (entry.rel, entry.target, name, value, overwrite)))
+        return None
+    digest, tree, stats = install(repo, st, st.origin, st.release, st.assets, entry.steps,
+                                  reg.filters, overwrite, base)
+    return pull_done(repo, reg, (entry, st, discard, between, limits, digest, base), tree, stats)
 
 
 def entries_text(entries):
@@ -4225,7 +4425,8 @@ def cmd_pull(ctx, repo, args):
     check_other_entries(reg, [e.rel for e in entries], args)
     ctx.override = args.release
     rc, done = EXIT_OK, 0
-    pulled, msgs, paths = [], [], set()
+    pulled, msgs, paths, later, hints = [], [], set(), [], []
+    keep = ExitStack()        # the fetched files of file entries, until installed
     for entry in entries:
         st = evaluate(ctx, repo, entry)
         if st.error:
@@ -4238,9 +4439,9 @@ def cmd_pull(ctx, repo, args):
         if args.verbose:
             print(f"{entry.shown}: {paint(origin_text(entry), 'dim')}", flush=True)
         try:
-            result = pull_one(ctx, repo, reg, st, args)
+            result = pull_one(ctx, repo, reg, st, args, keep, later)
             if args.release and (st.pending or st.modified):
-                one_off_hint(ctx, st)
+                hints.append(st)
         except FsError as e:   # report and carry on with the other files
             error(str(e))
             rc = EXIT_ERROR
@@ -4249,10 +4450,24 @@ def cmd_pull(ctx, repo, args):
             pulled.append(entry)
             msgs.append(result[0])
             paths |= result[1]
+    with keep:                # the file entries, all at once
+        installed = install_files(repo, [job for _, job in later]) if later else {}
+    for job, (rel, *_) in later:
+        if isinstance(installed[rel], FsError):
+            error(str(installed[rel]))
+            rc = EXIT_ERROR
+            continue
+        msg, done_paths = pull_done(repo, reg, job, installed[rel])
+        pulled.append(job[0])
+        msgs.append(msg)
+        paths |= done_paths
+    for st in hints:          # after pull --release: the selection stays
+        one_off_hint(ctx, st)
     if args.all and not done and rc == EXIT_OK:
         print(paint("everything up to date", "green"))
     if not pulled:
         return rc
+    reg.finish()              # .git-assetsync written and staged once, for all
     # one commit for all, of their files and entries only
     name = pulled[0].shown if len(pulled) == 1 else entries_text(pulled)
     return max(rc, commit_staged(repo, name, pull_message(pulled, msgs), args,
@@ -4935,17 +5150,21 @@ def cmd_unlink(ctx, repo, args):
     return EXIT_OK
 
 
-def changed_paths(repo, rel):
-    """Paths at or below rel with uncommitted changes - untracked files too,
-    not ignored ones."""
-    p = repo.git(["status", "--porcelain", "-z", "--untracked-files=all", "--", lit(rel)])
-    result, skip = set(), False
-    for item in p.stdout.decode("utf-8", "replace").split("\0"):
-        if skip or not item:
-            skip = False
-            continue
-        result.add(item[3:])
-        skip = item[0] in "RC"          # a rename: the old path follows
+def changed_paths(repo, rels):
+    """Paths at or below these with uncommitted changes - untracked files
+    too, not ignored ones; a git status per 100 of them."""
+    result = set()
+    rels = list(rels)
+    for i in range(0, len(rels), 100):
+        p = repo.git(["status", "--porcelain", "-z", "--untracked-files=all", "--"]
+                     + [lit(r) for r in rels[i:i + 100]])
+        skip = False
+        for item in p.stdout.decode("utf-8", "replace").split("\0"):
+            if skip or not item:
+                skip = False
+                continue
+            result.add(item[3:])
+            skip = item[0] in "RC"          # a rename: the old path follows
     return result
 
 
@@ -4967,19 +5186,22 @@ def cmd_rm(ctx, repo, args):
         except FsError as e:
             raise FsError(f"{entry.shown}: {e} - remove its entry with 'git assetsync unlink "
                           f"{path_arg(repo, entry.shown)}' and its files by hand")
-        if own[entry.rel] & changed_paths(repo, entry.rel) and not args.force:
+    changed = changed_paths(repo, [e.rel for e in entries]) if not args.force else set()
+    for entry in entries:
+        if own[entry.rel] & changed:
             raise FsError(f"{entry.shown}: has uncommitted changes - use -f to remove it anyway")
+    paths = sorted(set().union(*own.values())) if own and not args.dry_run else []
+    if paths:                 # all at once
+        repo.git(["rm", "-q", "-f", "--ignore-unmatch", "--pathspec-from-file=-",
+                  "--pathspec-file-nul"], data="\0".join(lit(p) for p in paths).encode("utf-8"))
+        for path in paths:                  # untracked ones
+            if (repo.top / path).is_file():
+                (repo.top / path).unlink()
     for entry in entries:
         if args.dry_run:
             print(f"would remove {entry.shown}")
             continue
         paths = sorted(own[entry.rel])
-        if paths:
-            repo.git(["rm", "-q", "-f", "--ignore-unmatch", "--pathspec-from-file=-",
-                      "--pathspec-file-nul"], data="\0".join(lit(p) for p in paths).encode("utf-8"))
-            for path in paths:                  # untracked ones
-                if (repo.top / path).is_file():
-                    (repo.top / path).unlink()
         kept = ""
         if entry.is_dir:
             remove_empty_dirs(entry.target, [repo.top / path for path in paths])
