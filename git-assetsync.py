@@ -71,7 +71,10 @@ Commands (run inside the repository; without a command: status). PATH may
 be a file or a directory (= all entries below it); a path inside a
 directory entry stands for that entry in status, diff, difftool, verify
 and pull (commands that change entries refuse it). Options follow the
-command.
+command. Only pull commits (like git pull, one commit per entry); the
+other commands only change the working tree or stage, and you commit.
+
+Basic commands - what you need day to day:
 
     status [PATH...]            state of the entries like `git status`: new
                                 releases (or another filter) to pull, local
@@ -163,6 +166,20 @@ command.
                                 entry replaced with --force
         -n, --dry-run           only show what would be done
 
+    rm PATH...                  remove entries and their files, staged (like
+                                `git rm`; refused with uncommitted changes -
+                                in a directory also untracked files - unless
+                                -f; ignored files stay)
+        -f, --force             remove them anyway (the changes are lost)
+        -n, --dry-run           only show what would be removed
+    unlink PATH...              remove entries (the files are kept); also
+                                broken ones, by their name
+    mv OLD NEW                  move a file or directory (git mv), keeping its
+                                entry
+        -n, --dry-run           (both) only show what would be done
+
+Advanced commands - change entries, sources and filters; set up:
+
     set PATH... OPTIONS         change entries, like source does for sources:
                                 only .git-assetsync is staged, pull updates
         --source URL|SOURCE     take the files from another source (as for
@@ -181,18 +198,6 @@ command.
                                 config --edit`), then check it (warnings
                                 about gaps) and stage it; for usual changes
                                 set, source, filter, unlink and mv are safer
-
-    rm PATH...                  remove entries and their files, staged (like
-                                `git rm`; refused with uncommitted changes -
-                                in a directory also untracked files - unless
-                                -f; ignored files stay)
-        -f, --force             remove them anyway (the changes are lost)
-        -n, --dry-run           only show what would be removed
-    unlink PATH...              remove entries (the files are kept); also
-                                broken ones, by their name
-    mv OLD NEW                  move a file or directory (git mv), keeping its
-                                entry
-        -n, --dry-run           (both) only show what would be done
 
     source                      list the [source]s (-v: with URL, release
                                 selection, the release it selects now
@@ -327,6 +332,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import textwrap
 import time
 import zipfile
 import zlib
@@ -4774,6 +4780,25 @@ def cmd_uninstall_hooks(repo, args):
 
 # --------------------------------------------------------------------------
 
+BASIC_COMMANDS = ("status", "pull", "diff", "difftool", "restore", "add", "rm", "unlink", "mv")
+
+
+def command_list(sub):
+    """--help: the commands with their summaries, basic ones first (the
+    rest in the order they were defined, `hook` last). As in git-filesync."""
+    width = max(shutil.get_terminal_size().columns - 2, 40)
+    helps = {a.dest: a.help for a in sub._choices_actions}
+
+    def group(title, names):
+        lines = [f"{title}:"]
+        for n in names:
+            lines += textwrap.wrap(helps[n], width, initial_indent=f"  {n:<18}",
+                                   subsequent_indent=" " * 20)
+        return "\n".join(lines)
+    advanced = [n for n in helps if n not in BASIC_COMMANDS]
+    return group("basic commands", BASIC_COMMANDS) + "\n\n" + group("advanced commands", advanced)
+
+
 def describe_commands(parser):
     """Let each command's -h start with its line from the command list (as
     a sentence), also for the actions of source, filter and cache."""
@@ -4807,11 +4832,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="git assetsync",
                                  description="Keep files in sync with release assets of "
                                              "other projects.",
-                                 epilog="Without a command: status. "
-                                        "'git assetsync <command> -h' lists the options of a "
-                                        "command.")
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"git-assetsync {__version__}")
-    sub = ap.add_subparsers(dest="cmd")
+    sub = ap.add_subparsers(dest="cmd", metavar="<command>")
 
     p = sub.add_parser("status", parents=[colorp, remotep], help="show the state of the synced files")
     p.add_argument("paths", nargs="*", help="files or directories (default: all)")
@@ -5095,6 +5118,12 @@ def main(argv=None):
     p.add_argument("name", choices=list(HOOKS))
     p.add_argument("hook_args", nargs=argparse.REMAINDER, help="the hook's arguments")
     describe_commands(ap)
+    ap.epilog = command_list(sub) + (
+        "\n\nWithout a command: status. 'git assetsync <command> -h' describes a command\n"
+        "and lists its options.")
+    # the grouped list instead of argparse's; hiding that hides <command> in the usage too
+    sub.help = argparse.SUPPRESS
+    ap.usage = "git assetsync [-h] [--version] <command> ..."
 
     argv = list(sys.argv[1:] if argv is None else argv)
     extra = []

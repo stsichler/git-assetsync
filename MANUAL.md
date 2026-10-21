@@ -12,7 +12,9 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
 - [Commands](#commands)
   - [Common options](#common-options)
-  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`add`](#add) · [`set`](#set) · [`edit`](#edit) · [`restore`](#restore) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv) · [`source`](#source) · [`source map`](#source-map) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`cache`](#cache)
+  - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`restore`](#restore) · [`add`](#add) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv)
+- [Advanced commands](#advanced-commands)
+  - [`set`](#set) · [`edit`](#edit) · [`source`](#source) · [`source map`](#source-map) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`cache`](#cache)
   - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
@@ -176,27 +178,50 @@ line endings normalized) is still unmodified.
 
 ## Commands
 
+Basic commands – what you need day to day:
+
 | Command | Purpose |
 |---|---|
-| `status [PATH…]` | state of the entries, like `git status` |
-| `pull PATH…`, `pull --all` | update files and directories to the selected release (or once another one) and commit |
-| `diff [PATH…]` | local modifications against what the release gave; what `pull` would bring |
-| `difftool [PATH…]` | the same in your difftool, file by file or (`-d`) as two directories |
-| `restore PATH…` | discard local modifications: back to what the release gave, without pulling |
-| `add PATH SOURCE` | take a file or directory from release assets |
-| `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
-| `edit` | open `.git-assetsync` in the editor, then check and stage it |
-| `rm PATH…` | remove entries and their files, like `git rm` |
-| `unlink PATH…` | remove entries (the files are kept) |
-| `mv OLD NEW` | move a file or directory, keeping its entry |
-| `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
-| `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
-| `trust [NAME…]` | list the filters that run commands; trust them in this repository |
-| `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
-| `releases SOURCE\|URL` | list the releases of a project, with their assets |
-| `source map [URL\|SOURCE [DIR]]` | take the releases of a source from a local folder (local development, tests) |
-| `cache [ACTION]` | the download cache: show, list, prune, clear |
-| `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
+| [`status [PATH…]`](#status) | state of the entries, like `git status` |
+| [`pull PATH…`, `pull --all`](#pull) | update files and directories to the selected release (or once another one) and commit |
+| [`diff [PATH…]`](#diff) | local modifications against what the release gave; what `pull` would bring |
+| [`difftool [PATH…]`](#difftool) | the same in your difftool, file by file or (`-d`) as two directories |
+| [`restore PATH…`](#restore) | discard local modifications: back to what the release gave, without pulling |
+| [`add PATH SOURCE`](#add) | take a file or directory from release assets |
+| [`rm PATH…`](#rm) | remove entries and their files, like `git rm` |
+| [`unlink PATH…`](#unlink) | remove entries (the files are kept) |
+| [`mv OLD NEW`](#mv) | move a file or directory, keeping its entry |
+
+[Advanced commands](#advanced-commands) – to change entries, sources and filters, and for setup:
+
+| Command | Purpose |
+|---|---|
+| [`set PATH… OPTIONS`](#set) | change entries: source, release selection, asset, filter |
+| [`edit`](#edit) | open `.git-assetsync` in the editor, then check and stage it |
+| [`source [ACTION …]`](#source) | list sources; rename them, change URL, release selection or type |
+| [`source map [URL\|SOURCE [DIR]]`](#source-map) | take the releases of a source from a local folder (local development, tests) |
+| [`filter [ACTION …]`](#filter) | list filters; show, test, add, set, rename or remove them |
+| [`trust [NAME…]`](#trust) | list the filters that run commands; trust them in this repository |
+| [`verify [PATH…]`](#verify) | filter the synced assets again: is the committed state reproducible? |
+| [`releases SOURCE\|URL`](#releases) | list the releases of a project, with their assets |
+| [`cache [ACTION]`](#cache) | the download cache: show, list, prune, clear |
+| [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks) | hooks: reminders, push check |
+
+Commands named like a Git command behave like it (`status`, `pull`, `diff`,
+`difftool`, `restore`, `add`, `rm`, `mv`; `source` like `git remote`): same
+kind of output, same exit codes, same caution with uncommitted changes.
+
+**Only `pull` commits**, like `git pull` – and for the same reason: it
+brings in changes from elsewhere, and its commit message comes from there
+(the release, its notes and those of releases skipped), one commit per
+entry, so `git log PATH` shows every update. All other commands carry out a
+decision of yours, often together with changes of your own, so – like `git
+add`, `git rm`, `git mv`, `git restore` – they only change the working tree
+or stage, and you commit: `add`, `rm`, `mv`, `set`, `unlink`, `edit`,
+`source` and `filter` stage, `restore` (without `-S`) leaves the index
+alone. `pull --no-commit` only stages, like `git merge --no-commit`. `add`
+and `pull --no-commit` prepare a proposed commit message that a plain `git
+commit` offers (see [Proposed commit messages](#proposed-commit-messages)).
 
 Without a command, `status` runs. `PATH` may be a file or a directory (all
 entries below it) and is relative to the current directory. A path inside
@@ -420,6 +445,39 @@ them are kept – except on Windows, where they are copies (symbolic links
 need a privilege there; `-- --symlinks` to use them anyway). Binary files can only be shown as
 different by most tools.
 
+### `restore`
+
+```
+git assetsync restore PATH… [-S] [-W]
+```
+
+Like `git restore`, but brings back what the entries were synced with –
+what the release gave, after the filter – instead of what is committed:
+it discards local modifications without pulling a newer release (that
+does `pull --overwrite`). Without options it restores the working tree;
+`-S` (`--staged`) restores the index instead, `-S -W` (short `-SW`) both.
+Nothing is committed and `.git-assetsync` doesn't change. A committed
+modification is gone with `restore -SW` and a commit:
+
+```sh
+git assetsync restore -SW lib/data.bin
+git commit -m "Restore lib/data.bin"
+```
+
+In a directory entry, the files of the release are written back, files
+the release doesn't give are deleted (ignored ones stay), and executable
+bits are set as synced. Files are written as the current `.gitattributes`
+say (line endings, Git LFS). `restore` works offline: what an entry was
+synced with is in the repository (`blob`/`tree`) – if it isn't (e.g. it
+was never committed in this clone), `restore` says so, and `pull
+--overwrite` gets it again.
+
+| Option | Meaning |
+|---|---|
+| `-S`, `--staged` | restore the index instead of the working tree |
+| `-W`, `--worktree` | restore the working tree (the default; with `-S`: both) |
+
+### `add`
 
 ```
 git assetsync add PATH SOURCE [--asset PATTERN] [--release TAG|PATTERN] [--prerelease]
@@ -491,6 +549,48 @@ git assetsync add tools/glab https://gitlab.com/gitlab-org/cli \
 git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
 git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' --filter zlib-headers
 ```
+
+### `rm`
+
+```
+git assetsync rm PATH… [-f] [-n]
+```
+
+Like `git rm`: removes the entries from `.git-assetsync` together with
+their files and stages both (commit when you like). It refuses – for all
+paths given – if one has uncommitted changes (in a directory also
+untracked files); `-f` removes them anyway, and the changes are lost. A
+committed modification doesn't count, and a file already deleted is
+fine. Ignored files in a directory stay. To keep the files and only
+remove the entries, use [`unlink`](#unlink).
+
+| Option | Meaning |
+|---|---|
+| `-f`, `--force` | remove them anyway, also with uncommitted changes |
+| `-n`, `--dry-run` | only show what would be removed |
+
+### `unlink`
+
+```
+git assetsync unlink PATH… [-n]
+```
+
+Removes the entries (and sources no longer used) from `.git-assetsync`
+and stages it; the files themselves are kept as ordinary files. Commit
+when you like. A broken entry that `status` reports as unsafe (e.g. a path
+outside the working tree) is removed by giving its name as it is in the
+file.
+
+### `mv`
+
+```
+git assetsync mv OLD NEW [-n]
+```
+
+Moves a file or directory (with `git mv`) and its entry, and stages both.
+`NEW` may be an existing directory.
+
+## Advanced commands
 
 ### `set`
 
@@ -565,78 +665,6 @@ whatever you write: a changed `blob` or `tree` changes what counts as a
 local modification, a removed `synced` makes `pull` take the release
 again.
 
-### `restore`
-
-```
-git assetsync restore PATH… [-S] [-W]
-```
-
-Like `git restore`, but brings back what the entries were synced with –
-what the release gave, after the filter – instead of what is committed:
-it discards local modifications without pulling a newer release (that
-does `pull --overwrite`). Without options it restores the working tree;
-`-S` (`--staged`) restores the index instead, `-S -W` (short `-SW`) both.
-Nothing is committed and `.git-assetsync` doesn't change. A committed
-modification is gone with `restore -SW` and a commit:
-
-```sh
-git assetsync restore -SW lib/data.bin
-git commit -m "Restore lib/data.bin"
-```
-
-In a directory entry, the files of the release are written back, files
-the release doesn't give are deleted (ignored ones stay), and executable
-bits are set as synced. Files are written as the current `.gitattributes`
-say (line endings, Git LFS). `restore` works offline: what an entry was
-synced with is in the repository (`blob`/`tree`) – if it isn't (e.g. it
-was never committed in this clone), `restore` says so, and `pull
---overwrite` gets it again.
-
-| Option | Meaning |
-|---|---|
-| `-S`, `--staged` | restore the index instead of the working tree |
-| `-W`, `--worktree` | restore the working tree (the default; with `-S`: both) |
-
-### `rm`
-
-```
-git assetsync rm PATH… [-f] [-n]
-```
-
-Like `git rm`: removes the entries from `.git-assetsync` together with
-their files and stages both (commit when you like). It refuses – for all
-paths given – if one has uncommitted changes (in a directory also
-untracked files); `-f` removes them anyway, and the changes are lost. A
-committed modification doesn't count, and a file already deleted is
-fine. Ignored files in a directory stay. To keep the files and only
-remove the entries, use [`unlink`](#unlink).
-
-| Option | Meaning |
-|---|---|
-| `-f`, `--force` | remove them anyway, also with uncommitted changes |
-| `-n`, `--dry-run` | only show what would be removed |
-
-### `unlink`
-
-```
-git assetsync unlink PATH… [-n]
-```
-
-Removes the entries (and sources no longer used) from `.git-assetsync`
-and stages it; the files themselves are kept as ordinary files. Commit
-when you like. A broken entry that `status` reports as unsafe (e.g. a path
-outside the working tree) is removed by giving its name as it is in the
-file.
-
-### `mv`
-
-```
-git assetsync mv OLD NEW [-n]
-```
-
-Moves a file or directory (with `git mv`) and its entry, and stages both.
-`NEW` may be an existing directory.
-
 ### `source`
 
 ```
@@ -670,36 +698,68 @@ To give only some files of a source another release selection, use
 [`set`](#set), e.g. `git assetsync set lib/x.h --release v2.0` – they get a
 source of their own.
 
-### `releases`
+### `source map`
 
 ```
-git assetsync releases SOURCE|URL [--assets] [-n N | --all] [--type github|gitlab]
+git assetsync source map [URL|SOURCE [DIR]] [--flat] [--global] [--unset]
 ```
 
-Lists the releases of a project, newest first: tag, date and title (if it
-differs from the tag), marked `latest` (as the platform defines it),
-`prerelease` (GitLab: `upcoming`), `draft`, and `selected by …` with the
-sources of this repository that select it now. A help for choosing
-`--release` and `--asset` for [`add`](#add) and [`set`](#set):
+Takes the releases of a source from the local folder `DIR` instead of
+GitHub or GitLab – to try a new build "the proper way" in another local
+repository before publishing it. The source is given by its URL or the
+name of a `[source]`; the mapping applies to every source with that URL.
+It is kept in this repository's `.git/config`
+(`assetsync.<url>.localpath`), with `--global` in your global Git config
+for all repositories without a mapping of their own – never in
+`.git-assetsync`, which keeps the real URL.
 
-```console
-$ git assetsync releases acme/tool --assets -n 2
-v1.1      2026-10-11  Tool 1.1  (latest, selected by acme/tool)
-    tool-1.1-linux-x64     14.6 MiB
-    tool-1.1-windows.zip   15.2 MiB
-v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
-    tool-1.1-rc1-linux-x64  14.5 MiB
+```
+~/build/tool-releases/
+  v1.2/       tool-linux.bin  tool-win.exe
+  v1.3-rc1/   tool-linux.bin  tool-win.exe
 ```
 
-`SOURCE` is the name of a `[source]` or a URL (`owner/repo`: github.com),
-as for `add`; with a URL it also works outside a repository.
+```sh
+git assetsync source map acme/tool ~/build/tool-releases  # by the name of the [source] (or its URL)
+git assetsync status                                      # pending: bin/tool (v1.2 -> v1.3-rc1, local folder)
+git assetsync pull bin/tool                               # takes v1.3-rc1 from the folder
+git assetsync source map                                  # list the mappings (scope, overridden ones marked)
+git assetsync source map acme/tool --unset                # remove it again
+```
 
-| Option | Meaning |
-|---|---|
-| `--assets` | also list the assets of each release, with their sizes (GitLab reports none) |
-| `-n`, `--max-count N` | the newest N releases (default: 10) |
-| `--all` | all releases |
-| `--type github\|gitlab` | platform of the URL's host, as for `add` |
+- Each **subdirectory** is a release, named like its tag; its files are
+  the assets (hidden files are ignored).
+- With **`--flat`**, the folder itself holds the assets of all releases
+  as files – e.g. a build's output folder. A file belongs to the release
+  named like the file without its extension (`.tar.gz`, `.tar.xz` and
+  the like count as one); the asset keeps the full file name, so
+  `--asset '*.xml'` chooses as usual. Subdirectories are ignored.
+
+  ```
+  ~/build/fw-out/
+    rel20260213.7z  rel20260213.xml     -> release rel20260213 (2 assets)
+    rel20260410.7z  rel20260410.xml     -> release rel20260410 (2 assets)
+  ```
+
+  ```sh
+  git assetsync source map --flat acme/fw ~/build/fw-out
+  ```
+
+  The layout is kept with the mapping (`assetsync.<url>.layout = flat`);
+  `source map` without `--flat` switches back to subdirectories.
+- A release is dated by its **newest file**: the latest release is the one
+  built last, also when a build overwrites the files of an existing
+  folder (then `status` shows its assets as replaced). The [release
+  selection](#selecting-the-release) applies as usual – a pattern takes
+  the newest matching folder, a pinned tag that folder; prereleases and
+  drafts don't exist here, and there are no release notes.
+- The commit message says where it came from: `Release: v1.3-rc1 (from a
+  local folder, not published)`.
+- Everything works offline; nothing goes into the [download
+  cache](#download-cache). `status` names the folder, `releases` lists the
+  folders; `--remote` asks the platform instead, for one command.
+- Before pushing, the [push check](#install-hooks-uninstall-hooks) warns
+  about entries whose release isn't published yet.
 
 ### `filter`
 
@@ -797,6 +857,84 @@ With `-v` (`--verbose`), each entry is first named with where it comes
 from, as `status -v` shows it: its assets, source, release selection,
 filter and the release it was synced with.
 
+### `releases`
+
+```
+git assetsync releases SOURCE|URL [--assets] [-n N | --all] [--type github|gitlab]
+```
+
+Lists the releases of a project, newest first: tag, date and title (if it
+differs from the tag), marked `latest` (as the platform defines it),
+`prerelease` (GitLab: `upcoming`), `draft`, and `selected by …` with the
+sources of this repository that select it now. A help for choosing
+`--release` and `--asset` for [`add`](#add) and [`set`](#set):
+
+```console
+$ git assetsync releases acme/tool --assets -n 2
+v1.1      2026-10-11  Tool 1.1  (latest, selected by acme/tool)
+    tool-1.1-linux-x64     14.6 MiB
+    tool-1.1-windows.zip   15.2 MiB
+v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
+    tool-1.1-rc1-linux-x64  14.5 MiB
+```
+
+`SOURCE` is the name of a `[source]` or a URL (`owner/repo`: github.com),
+as for `add`; with a URL it also works outside a repository.
+
+| Option | Meaning |
+|---|---|
+| `--assets` | also list the assets of each release, with their sizes (GitLab reports none) |
+| `-n`, `--max-count N` | the newest N releases (default: 10) |
+| `--all` | all releases |
+| `--type github\|gitlab` | platform of the URL's host, as for `add` |
+
+### `cache`
+
+```
+git assetsync cache [list | prune [--older-than DAYS] [--max-size SIZE] [-n] | clear [-n] | dir]
+```
+
+The [download cache](#download-cache), shared by all repositories of your
+user account:
+
+```console
+$ git assetsync cache
+/home/me/.cache/git-assetsync: 37 files, 1.2 GiB
+cleaned up automatically: files unused for 90 days (assetsync.cacheMaxAge, assetsync.cacheMaxSize)
+$ git assetsync cache list
+  12.3 MiB  2026-10-19  github.com/madler/zlib  v1.3.2  zlib-1.3.2.tar.gz
+ 340.0 MiB  2026-08-02  gitlab.com/acme/fw  fw-2026.07  fw.zip
+```
+
+| Action | Effect |
+|---|---|
+| (none) | where the cache is, how big, and its limits |
+| `list` | its files, most recently used first: size, last used, where it came from (`+N more` if several assets have the same content) |
+| `prune` | remove what wasn't used for `assetsync.cacheMaxAge` days, then the least recently used beyond `assetsync.cacheMaxSize`; `--older-than DAYS` and `--max-size SIZE` (e.g. `500M`, `2G`) set other limits for this run; `-n` only shows what would be removed |
+| `clear` | remove everything (`-n`: only show) |
+| `dir` | print the directory, e.g. for caching it between CI runs |
+
+What counts is when a file was **last used**, not when it was
+downloaded. Files used in the last ten minutes are never removed by
+`prune`, so that another git-assetsync running at the same time keeps
+them; leftovers of interrupted downloads go too. Nothing is lost by
+removing: a file needed again is downloaded again.
+
+**Automatically**, after a download and at most once a day, the cache is
+cleaned up by the limits:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `assetsync.cacheMaxAge` | `90` | remove files unused for that many days; `0` or `off`: never |
+| `assetsync.cacheMaxSize` | (none) | then remove the least recently used files until the cache is at most this big, e.g. `2G`; `0` or `off`: no limit |
+
+```sh
+git config --global assetsync.cacheMaxSize 5G
+git config --global assetsync.cacheMaxAge off
+```
+
+Commands that download nothing (like `status`) never remove anything.
+
 ### `install-hooks`, `uninstall-hooks`
 
 `install-hooks` installs two hooks that report on stderr:
@@ -860,116 +998,6 @@ after updating from a version before 0.13.1, whose `pre-push` hook didn't
 keep stdin. `uninstall-hooks` removes the hooks, or only its lines from
 hooks that contain other commands as well. With `core.hooksPath` set, the
 hooks go there (with a warning, since other repositories may use it).
-
-### `source map`
-
-```
-git assetsync source map [URL|SOURCE [DIR]] [--flat] [--global] [--unset]
-```
-
-Takes the releases of a source from the local folder `DIR` instead of
-GitHub or GitLab – to try a new build "the proper way" in another local
-repository before publishing it. The source is given by its URL or the
-name of a `[source]`; the mapping applies to every source with that URL.
-It is kept in this repository's `.git/config`
-(`assetsync.<url>.localpath`), with `--global` in your global Git config
-for all repositories without a mapping of their own – never in
-`.git-assetsync`, which keeps the real URL.
-
-```
-~/build/tool-releases/
-  v1.2/       tool-linux.bin  tool-win.exe
-  v1.3-rc1/   tool-linux.bin  tool-win.exe
-```
-
-```sh
-git assetsync source map acme/tool ~/build/tool-releases  # by the name of the [source] (or its URL)
-git assetsync status                                      # pending: bin/tool (v1.2 -> v1.3-rc1, local folder)
-git assetsync pull bin/tool                               # takes v1.3-rc1 from the folder
-git assetsync source map                                  # list the mappings (scope, overridden ones marked)
-git assetsync source map acme/tool --unset                # remove it again
-```
-
-- Each **subdirectory** is a release, named like its tag; its files are
-  the assets (hidden files are ignored).
-- With **`--flat`**, the folder itself holds the assets of all releases
-  as files – e.g. a build's output folder. A file belongs to the release
-  named like the file without its extension (`.tar.gz`, `.tar.xz` and
-  the like count as one); the asset keeps the full file name, so
-  `--asset '*.xml'` chooses as usual. Subdirectories are ignored.
-
-  ```
-  ~/build/fw-out/
-    rel20260213.7z  rel20260213.xml     -> release rel20260213 (2 assets)
-    rel20260410.7z  rel20260410.xml     -> release rel20260410 (2 assets)
-  ```
-
-  ```sh
-  git assetsync source map --flat acme/fw ~/build/fw-out
-  ```
-
-  The layout is kept with the mapping (`assetsync.<url>.layout = flat`);
-  `source map` without `--flat` switches back to subdirectories.
-- A release is dated by its **newest file**: the latest release is the one
-  built last, also when a build overwrites the files of an existing
-  folder (then `status` shows its assets as replaced). The [release
-  selection](#selecting-the-release) applies as usual – a pattern takes
-  the newest matching folder, a pinned tag that folder; prereleases and
-  drafts don't exist here, and there are no release notes.
-- The commit message says where it came from: `Release: v1.3-rc1 (from a
-  local folder, not published)`.
-- Everything works offline; nothing goes into the [download
-  cache](#download-cache). `status` names the folder, `releases` lists the
-  folders; `--remote` asks the platform instead, for one command.
-- Before pushing, the [push check](#install-hooks-uninstall-hooks) warns
-  about entries whose release isn't published yet.
-
-### `cache`
-
-```
-git assetsync cache [list | prune [--older-than DAYS] [--max-size SIZE] [-n] | clear [-n] | dir]
-```
-
-The [download cache](#download-cache), shared by all repositories of your
-user account:
-
-```console
-$ git assetsync cache
-/home/me/.cache/git-assetsync: 37 files, 1.2 GiB
-cleaned up automatically: files unused for 90 days (assetsync.cacheMaxAge, assetsync.cacheMaxSize)
-$ git assetsync cache list
-  12.3 MiB  2026-10-19  github.com/madler/zlib  v1.3.2  zlib-1.3.2.tar.gz
- 340.0 MiB  2026-08-02  gitlab.com/acme/fw  fw-2026.07  fw.zip
-```
-
-| Action | Effect |
-|---|---|
-| (none) | where the cache is, how big, and its limits |
-| `list` | its files, most recently used first: size, last used, where it came from (`+N more` if several assets have the same content) |
-| `prune` | remove what wasn't used for `assetsync.cacheMaxAge` days, then the least recently used beyond `assetsync.cacheMaxSize`; `--older-than DAYS` and `--max-size SIZE` (e.g. `500M`, `2G`) set other limits for this run; `-n` only shows what would be removed |
-| `clear` | remove everything (`-n`: only show) |
-| `dir` | print the directory, e.g. for caching it between CI runs |
-
-What counts is when a file was **last used**, not when it was
-downloaded. Files used in the last ten minutes are never removed by
-`prune`, so that another git-assetsync running at the same time keeps
-them; leftovers of interrupted downloads go too. Nothing is lost by
-removing: a file needed again is downloaded again.
-
-**Automatically**, after a download and at most once a day, the cache is
-cleaned up by the limits:
-
-| Setting | Default | Meaning |
-|---|---|---|
-| `assetsync.cacheMaxAge` | `90` | remove files unused for that many days; `0` or `off`: never |
-| `assetsync.cacheMaxSize` | (none) | then remove the least recently used files until the cache is at most this big, e.g. `2G`; `0` or `off`: no limit |
-
-```sh
-git config --global assetsync.cacheMaxSize 5G
-git config --global assetsync.cacheMaxAge off
-```
-
-Commands that download nothing (like `status`) never remove anything.
 
 ## Further topics
 

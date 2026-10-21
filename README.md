@@ -215,25 +215,33 @@ git assetsync add third_party/zlib/ https://github.com/madler/zlib --asset 'zlib
 
 ## Commands
 
+Basic commands – what you need day to day:
+
 | Command | Purpose |
 |---|---|
 | `status [PATH…]` | state of the entries, like `git status`: new releases, local modifications |
 | `pull PATH…`, `pull --all` | update files and directories to the selected release (`--release`: once another one) and commit |
 | `diff [PATH…]`, `difftool [PATH…]` | local modifications; `--upstream`: what `pull` would bring – in your difftool also as two directories (`-d`) |
+| `restore PATH…` | discard local modifications: back to what the release gave, like `git restore` |
 | `add PATH SOURCE` | take a file or directory from release assets |
+| `rm PATH…`, `unlink PATH…`, `mv OLD NEW` | remove entries with their files (like `git rm`) or without, move them |
+
+Advanced commands:
+
+| Command | Purpose |
+|---|---|
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
-| `unlink PATH…`, `mv OLD NEW` | remove or move entries |
 | `edit` | open `.git-assetsync` in the editor, then check and stage it |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
+| `source map [URL\|SOURCE [DIR]]` | take releases from a local folder, to test a build before publishing it |
 | `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
 | `trust [NAME…]` | list the filters that run commands; trust them in this repository |
 | `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
 | `releases SOURCE\|URL` | list the releases of a project, with their assets |
-| `source map [URL\|SOURCE [DIR]]` | take releases from a local folder, to test a build before publishing it |
 | `cache [ACTION]` | the download cache: show, list, prune, clear |
-| `install-hooks`, `uninstall-hooks` | reminder hooks for `push` and `merge` |
+| `install-hooks`, `uninstall-hooks` | hooks for `push` and `merge`: reminders, check that pushed entries' releases are published |
 
-`git assetsync <command> -h` lists the options of a command. The
+`git assetsync <command> -h` describes a command and lists its options. The
 **[manual](MANUAL.md)** describes all commands and options in detail,
 along with the `.git-assetsync` file, files and directories, filters,
 release selection, GitHub and GitLab access, the download cache,

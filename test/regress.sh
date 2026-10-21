@@ -402,7 +402,10 @@ pullc rn.txt
 check "no notes: no section" "$(git log -1 --format=%B | grep -c 'Release notes')" "0"
 # a command's help starts with its line from the command list
 check "help: the command's line first" \
-  "$(asd -h | grep -c '^    status  *show the state of the synced files$') $(asd status -h | grep -c '^Show the state of the synced files\.$')" "1 1"
+  "$(asd -h | grep -c '^  status  *show the state of the synced files$') $(asd status -h | grep -c '^Show the state of the synced files\.$')" "1 1"
+check "help: basic commands first, then the advanced ones" \
+  "$(asd -h | grep -E '^(basic|advanced) commands:$|^  [a-z][a-z-]*  ' | sed 's/^  \([a-z-]*\) .*/\1/' | oneline)" \
+  "basic commands: status pull diff difftool restore add rm unlink mv advanced commands: set edit verify releases source filter trust cache install-hooks uninstall-hooks hook "
 check "help: also for actions" "$(asd source rename -h | grep -c '^Rename a source and all references to it\.$')" "1"
 
 
