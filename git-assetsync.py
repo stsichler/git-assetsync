@@ -5102,9 +5102,12 @@ def main(argv=None):
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="only report what would happen")
 
-    for name, hlp in (("diff", "show local modifications against what the release gave"),
-                      ("difftool", "show local modifications against what the release gave in the configured difftool")):
-        p = sub.add_parser(name, parents=[colorp, remotep], help=hlp,
+    for name, hlp, desc in (
+            ("diff", "show local modifications against what the release gave", None),
+            ("difftool", "same in the configured difftool",
+             "Show local modifications against what the release gave in the configured "
+             "difftool.")):
+        p = sub.add_parser(name, parents=[colorp, remotep], help=hlp, description=desc,
                            epilog="Options after '--' are passed to git " + name + ".")
         p.add_argument("paths", nargs="*", metavar="PATH",
                        help="files or directories (default: all)")
@@ -5275,7 +5278,9 @@ def main(argv=None):
     g.add_argument("--no-prerelease", dest="prerelease", action="store_false",
                    help="prereleases don't count (default)")
     a = actions.add_parser("set-type", parents=[colorp],
-                           help="set the platform of the source's host (--unset: derived from it)")
+                           help="platform of the source's host (--unset: derived from it)",
+                           description="Set the platform of the source's host (--unset: "
+                                       "derived from it).")
     a.add_argument("name", metavar="NAME", help="key of the [source]")
     a.add_argument("value", metavar="github|gitlab", nargs="?")
     a.add_argument("--unset", action="store_true", help="derive the platform from the host")
@@ -5297,7 +5302,8 @@ def main(argv=None):
     p = sub.add_parser("filter", parents=[colorp],
                        help="list, show or change the named filters [filter \"NAME\"]")
     actions = p.add_subparsers(dest="action", metavar="ACTION")
-    a = actions.add_parser("show", parents=[colorp], help="show the steps of a filter")
+    a = actions.add_parser("show", parents=[colorp], help="the steps of a filter",
+                           description="Show the steps of a filter.")
     a.add_argument("name", metavar="NAME")
     a = actions.add_parser("add", parents=[colorp, filterp],
                            help="define a new filter with the steps given (in this order)")
@@ -5337,7 +5343,9 @@ def main(argv=None):
                        help="show, list or clean up the download cache")
     actions = p.add_subparsers(dest="action", metavar="ACTION")
     actions.add_parser("list", parents=[colorp],
-                       help="list the cached files, most recently used first: size, last used, what it is")
+                       help="the files, most recently used first: size, last used, what it is",
+                       description="List the cached files, most recently used first: size, "
+                                   "last used, what it is.")
     a = actions.add_parser("prune", parents=[colorp],
                            help="remove what wasn't used for a while (default: the configured "
                                 "limits, assetsync.cacheMaxAge / cacheMaxSize)")
@@ -5346,16 +5354,20 @@ def main(argv=None):
     a.add_argument("--max-size", metavar="SIZE",
                    help="then the least recently used, down to SIZE (e.g. 500M, 2G)")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would be removed")
-    a = actions.add_parser("clear", parents=[colorp], help="remove everything from the download cache")
+    a = actions.add_parser("clear", parents=[colorp], help="remove everything",
+                           description="Remove everything from the download cache.")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would be removed")
     actions.add_parser("dir", parents=[colorp], help="print the cache's directory")
 
     p = sub.add_parser("install-hooks", parents=[colorp],
-                       help="install the pre-push/post-merge hooks of git-assetsync")
+                       help="install the pre-push/post-merge hooks",
+                       description="Install the pre-push/post-merge hooks of git-assetsync.")
     p.add_argument("--force", action="store_true",
                    help="add our lines to existing hooks (right after the #! line)")
-    sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the pre-push/post-merge hooks of git-assetsync")
-    p = sub.add_parser("hook", parents=[colorp], help="run the checks of an installed hook (called by the hooks)")
+    sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the hooks again",
+                   description="Remove the pre-push/post-merge hooks of git-assetsync.")
+    p = sub.add_parser("hook", parents=[colorp], help="what the installed hooks run",
+                       description="Run the checks of an installed hook (called by the hooks).")
     p.add_argument("name", choices=list(HOOKS))
     p.add_argument("hook_args", nargs=argparse.REMAINDER, help="the hook's arguments")
     describe_commands(ap)

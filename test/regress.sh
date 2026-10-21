@@ -408,6 +408,8 @@ check "help: basic commands first, then the advanced ones" \
   "$(asd -h | grep -E '^(basic|advanced) commands:$|^  [a-z][a-z-]*  ' | sed 's/^  \([a-z-]*\) .*/\1/' | oneline)" \
   "basic commands: status pull diff difftool restore add rm unlink mv advanced commands: set edit verify releases source filter trust cache install-hooks uninstall-hooks hook "
 check "help: also for actions" "$(asd source rename -h | grep -c '^Rename a source and all references to it\.$')" "1"
+check "help: the list short, the command's own description complete" \
+  "$(asd -h | grep -c '^  difftool  *same in the configured difftool$') $(asd difftool -h | grep -c '^Show local modifications against what the release gave in the configured$')" "1 1"
 
 
 # =============================================================================
