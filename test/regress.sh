@@ -1201,6 +1201,11 @@ check "... pulled back to the latest" "$(cat a.txt)" "s1 v1"
 check "unknown source" "$(git assetsync source set-url nope https://github.com/a/b 2>&1)" \
   "error: no source 'nope' in .git-assetsync (known: acme/src)"
 
+# a selection still in the [source] (before 0.16): an error, not the latest release
+git config -f .git-assetsync source.acme/src.release v0
+check "selection in the [source]: an error" "$(git assetsync status -s a.txt 2>&1 | head -1)" \
+  "error: a.txt: [source \"acme/src\"] has release = v0 - the release selection is the entry's now: 'git assetsync set a.txt --release v0', then remove it from the [source] ('git assetsync edit')"
+git checkout -q .git-assetsync
 # rename, set-url, set-type
 quiet git assetsync source rename acme/src pinned
 check "rename: section and references" "$(reg source.pinned.url) $(reg file.a.txt.source) $(reg file.b.txt.source)" \

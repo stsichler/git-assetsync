@@ -3034,6 +3034,15 @@ def evaluate(ctx, repo, entry):
     if not entry.url:
         st.error = f"incomplete entry in {REGISTRY} (needs a source with url)"
         return st
+    old = {k: entry.source[k] for k in SPEC_KEYS if entry.source.get(k)}
+    if old:       # since 0.16 the entry's: not silently the latest release instead
+        st.error = (f'[source "{entry.name}"] has {", ".join(f"{k} = {v}" for k, v in old.items())}'
+                    " - the release selection is the entry's now: 'git assetsync set "
+                    f"{path_arg(repo, entry.shown)} " + " ".join(
+                        "--prerelease" if k == "prerelease" else f"--release {shlex.quote(v)}"
+                        for k, v in old.items()) + f"', then remove it from the [source] "
+                    "('git assetsync edit')")
+        return st
     try:
         if entry.filter and entry.filter not in entry.reg.filters:
             raise FsError(f"filter '{entry.filter}' not found in {REGISTRY} (define it with "
