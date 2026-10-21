@@ -406,7 +406,7 @@ check "help: the command's line first" \
   "$(asd -h | grep -c '^  status  *show the state of the synced files$') $(asd status -h | grep -c '^Show the state of the synced files\.$')" "1 1"
 check "help: basic commands first, then the advanced ones" \
   "$(asd -h | grep -E '^(basic|advanced) commands:$|^  [a-z][a-z-]*  ' | sed 's/^  \([a-z-]*\) .*/\1/' | oneline)" \
-  "basic commands: status pull diff difftool restore add rm unlink mv advanced commands: set edit verify releases source filter trust cache install-hooks uninstall-hooks hook "
+  "basic commands: status pull diff difftool restore add rm unlink mv advanced commands: set edit verify source filter cache hooks "
 check "help: also for actions" "$(asd source rename -h | grep -c '^Rename a source and all references to it\.$')" "1"
 # with Python 3.14 or later the help is colored - the command list too - when the
 # output would be (--color, color.ui, NO_COLOR); before, it isn't
@@ -992,7 +992,10 @@ check "mv -n" "$(git assetsync mv -n dr.txt x.txt; git status --porcelain)" "wou
 section "13. Hooks and colors"
 # =============================================================================
 cd "$T/r12"
-check "install-hooks" "$(git assetsync install-hooks | oneline)" "pre-push: installed post-merge: installed "
+check "hooks: not installed" "$(git assetsync hooks | oneline)" \
+  "pre-push: not installed (install with 'git assetsync hooks install') post-merge: not installed (install with 'git assetsync hooks install') "
+check "hooks install" "$(git assetsync hooks install | oneline)" "pre-push: installed post-merge: installed "
+check "hooks: installed" "$(git assetsync hooks | oneline)" "pre-push: installed post-merge: installed "
 check "hook runs 'hook post-merge'" "$(grep -c '^git assetsync hook post-merge "\$@" </dev/null || true$' .git/hooks/post-merge)" "1"
 check "hook: nothing to report" "$(sh .git/hooks/post-merge 2>&1 | head -1)" ""
 echo changed > dr.txt
@@ -1004,36 +1007,42 @@ check "pre-push hook sees new releases" "$(sh .git/hooks/pre-push 2>&1 | head -1
 check "pre-push hook: exit 0" "$(rc sh .git/hooks/pre-push)" "0"
 check "pre-push hook: git-assetsync missing never blocks" \
   "$(HOME=$T/nohome sh .git/hooks/pre-push >/dev/null 2>&1; echo $?)" "0"
-check "install-hooks: again" "$(git assetsync install-hooks | oneline)" \
+check "hooks install: again" "$(git assetsync hooks install | oneline)" \
   "pre-push: already installed post-merge: already installed "
-check "uninstall-hooks" "$(git assetsync uninstall-hooks | oneline)" "pre-push: removed post-merge: removed "
+check "hooks uninstall" "$(git assetsync hooks uninstall | oneline)" "pre-push: removed post-merge: removed "
 # hooks of an older version are updated in place
 printf '#!/bin/sh\necho before\n# git-assetsync: remind about new releases to pull (never blocks)\ngit assetsync status --hook </dev/null || true\necho after\n' > .git/hooks/pre-push
-check "install-hooks: old hook updated" "$(git assetsync install-hooks | head -1)" "pre-push: updated"
+check "hooks: outdated" "$(git assetsync hooks | head -1)" "pre-push: outdated (update with 'git assetsync hooks install')"
+check "hooks install: old hook updated" "$(git assetsync hooks install | head -1)" "pre-push: updated"
 check "... in place" "$(grep -v '^#' .git/hooks/pre-push | oneline)" \
   'echo before git_assetsync_refs=$([ $# -eq 0 ] || cat) printf '"'%s\\n'"' "$git_assetsync_refs" | git assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1 [ -z "$git_assetsync_refs" ] || exec <<git_assetsync_refs_end $git_assetsync_refs git_assetsync_refs_end echo after '
-quiet git assetsync uninstall-hooks
+quiet git assetsync hooks uninstall
 check "... uninstall keeps the rest" "$(oneline < .git/hooks/pre-push)" "#!/bin/sh echo before echo after "
 # a hook of our own from before 0.13.1: rewritten, without its 'exit 0' (lines
 # others append after it would never run)
 printf '#!/bin/sh\n# git-assetsync: reminders\ngit assetsync hook pre-push "$@" || [ $? -ne 3 ] || exit 1\nexit 0\n' > .git/hooks/pre-push
-check "install-hooks: our old hook updated" "$(git assetsync install-hooks | head -1)" "pre-push: updated"
+check "hooks install: our old hook updated" "$(git assetsync hooks install | head -1)" "pre-push: updated"
 check "... without exit 0" "$(grep -c 'exit 0' .git/hooks/pre-push)" "0"
-quiet git assetsync uninstall-hooks
+quiet git assetsync hooks uninstall
 check "... uninstalled: removed" "$(ls .git/hooks/pre-push 2>/dev/null)" ""
 printf '#!/bin/sh\necho mine\n' > .git/hooks/post-merge
 printf '#!/bin/sh\necho mine\n' > .git/hooks/pre-push
-OUT=$(git assetsync install-hooks)
+check "hooks: a hook of another tool" "$(git assetsync hooks | head -1)" \
+  "pre-push: hook of another tool, without our lines (add them with 'git assetsync hooks install --force')"
+git config core.hooksPath .git/hooks
+check "hooks: the directory set by core.hooksPath" "$(git assetsync hooks 2>&1 | head -1 | tr '\\' /)" "hooks directory: $T/r12/.git/hooks (core.hooksPath)"
+git config --unset core.hooksPath
+OUT=$(git assetsync hooks install)
 check "existing hook: not touched" "$(echo "$OUT" | grep -c 'post-merge: hook exists')" "1"
 check "existing pre-push hook: lines to add first" "$(echo "$OUT" | grep -c 'pre-push: hook exists, add these lines to .* (first: ')" "1"
-check "... and how to have them added" "$(echo "$OUT" | grep -c "^(or run 'git assetsync install-hooks --force' to add them)$")" "2"
+check "... and how to have them added" "$(echo "$OUT" | grep -c "^(or run 'git assetsync hooks install --force' to add them)$")" "2"
 printf '#!/bin/sh\ngit lfs pre-push "$@"\nexec true\n' > .git/hooks/pre-push
-check "install-hooks --force" "$(git assetsync install-hooks --force | oneline)" \
+check "hooks install --force" "$(git assetsync hooks install --force | oneline)" \
   "pre-push: lines added to the existing hook post-merge: lines added to the existing hook "
 check "... right after the #! line" "$(sed -n 1,3p .git/hooks/pre-push | cut -c1-16 | oneline) $(tail -2 .git/hooks/pre-push | oneline)" \
   "#!/bin/sh # git-assetsync: git_assetsync_re  git lfs pre-push \"\$@\" exec true "
-check "... then: already installed" "$(git assetsync install-hooks --force | oneline)" "pre-push: already installed post-merge: already installed "
-quiet git assetsync uninstall-hooks
+check "... then: already installed" "$(git assetsync hooks install --force | oneline)" "pre-push: already installed post-merge: already installed "
+quiet git assetsync hooks uninstall
 check "... uninstall keeps the others' lines" "$(oneline < .git/hooks/pre-push) $(oneline < .git/hooks/post-merge)" \
   "#!/bin/sh git lfs pre-push \"\$@\" exec true  #!/bin/sh echo mine "
 rm .git/hooks/pre-push .git/hooks/post-merge
@@ -1299,24 +1308,24 @@ release --title "Rel 1" acme/rl v1 10 "$F/small.bin" "$F/kib.bin"
 release acme/rl v1.1 11 "$F/small.bin"
 release --title "Rel 2 RC" --pre acme/rl v2-rc1 12 "$F/small.bin"
 release --draft acme/rl v3 13 "$F/small.bin"
-check "releases outside a repository" "$(asd releases acme/rl | oneline)" \
+check "releases outside a repository" "$(asd source releases acme/rl | oneline)" \
   "v3      2026-10-13  (draft) v2-rc1  2026-10-12  Rel 2 RC  (prerelease) v1.1    2026-10-11  (latest) v1      2026-10-10  Rel 1 v0      2026-10-09 "
-check "releases -n" "$(asd releases acme/rl -n 2 | lines)" "2"
-check "releases --assets" "$(asd releases acme/rl --assets | tail -5 | oneline)" \
+check "releases -n" "$(asd source releases acme/rl -n 2 | lines)" "2"
+check "releases --assets" "$(asd source releases acme/rl --assets | tail -5 | oneline)" \
   "v1      2026-10-10  Rel 1     kib.bin    2.9 KiB     small.bin  3 bytes v0      2026-10-09     (no assets) "
 new_repo r17
 addc a.bin acme/rl --asset small.bin
 addc b.bin acme/rl --asset small.bin --release 'v*' --prerelease
-check "releases: selected by sources" "$(git assetsync releases acme/rl | grep '^v2-rc1 ' | oneline)" \
+check "releases: selected by sources" "$(git assetsync source releases acme/rl | grep '^v2-rc1 ' | oneline)" \
   "v2-rc1  2026-10-12  Rel 2 RC  (prerelease, selected by acme/rl-2) "
-check "releases: latest selected" "$(git assetsync releases acme/rl | grep '^v1.1 ')" \
+check "releases: latest selected" "$(git assetsync source releases acme/rl | grep '^v1.1 ')" \
   "v1.1    2026-10-11  (latest, selected by acme/rl)"
-check "releases of a source by name" "$(git assetsync releases acme/rl-2 -n 1)" \
+check "releases of a source by name" "$(git assetsync source releases acme/rl-2 -n 1)" \
   "v3  2026-10-13  (draft)"
-check "releases: GitLab, upcoming" "$(asd releases https://gitlab.com/grp/proj -n 2 | oneline)" \
+check "releases: GitLab, upcoming" "$(asd source releases https://gitlab.com/grp/proj -n 2 | oneline)" \
   "v3  2026-10-30  (upcoming) v2  2026-10-11  (latest) "
-check "releases: none" "$(asd releases https://gitlab.com/grp/empty)" "no releases in grp/empty"
-check "releases: unknown project" "$(asd releases acme/nothing 2>&1)" "error: repository acme/nothing not found (or no access)"
+check "releases: none" "$(asd source releases https://gitlab.com/grp/empty)" "no releases in grp/empty"
+check "releases: unknown project" "$(asd source releases acme/nothing 2>&1)" "error: repository acme/nothing not found (or no access)"
 
 
 # =============================================================================
@@ -1913,14 +1922,14 @@ filt conv --convert '*.txt' 'gen/{stem}.TXT' "\"$PYTHON\" {root}/tools/upper.py 
 check "convert: stored" "$(git config -f .git-assetsync --get-all filter.conv.step | head -1)" \
   "convert '*.txt' 'gen/{stem}.TXT' '\"$PYTHON\" {root}/tools/upper.py {in} {out}'"
 check "not trusted: refused" "$(asd add c/ acme/cmd --filter conv 2>&1 | grep '^error')" \
-  "error: filter conv runs commands and isn't trusted in this repository yet - check with 'git assetsync trust', then trust with 'git assetsync trust conv'"
+  "error: filter conv runs commands and isn't trusted in this repository yet - check with 'git assetsync filter trust', then trust with 'git assetsync filter trust conv'"
 check "not trusted: nothing written" "$(ls c 2>/dev/null; git status --porcelain)" ""
-OUT=$(git assetsync trust)
+OUT=$(git assetsync filter trust)
 check "trust: list" "$(echo "$OUT" | head -1)" "filter conv: not trusted"
 check "trust: commands and scripts" "$(echo "$OUT" | grep -c '(runs tools/upper.py of this repository)')" "1"
 check "trust: hint" "$(echo "$OUT" | tail -1)" \
-  '  (use "git assetsync trust <name>..." or "git assetsync trust --all" to trust them in this repository)'
-check "trust NAME" "$(git assetsync trust conv)" "filter conv: trusted"
+  '  (use "git assetsync filter trust <name>..." or "git assetsync filter trust --all" to trust them in this repository)'
+check "trust NAME" "$(git assetsync filter trust conv)" "filter conv: trusted"
 check "trust: local config only" "$(git config --local --get-all assetsync.trusted | sed 's/^[0-9a-f]* //') $(git status --porcelain)" "conv "
 quiet asd add c/ acme/cmd --filter conv
 check "convert: result" "$(git ls-files c | oneline)" "c/data.c c/gen/fw.c c/gen/fw.h c/gen/notes.TXT "
@@ -1933,14 +1942,14 @@ printf 'import sys\nopen(sys.argv[2], "wb").write(open(sys.argv[1], "rb").read()
 git commit -qam "new upper"
 check "changed script: pending" "$(git assetsync status | grep -c 'pending:    c/  (filter changed)')" "1"
 check "changed script: warning" "$(git assetsync status | grep -c "filter conv runs commands and isn't trusted here yet")" "1"
-check "changed script: trust list" "$(git assetsync trust | head -1)" "filter conv: changed since trusted (used by c/)"
+check "changed script: trust list" "$(git assetsync filter trust | head -1)" "filter conv: changed since trusted (used by c/)"
 check "changed script: pull refused" "$(rc git assetsync pull --no-edit c)" "2"
 # like a terminal that ends at once (Windows takes NUL for one): not trusted
 check "trust prompt at end of input: no" "$(printf '' | "$PYTHON" -c '
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("a", sys.argv[1]); m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m); print(m.ask("q? "))' "$S" 2>/dev/null | tail -1)" "False"
-quiet git assetsync trust --all
+quiet git assetsync filter trust --all
 pullc c
 check "changed script: pulled" "$(cat c/gen/notes.TXT)" "HELLO
 !"
@@ -1949,13 +1958,13 @@ filt rn --run 'cp -R {in}/. {out}/ && echo "$ASSETSYNC_RELEASE $ASSETSYNC_ENTRY 
 check "ASSETSYNC_TRUST=all" "$(ASSETSYNC_TRUST=all asd add r/ acme/cmd --filter rn >/dev/null 2>&1; git ls-files r | oneline)" \
   "r/data.hex r/env.txt r/fw.bin r/notes.txt "
 check "run: environment, {in} and {out}" "$(cat r/env.txt)" "v1 r/ in out"
-check "ASSETSYNC_TRUST=all: not recorded" "$(git assetsync trust | grep '^filter rn')" "filter rn: not trusted (used by r/)"
+check "ASSETSYNC_TRUST=all: not recorded" "$(git assetsync filter trust | grep '^filter rn')" "filter rn: not trusted (used by r/)"
 git reset -q --hard; rm -rf r
 # errors
 filt fail --convert '*.txt' x.out 'echo broken >&2; exit 3'
 filt none --convert '*.txt' x.out 'true'
 filt clash --convert '*.txt' 'fw.bin' 'cp {in} {out}'
-quiet git assetsync trust --all
+quiet git assetsync filter trust --all
 check "command fails" "$(asd add e/ acme/cmd --filter fail 2>&1 | grep '^error')" \
   "error: e/ filter fail: 'convert '*.txt' x.out 'echo broken >&2; exit 3'': notes.txt: command failed (exit code 3): broken"
 check "command writes nothing" "$(asd add e/ acme/cmd --filter none 2>&1 | grep '^error')" \
@@ -1963,7 +1972,7 @@ check "command writes nothing" "$(asd add e/ acme/cmd --filter none 2>&1 | grep 
 filt names --copy notes.txt U/notes.txt --convert 'U/*.txt' 'U/{stem}.TXT' 'echo {in} {out} > {out}' \
   --convert '*.txt' 'gen/{stem}.c' 'echo {in} {out} > {out}' --convert '*.bin' '{path}' 'echo {in} {out} > {out}' \
   --convert '*.hex' 'h/' 'echo {in} {out} > {out}/x'
-quiet git assetsync trust names
+quiet git assetsync filter trust names
 quiet asd add n/ acme/cmd --filter names
 check "convert: {in} and {out} are short names (reproducible)" "$(cat n/gen/notes.c n/fw.bin n/h/x | oneline)" \
   "notes.txt notes.c fw.bin out/fw.bin data.hex out "
@@ -1973,18 +1982,18 @@ check "command result collides" "$(asd add e/ acme/cmd --filter clash 2>&1 | gre
   "error: e/ filter clash: 'convert '*.txt' fw.bin 'cp {in} {out}'': 'notes.txt' would give 'fw.bin', which is already there"
 if ! command -v cygpath >/dev/null; then
   filt lnk --convert '*.txt' 'l/' 'ln -s /etc/passwd {out}/x'
-  quiet git assetsync trust lnk
+  quiet git assetsync filter trust lnk
   check "command result: a link refused" "$(asd add e/ acme/cmd --filter lnk 2>&1 | grep -c "'x' is no regular file")" "1"
 fi
 check "errors: nothing written" "$(ls e 2>/dev/null; git status --porcelain)" ""
 # filter test runs commands only if trusted, too
-quiet git assetsync trust --revoke conv
-check "trust --revoke" "$(git assetsync trust | grep '^filter conv')" "filter conv: not trusted (used by c/)"
+quiet git assetsync filter trust --revoke conv
+check "trust --revoke" "$(git assetsync filter trust | grep '^filter conv')" "filter conv: not trusted (used by c/)"
 check "filter test: not trusted" "$(git assetsync filter test conv "$F/notes.txt" 2>&1 | cut -c1-40)" "error: filter conv runs commands and isn"
-quiet git assetsync trust conv
+quiet git assetsync filter trust conv
 check "filter test: commands" "$(git assetsync filter test conv "$F/notes.txt" "$F/data.hex" "$F/fw.bin" | oneline)" \
   "3 bytes  data.c 3 bytes  gen/fw.c 3 bytes  gen/fw.h 7 bytes  gen/notes.TXT "
-check "trust: a filter without commands" "$(git assetsync trust only-steps 2>&1; filt plain --extract; git assetsync trust plain)" \
+check "trust: a filter without commands" "$(git assetsync filter trust only-steps 2>&1; filt plain --extract; git assetsync filter trust plain)" \
   "error: no filter 'only-steps' in .git-assetsync
 filter plain runs no commands - nothing to trust"
 
@@ -1999,7 +2008,7 @@ new_repo r24
 filt hdr --extract --include '*.h' --move '*.h' include/
 filt rnd --convert '*.txt' '{name}' 'echo $$ > {out}'
 filt rnddir --copy vf.txt keep/v.txt --convert vf.txt 'gen/{stem}.c' 'echo $$ > {out}'
-quiet git assetsync trust rnd rnddir
+quiet git assetsync filter trust rnd rnddir
 addc f.txt acme/vf --asset vf.txt
 addc d/ acme/vf --asset pkg.zip --filter hdr
 check "verify: all verified" "$(git assetsync verify | oneline)" "d/: verified (v1) f.txt: verified (v1) "
@@ -2196,7 +2205,7 @@ printf 'three, rebuilt\n' > "$L/v3/t.bin"
 check "map: rebuilt in place" "$(git assetsync status -s)" "P   t.bin"
 pullc t.bin
 check "map: pulled again" "$(cat t.bin)" "three, rebuilt"
-check "map: releases" "$(git assetsync releases acme/loc | cut -c1-2 | oneline)" "re v3 v1 v2 "
+check "map: releases" "$(git assetsync source releases acme/loc | cut -c1-2 | oneline)" "re v3 v1 v2 "
 check "map: no release" "$(git assetsync pull -n --release v9 t.bin 2>&1 | tr '\\' /)" \
   "error: t.bin: no release with tag 'v9' in acme/loc (local folder $L)"
 check "map: --remote asks the platform" "$(git assetsync status -s --remote 2>/dev/null)" "E   t.bin"
@@ -2221,24 +2230,24 @@ touch -t 202604101200 "$FL/rel20260410.7z" "$FL/rel20260410.xml"
 cd "$T"; new_repo r26f
 check "map --flat" "$(git assetsync source map --flat https://github.com/acme/flat "$FL" | tr '\\' / | sed 's/^.* -> //')" "$FL (flat)"
 check "map --flat: list" "$(git assetsync source map | grep -c '(flat)$')" "1"
-check "flat: releases by file name" "$(git assetsync releases acme/flat --assets | sed 1d | awk '{print $1}' | oneline)" \
+check "flat: releases by file name" "$(git assetsync source releases acme/flat --assets | sed 1d | awk '{print $1}' | oneline)" \
   "rel20260410 rel20260410.7z rel20260410.xml rel20260213 rel20260213.7z rel20260213.xml rel20250101 rel20250101.tar.gz "
 check "flat: one asset of two" "$(git assetsync add v.xml https://github.com/acme/flat 2>&1 | grep -c 'assets')" "1"
 addc v.xml https://github.com/acme/flat --asset '*.xml'
 check "flat: newest release, the asset chosen" "$(reg file.v.xml.synced) $(cat v.xml)" "rel20260410 <v>20260410</v>"
 check "flat: pinned tag" "$(git assetsync pull -n --release rel20260213 v.xml | head -1)" \
   "would: Update v.xml to acme/flat rel20260213 (was rel20260410)"
-check "flat: .tar.gz is one extension" "$(git assetsync releases acme/flat | grep -c '^rel20250101 ')" "1"
+check "flat: .tar.gz is one extension" "$(git assetsync source releases acme/flat | grep -c '^rel20250101 ')" "1"
 check "map --flat: only with DIR" "$(git assetsync source map --flat acme/flat 2>&1)" \
   "error: --flat goes with the folder: source map --flat URL|SOURCE DIR"
 quiet git assetsync source map https://github.com/acme/flat "$FL"
-check "map again without --flat: folders" "$(git config assetsync.https://github.com/acme/flat.layout; git assetsync releases acme/flat | sed -n 2p | cut -d' ' -f1)" "sub"
+check "map again without --flat: folders" "$(git config assetsync.https://github.com/acme/flat.layout; git assetsync source releases acme/flat | sed -n 2p | cut -d' ' -f1)" "sub"
 quiet git assetsync source map https://github.com/acme/flat --unset
 check "map --unset: layout too" "$(git config --get-regexp 'assetsync\..*flat' | lines)" "0"
 cd "$T/r26"
 # the pre-push check: the release must be on the server, with these assets
 git init -q --bare "$T/r26.git" && git remote add origin "$T/r26.git"
-quiet git assetsync install-hooks
+quiet git assetsync hooks install
 git config assetsync.pushCheck error
 OUT=$(git push -q origin main 2>&1); RC=$?
 check "push check: refused (error)" "$RC $(git ls-remote origin main | lines)" "1 0"
@@ -2259,7 +2268,7 @@ check "pre-push: nothing pushed: EOF for later commands, no blank line" \
 check "pre-push: by hand, a variable of that name in the environment isn't passed on" \
   "$(echo 'refs/heads/x 1 refs/heads/x 0' | git_assetsync_refs=junk sh .git/hooks/pre-push >/dev/null 2>&1; cat "$T/after.log")" \
   "refs/heads/x 1 refs/heads/x 0"
-rm .git/hooks/pre-push; quiet git assetsync install-hooks
+rm .git/hooks/pre-push; quiet git assetsync hooks install
 check "push check: by hand (HEAD)" "$(git assetsync hook pre-push 2>&1 | grep -c 'not on the server')" "0"
 # published as tested: no warning; other assets on the server: a warning
 cp "$L/v3/t.bin" "$F/t.bin"; release acme/loc v3 13 "$F/t.bin"

@@ -232,6 +232,13 @@ Advanced commands - change entries, sources and filters; set up:
                                 one): rel1.7z, rel1.xml -> release rel1
         --global                for all repositories (default: this one)
         --unset                 remove the mapping
+    source releases SOURCE|URL  list the releases, newest first, marked:
+                                latest, prerelease (GitLab: upcoming), draft,
+                                selected by which [source]; also outside a
+                                repository (with a URL)
+        --assets                also list the assets, with their sizes
+        -n N, --all             the newest N releases (default 10), or all
+        --type github|gitlab    platform of the URL's host
 
     filter                      list the filters (and who uses them)
     filter show NAME            the steps of a filter
@@ -252,13 +259,12 @@ Advanced commands - change entries, sources and filters; set up:
     filter set NAME STEP-OPTIONS...  replace the steps of a filter
     filter rename OLD NEW       rename a filter, also where it is used
     filter remove NAME          remove a filter nothing uses
-
-    trust                       list the filters that run commands, with their
+    filter trust                list the filters that run commands, with their
                                 state (trusted, not trusted, changed since
                                 trusted) and the scripts they run; asks on a
                                 terminal
-    trust NAME... | --all       trust these filters (all), as they are now -
-                                in .git/config, never committed
+    filter trust NAME... | --all  trust these filters (all), as they are now
+                                - in .git/config, never committed
         --revoke                no longer trust them
 
     verify [PATH...]            filter the assets each entry was synced with
@@ -267,14 +273,6 @@ Advanced commands - change entries, sources and filters; set up:
                                 1 if not); nothing in the repository changes
         -v, --verbose           first name where each entry comes from (as
                                 status -v)
-
-    releases SOURCE|URL         list the releases, newest first, marked:
-                                latest, prerelease (GitLab: upcoming), draft,
-                                selected by which [source]; also outside a
-                                repository (with a URL)
-        --assets                also list the assets, with their sizes
-        -n N, --all             the newest N releases (default 10), or all
-        --type github|gitlab    platform of the URL's host
 
     cache                       the download cache: where, how big, the limits
     cache list                  its files, most recently used first
@@ -288,8 +286,11 @@ Advanced commands - change entries, sources and filters; set up:
     cache clear [-n]            remove everything
     cache dir                   print its directory (e.g. for CI caching)
 
-    install-hooks               install pre-push/post-merge hooks (or update
-                                them): reminders about new releases, local
+    hooks                       the state of the pre-push/post-merge hooks
+                                (installed, outdated, not installed, a hook
+                                of another tool without our lines)
+    hooks install               install the hooks (or update them):
+                                reminders about new releases, local
                                 modifications, errors; pre-push also warns
                                 if a pushed entry's release isn't on the
                                 platform with these assets (e.g. from a
@@ -298,13 +299,15 @@ Advanced commands - change entries, sources and filters; set up:
         --force                 add our lines to existing hooks of other
                                 tools, right after the #! line (default:
                                 show the lines to add)
-    uninstall-hooks             remove them again
-    hook pre-push|post-merge    what the installed hooks run
+    hooks uninstall             remove them again (only our lines from hooks
+                                of other tools)
+    hook pre-push|post-merge    what the installed hooks run (not for you)
 
     Common options:
         --color[=WHEN], --no-color  always, never or auto (default)
         --remote                ignore mappings to local folders (status,
-                                pull, diff, add, set, verify, releases, ...)
+                                pull, diff, add, set, verify, source
+                                releases, ...)
 
 Exit codes: 0 ok, 1 unfinished (not committed, --exit-code), 2 error.
 
@@ -1757,13 +1760,13 @@ def ensure_trusted(repo, steps, filters):
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             raise FsError(f"filter {and_list(missing)} run{'s' if len(missing) == 1 else ''} "
                           "commands and isn't trusted in this repository yet - check with 'git "
-                          f"assetsync trust', then trust with 'git assetsync trust {missing[0]}'")
+                          f"assetsync filter trust', then trust with 'git assetsync filter trust {missing[0]}'")
         for name in missing:
             print(f"filter {name} runs commands:")
             show_commands(name, filters, repo)
             if not ask(f"Trust filter {name} in this repository? [y/N] "):
-                raise FsError(f"filter {name} not trusted - check with 'git assetsync trust', "
-                              f"then trust with 'git assetsync trust {name}'")
+                raise FsError(f"filter {name} not trusted - check with 'git assetsync filter trust', "
+                              f"then trust with 'git assetsync filter trust {name}'")
             set_trust(repo, name, filters)
     return set(used_filters(steps, filters))
 
@@ -2963,7 +2966,7 @@ def evaluate(ctx, repo, entry):
     if st.pending:
         for name in untrusted(repo, entry.steps, entry.reg.filters):
             st.warnings.append(f"filter {name} runs commands and isn't trusted here yet "
-                               f"(see 'git assetsync trust')")
+                               f"(see 'git assetsync filter trust')")
     return st
 
 
@@ -5148,24 +5151,27 @@ def cmd_trust(ctx, repo, args):
                 set_trust(repo, name, reg.filters)
                 print(f"filter {name}: {paint('trusted', 'green')}")
     elif missing:
-        print(f'  (use "git assetsync trust <name>..." or "git assetsync trust --all" to trust '
+        print(f'  (use "git assetsync filter trust <name>..." or "git assetsync filter trust --all" to trust '
               'them in this repository)')
     return EXIT_OK
 
 
-def hook_dir(repo, action):
+def hook_dir(repo, action=None):
+    """(directory of the hooks, set by core.hooksPath); a warning for that
+    with action (e.g. 'installing into')."""
     hp = out(repo.git(["config", "core.hooksPath"], check=False))
     if hp:
         hookdir = Path(os.path.expanduser(hp))
         if not hookdir.is_absolute():
             hookdir = repo.top / hookdir
-        warn(f"core.hooksPath is set; {action} {hookdir} "
-             "(may affect other repositories using it)")
+        if action:
+            warn(f"core.hooksPath is set; {action} {hookdir} "
+                 "(may affect other repositories using it)")
     else:
         hookdir = Path(out(repo.git(["rev-parse", "--git-path", "hooks"])))
         if not hookdir.is_absolute():
             hookdir = repo.top / hookdir
-    return hookdir
+    return hookdir, bool(hp)
 
 
 def hook_snippet(cmd):
@@ -5187,51 +5193,82 @@ def only_ours(lines):
                for ln in lines)
 
 
-def cmd_install_hooks(repo, args):
-    hookdir = hook_dir(repo, "installing into")
-    hookdir.mkdir(parents=True, exist_ok=True)
-    for name, cmd in HOOKS.items():
+def hook_plan(name, text):
+    """(state, text to write) of the hook name with the text it has now (None:
+    no hook): 'new', 'installed' (as it would be written), 'outdated' (our
+    lines of an older version), 'other' (a hook of another tool, without our
+    lines: then the text with them added right after the #! line)."""
+    snippet = hook_snippet(HOOKS[name])
+    # no 'exit 0' at the end: lines others add (e.g. git lfs) are appended
+    fresh = "#!/bin/sh\n" + snippet
+    if text is None:
+        return "new", fresh
+    lines = text.splitlines(keepends=True)
+    at = next((i for i, ln in enumerate(lines) if is_our_hook_line(ln)), None)
+    if at is None:
+        # right after the shebang: before commands that read the pushed refs
+        # from stdin (git lfs pre-push), or an exec/exit at the end
+        at = 1 if lines and lines[0].startswith("#!") else 0
+        return "other", "".join(lines[:at] + [snippet] + lines[at:])
+    # ours: our lines replaced with the current ones, in the same place
+    rest = [ln for ln in lines if not is_our_hook_line(ln)]
+    new = fresh if only_ours(lines) else "".join(rest[:at] + [snippet] + rest[at:])
+    return ("installed" if new == text else "outdated"), new
+
+
+def cmd_hooks(repo, args):
+    """hooks: the state of each hook; hooks install / uninstall."""
+    if args.action == "install":
+        return hooks_install(repo, args)
+    if args.action == "uninstall":
+        return hooks_uninstall(repo, args)
+    hookdir, by_config = hook_dir(repo)
+    if by_config:
+        print(f"hooks directory: {hookdir} (core.hooksPath)")
+    for name in HOOKS:
         f = hookdir / name
-        snippet = hook_snippet(cmd)
-        # no 'exit 0' at the end: lines others add (e.g. git lfs) are appended
-        fresh = "#!/bin/sh\n" + snippet
-        if f.exists():
-            text = f.read_bytes().decode("utf-8", "replace")
-            lines = text.splitlines(keepends=True)
-            at = next((i for i, ln in enumerate(lines) if is_our_hook_line(ln)), None)
-            if at is None and args.force:
-                # right after the shebang: before commands that read the pushed
-                # refs from stdin (git lfs pre-push), or an exec/exit at the end
-                at = 1 if lines and lines[0].startswith("#!") else 0
-                f.write_bytes("".join(lines[:at] + [snippet] + lines[at:]).encode("utf-8"))
-                print(f"{name}: {paint('lines added to the existing hook', 'green')}")
-                continue
-            if at is None:
-                where = (" (first: commands after them that read the pushed refs, like git lfs "
-                         "pre-push, still get them)" if name == "pre-push" else "")
-                print(f"{name}: {paint('hook exists', 'yellow')}, add these lines to "
-                      f"{f}{where}:\n{snippet}"
-                      "(or run 'git assetsync install-hooks --force' to add them)")
-                continue
-            # ours: replace our lines with the current ones, in the same place
-            rest = [ln for ln in lines if not is_our_hook_line(ln)]
-            new = fresh if only_ours(lines) else "".join(rest[:at] + [snippet] + rest[at:])
-            if new == text:
-                print(f"{name}: already installed")
-            else:
-                f.write_bytes(new.encode("utf-8"))
-                print(f"{name}: {paint('updated', 'green')}")
-            continue
-        f.write_bytes(fresh.encode())
-        f.chmod(0o755)
-        print(f"{name}: {paint('installed', 'green')}")
+        state, _ = hook_plan(name, f.read_bytes().decode("utf-8", "replace")
+                             if f.is_file() else None)
+        print(f"{name}: " + {
+            "installed": paint("installed", "green"),
+            "outdated": paint("outdated", "yellow")
+            + " (update with 'git assetsync hooks install')",
+            "new": paint("not installed", "dim")
+            + " (install with 'git assetsync hooks install')",
+            "other": paint("hook of another tool, without our lines", "yellow")
+            + " (add them with 'git assetsync hooks install --force')"}[state])
     return EXIT_OK
 
 
-def cmd_uninstall_hooks(repo, args):
+def hooks_install(repo, args):
+    hookdir, _ = hook_dir(repo, "installing into")
+    hookdir.mkdir(parents=True, exist_ok=True)
+    for name, cmd in HOOKS.items():
+        f = hookdir / name
+        state, new = hook_plan(name, f.read_bytes().decode("utf-8", "replace")
+                               if f.exists() else None)
+        if state == "other" and not args.force:
+            where = (" (first: commands after them that read the pushed refs, like git lfs "
+                     "pre-push, still get them)" if name == "pre-push" else "")
+            print(f"{name}: {paint('hook exists', 'yellow')}, add these lines to "
+                  f"{f}{where}:\n{hook_snippet(cmd)}"
+                  "(or run 'git assetsync hooks install --force' to add them)")
+            continue
+        if state == "installed":
+            print(f"{name}: already installed")
+            continue
+        f.write_bytes(new.encode("utf-8"))
+        if state == "new":
+            f.chmod(0o755)
+        print(f"{name}: " + paint({"new": "installed", "outdated": "updated",
+                                   "other": "lines added to the existing hook"}[state], "green"))
+    return EXIT_OK
+
+
+def hooks_uninstall(repo, args):
     """Remove our hooks. A hook file that only contains our snippet is deleted;
     in other hook files only our lines are removed, the rest stays untouched."""
-    hookdir = hook_dir(repo, "removing from")
+    hookdir, _ = hook_dir(repo, "removing from")
     for name in HOOKS:
         f = hookdir / name
         if not f.is_file():
@@ -5258,11 +5295,11 @@ BASIC_COMMANDS = ("status", "pull", "diff", "difftool", "restore", "add", "rm", 
 
 def command_list(sub, t):
     """--help: the commands with their summaries, basic ones first (the
-    rest in the order they were defined, `hook` last), in the colors of the
+    rest in the order they were defined; not the hidden `hook`), in the colors of the
     theme t of argparse (headings, and names like its positionals). As in
     git-filesync."""
     width = max(shutil.get_terminal_size().columns - 2, 40)
-    helps = {a.dest: a.help for a in sub._choices_actions}
+    helps = {a.dest: a.help for a in sub._choices_actions if a.help != argparse.SUPPRESS}
 
     def group(title, names):
         lines = [f"{t.heading}{title}:{t.reset}"]
@@ -5497,18 +5534,6 @@ def main(argv=None):
     p.add_argument("-v", "--verbose", action="store_true",
                    help="first name where each entry comes from (as status -v)")
 
-    p = sub.add_parser("releases", parents=[colorp, remotep],
-                       help="list the releases of a source (and their assets)")
-    p.add_argument("source", metavar="SOURCE|URL",
-                   help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
-    p.add_argument("--assets", action="store_true", help="also list the assets")
-    g = p.add_mutually_exclusive_group()
-    g.add_argument("-n", "--max-count", type=int, default=10, metavar="N",
-                   help="the newest N releases (default: 10)")
-    g.add_argument("--all", action="store_true", help="all releases")
-    p.add_argument("--type", choices=sorted(PLATFORMS),
-                   help="platform of the URL's host (default: derived from it)")
-
     p = sub.add_parser("rm", parents=[colorp],
                        help="remove entries and their files (like 'git rm'; staged)")
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
@@ -5526,7 +5551,8 @@ def main(argv=None):
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
     p = sub.add_parser("source", parents=[colorp, remotep],
-                       help="list or change the [source]s (like 'git remote')")
+                       help="list or change the [source]s (like 'git remote'), list their releases, map them "
+                            "to local folders")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="list with URL, release selection, the release it selects now and "
                         "file count")
@@ -5573,8 +5599,21 @@ def main(argv=None):
     a.add_argument("--global", dest="glob", action="store_true",
                    help="in the global git config, for all repositories")
 
+    a = actions.add_parser("releases", parents=[colorp, remotep],
+                           help="list the releases of a source or project (and their assets)",
+                           description="List the releases of a source or project, newest first (and their assets) - also outside a repository, with a URL.")
+    a.add_argument("source", metavar="SOURCE|URL",
+                   help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
+    a.add_argument("--assets", action="store_true", help="also list the assets")
+    g = a.add_mutually_exclusive_group()
+    g.add_argument("-n", "--max-count", type=int, default=10, metavar="N",
+                   help="the newest N releases (default: 10)")
+    g.add_argument("--all", action="store_true", help="all releases")
+    a.add_argument("--type", choices=sorted(PLATFORMS),
+                   help="platform of the URL's host (default: derived from it)")
+
     p = sub.add_parser("filter", parents=[colorp],
-                       help="list, show or change the named filters [filter \"NAME\"]")
+                       help="list, show, change, test or trust the named filters [filter \"NAME\"]")
     actions = p.add_subparsers(dest="action", metavar="ACTION")
     a = actions.add_parser("show", parents=[colorp], help="the steps of a filter",
                            description="Show the steps of a filter.")
@@ -5606,12 +5645,11 @@ def main(argv=None):
     a.add_argument("value", metavar="NEW")
     a = actions.add_parser("remove", parents=[colorp], help="remove an unused filter")
     a.add_argument("name", metavar="NAME")
-
-    p = sub.add_parser("trust", parents=[colorp],
-                       help="list the filters that run commands; trust them in this repository")
-    p.add_argument("names", nargs="*", metavar="NAME", help="filters to trust")
-    p.add_argument("--all", action="store_true", help="trust all filters that run commands")
-    p.add_argument("--revoke", action="store_true", help="no longer trust the filters NAME")
+    a = actions.add_parser("trust", parents=[colorp],
+                           help="list the filters that run commands; trust them in this repository")
+    a.add_argument("names", nargs="*", metavar="NAME", help="filters to trust")
+    a.add_argument("--all", action="store_true", help="trust all filters that run commands")
+    a.add_argument("--revoke", action="store_true", help="no longer trust the filters NAME")
 
     p = sub.add_parser("cache", parents=[colorp],
                        help="show, list or clean up the download cache")
@@ -5633,14 +5671,20 @@ def main(argv=None):
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would be removed")
     actions.add_parser("dir", parents=[colorp], help="print the cache's directory")
 
-    p = sub.add_parser("install-hooks", parents=[colorp],
-                       help="install the pre-push/post-merge hooks",
-                       description="Install the pre-push/post-merge hooks of git-assetsync.")
-    p.add_argument("--force", action="store_true",
-                   help="add our lines to existing hooks (right after the #! line)")
-    sub.add_parser("uninstall-hooks", parents=[colorp], help="remove the hooks again",
-                   description="Remove the pre-push/post-merge hooks of git-assetsync.")
-    p = sub.add_parser("hook", parents=[colorp], help="what the installed hooks run",
+    p = sub.add_parser("hooks", parents=[colorp],
+                       help="show, install or remove the pre-push/post-merge hooks",
+                       description="Show the state of the pre-push/post-merge hooks of "
+                                   "git-assetsync, install or remove them.")
+    actions = p.add_subparsers(dest="action", metavar="ACTION")
+    a = actions.add_parser("install", parents=[colorp], help="install the hooks, or update them",
+                           description="Install the pre-push/post-merge hooks of "
+                                       "git-assetsync, or update them.")
+    a.add_argument("--force", action="store_true",
+                   help="add our lines to existing hooks of other tools (right after the #! line)")
+    actions.add_parser("uninstall", parents=[colorp],
+                       help="remove the hooks (only our lines from hooks of other tools)")
+    # what the installed hooks run - not in the list (hooks is for people)
+    p = sub.add_parser("hook", parents=[colorp], help=argparse.SUPPRESS,
                        description="Run the checks of an installed hook (called by the hooks).")
     p.add_argument("name", choices=list(HOOKS))
     p.add_argument("hook_args", nargs=argparse.REMAINDER, help="the hook's arguments")
@@ -5668,14 +5712,12 @@ def main(argv=None):
         if not getattr(args, "remote", False):
             MAPPINGS.update((norm_url(u), (d, flat)) for _, _, u, d, flat in
                             local_mappings(cwd=repo.top if repo else None))
-        if args.cmd == "releases":            # also outside a repository
+        if args.cmd == "source" and args.action == "releases":   # also outside a repository
             return cmd_releases(Context(args), repo, args)
         if repo is None:
             raise FsError("not inside a Git working tree")
-        if args.cmd == "install-hooks":
-            return cmd_install_hooks(repo, args)
-        if args.cmd == "uninstall-hooks":
-            return cmd_uninstall_hooks(repo, args)
+        if args.cmd == "hooks":
+            return cmd_hooks(repo, args)
         if args.cmd == "hook":
             args.no_fetch = args.name == "post-merge"    # pre-push: online anyway
         ctx = Context(args)
@@ -5686,8 +5728,9 @@ def main(argv=None):
         return {"hook": cmd_hook, "status": cmd_status, "pull": cmd_pull, "diff": cmd_diff,
                 "difftool": cmd_difftool, "add": cmd_add, "edit": cmd_edit,
                 "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv, "restore": cmd_restore, "rm": cmd_rm,
-                "source": cmd_source, "filter": cmd_filter,
-                "trust": cmd_trust, "verify": cmd_verify}[args.cmd](ctx, repo, args)
+                "source": cmd_source,
+                "filter": cmd_trust if args.cmd == "filter" and args.action == "trust"
+                else cmd_filter, "verify": cmd_verify}[args.cmd](ctx, repo, args)
     except FsError as e:
         error(str(e))
         return EXIT_ERROR

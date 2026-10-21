@@ -234,12 +234,12 @@ Advanced commands:
 | `edit` | open `.git-assetsync` in the editor, then check and stage it |
 | `source [ACTION …]` | list sources; rename them, change URL, release selection or type |
 | `source map [URL\|SOURCE [DIR]]` | take releases from a local folder, to test a build before publishing it |
+| `source releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
-| `trust [NAME…]` | list the filters that run commands; trust them in this repository |
+| `filter trust [NAME…]` | list the filters that run commands; trust them in this repository |
 | `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
-| `releases SOURCE\|URL` | list the releases of a project, with their assets |
 | `cache [ACTION]` | the download cache: show, list, prune, clear |
-| `install-hooks`, `uninstall-hooks` | hooks for `push` and `merge`: reminders, check that pushed entries' releases are published |
+| `hooks [install\|uninstall]` | hooks for `push` and `merge`: reminders, check that pushed entries' releases are published |
 
 `git assetsync <command> -h` describes a command and lists its options. The
 **[manual](MANUAL.md)** describes all commands and options in detail,

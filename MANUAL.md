@@ -15,8 +15,7 @@ git-assetsync. For motivation and installation see the [README](README.md).
   - [Common options](#common-options)
   - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`restore`](#restore) · [`add`](#add) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv)
 - [Advanced commands](#advanced-commands)
-  - [`set`](#set) · [`edit`](#edit) · [`source`](#source) · [`source map`](#source-map) · [`filter`](#filter) · [`trust`](#trust) · [`verify`](#verify) · [`releases`](#releases) · [`cache`](#cache)
-  - [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks)
+  - [`set`](#set) · [`edit`](#edit) · [`source`](#source) · [`source map`](#source-map) · [`source releases`](#source-releases) · [`filter`](#filter) · [`filter trust`](#filter-trust) · [`verify`](#verify) · [`cache`](#cache) · [`hooks`](#hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
   - [GitHub and GitLab access](#github-and-gitlab-access) · [Integrity](#integrity) · [Download cache](#download-cache)
@@ -229,12 +228,12 @@ Basic commands – what you need day to day:
 | [`edit`](#edit) | open `.git-assetsync` in the editor, then check and stage it |
 | [`source [ACTION …]`](#source) | list sources; rename them, change URL, release selection or type |
 | [`source map [URL\|SOURCE [DIR]]`](#source-map) | take the releases of a source from a local folder (local development, tests) |
+| [`source releases SOURCE\|URL`](#source-releases) | list the releases of a project, with their assets |
 | [`filter [ACTION …]`](#filter) | list filters; show, test, add, set, rename or remove them |
-| [`trust [NAME…]`](#trust) | list the filters that run commands; trust them in this repository |
+| [`filter trust [NAME…]`](#filter-trust) | list the filters that run commands; trust them in this repository |
 | [`verify [PATH…]`](#verify) | filter the synced assets again: is the committed state reproducible? |
-| [`releases SOURCE\|URL`](#releases) | list the releases of a project, with their assets |
 | [`cache [ACTION]`](#cache) | the download cache: show, list, prune, clear |
-| [`install-hooks`, `uninstall-hooks`](#install-hooks-uninstall-hooks) | hooks: reminders, push check |
+| [`hooks [install\|uninstall]`](#hooks) | hooks: reminders, push check – their state, install, remove |
 
 Commands named like a Git command behave like it (`status`, `pull`, `diff`,
 `difftool`, `restore`, `add`, `rm`, `mv`; `source` like `git remote`): same
@@ -271,7 +270,7 @@ an entry, take many assets).
 | Option | Meaning |
 |---|---|
 | `--color[=WHEN]`, `--no-color` | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
-| `--remote` | ignore [mappings to local folders](#source-map): ask GitHub or GitLab (commands that look at releases: `status`, `pull`, `diff`, `difftool`, `add`, `set`, `verify`, `releases`, `source`, `filter test`) |
+| `--remote` | ignore [mappings to local folders](#source-map): ask GitHub or GitLab (commands that look at releases: `status`, `pull`, `diff`, `difftool`, `add`, `set`, `verify`, `source`, `source releases`, `filter test`) |
 
 ### `status`
 
@@ -426,7 +425,7 @@ old side is named `synced/`, the new one `local/`, `committed/` or
 `upstream/`. Files in Git LFS are compared by their content, not their
 pointers. With `--upstream`, the assets come from the [download
 cache](#download-cache) if possible – and `pull` then needs no new
-download; filters that run commands must be [trusted](#trust). To see
+download; filters that run commands must be [trusted](#filter-trust). To see
 what a `pull` command line would do, replace `pull` by `diff --upstream`
 (with the same `--release` and paths), as in git-filesync. With
 `--exit-code` or `--quiet` after `--`, the exit code is 1 if there are
@@ -789,10 +788,41 @@ git assetsync source map acme/tool --unset                # remove it again
 - The commit message says where it came from: `Release: v1.3-rc1 (from a
   local folder, not published)`.
 - Everything works offline; nothing goes into the [download
-  cache](#download-cache). `status` names the folder, `releases` lists the
+  cache](#download-cache). `status` names the folder, `source releases` lists the
   folders; `--remote` asks the platform instead, for one command.
-- Before pushing, the [push check](#install-hooks-uninstall-hooks) warns
+- Before pushing, the [push check](#hooks) warns
   about entries whose release isn't published yet.
+
+### `source releases`
+
+```
+git assetsync source releases SOURCE|URL [--assets] [-n N | --all] [--type github|gitlab]
+```
+
+Lists the releases of a project, newest first: tag, date and title (if it
+differs from the tag), marked `latest` (as the platform defines it),
+`prerelease` (GitLab: `upcoming`), `draft`, and `selected by …` with the
+sources of this repository that select it now. A help for choosing
+`--release` and `--asset` for [`add`](#add) and [`set`](#set):
+
+```console
+$ git assetsync source releases acme/tool --assets -n 2
+v1.1      2026-10-11  Tool 1.1  (latest, selected by acme/tool)
+    tool-1.1-linux-x64     14.6 MiB
+    tool-1.1-windows.zip   15.2 MiB
+v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
+    tool-1.1-rc1-linux-x64  14.5 MiB
+```
+
+`SOURCE` is the name of a `[source]` or a URL (`owner/repo`: github.com),
+as for `add`; with a URL it also works outside a repository.
+
+| Option | Meaning |
+|---|---|
+| `--assets` | also list the assets of each release, with their sizes (GitLab reports none) |
+| `-n`, `--max-count N` | the newest N releases (default: 10) |
+| `--all` | all releases |
+| `--type github\|gitlab` | platform of the URL's host, as for `add` |
 
 ### `filter`
 
@@ -837,30 +867,30 @@ include '/*.h' LICENSE  287 -> 16 files
 …
 ```
 
-### `trust`
+### `filter trust`
 
 ```
-git assetsync trust
-git assetsync trust NAME… | --all
-git assetsync trust --revoke NAME…
+git assetsync filter trust
+git assetsync filter trust NAME… | --all
+git assetsync filter trust --revoke NAME…
 ```
 
 Filters that run [commands](#commands-in-filters) run only if trusted in
-this repository. Without arguments, `trust` lists them with their state –
+this repository. Without arguments, `filter trust` lists them with their state –
 `trusted`, `not trusted`, or `changed since trusted` – and their commands,
 naming the scripts of the repository they run; on a terminal it asks for
-each one that isn't trusted. `trust NAME…` trusts the filters as they are
+each one that isn't trusted. `filter trust NAME…` trusts the filters as they are
 now, `--all` all filters that run commands, `--revoke` takes the trust
 back. Trusts are kept in the repository's own config (`.git/config`,
 `assetsync.trusted`), never committed – each clone decides for itself.
 
 ```console
-$ git assetsync trust
+$ git assetsync filter trust
 filter firmware: not trusted (used by src/fw/)
   convert '*.bin' 'src/{stem}.c' 'xxd -i {in} > {out}'
   convert '*.hex' 'src/{stem}_hex.c' 'python3 {root}/tools/hex2c.py {in} {out}'
     (runs tools/hex2c.py of this repository)
-  (use "git assetsync trust <name>..." or "git assetsync trust --all" to trust them in this repository)
+  (use "git assetsync filter trust <name>..." or "git assetsync filter trust --all" to trust them in this repository)
 ```
 
 ### `verify`
@@ -887,43 +917,12 @@ src/fw/: differs from what v2.1 gives now:
 It also reports when the assets of the release differ from those the entry
 was synced with (re-uploaded), when the release no longer exists, and when
 the filter changed since the sync (`pull` first). Filters that run
-commands must be [trusted](#trust). The exit code is 0 if everything is
+commands must be [trusted](#filter-trust). The exit code is 0 if everything is
 verified, 1 if something differs, 2 on errors – so a CI job can check that
 nobody changed a file by hand and that the filters are deterministic.
 With `-v` (`--verbose`), each entry is first named with where it comes
 from, as `status -v` shows it: its assets, source, release selection,
 filter and the release it was synced with.
-
-### `releases`
-
-```
-git assetsync releases SOURCE|URL [--assets] [-n N | --all] [--type github|gitlab]
-```
-
-Lists the releases of a project, newest first: tag, date and title (if it
-differs from the tag), marked `latest` (as the platform defines it),
-`prerelease` (GitLab: `upcoming`), `draft`, and `selected by …` with the
-sources of this repository that select it now. A help for choosing
-`--release` and `--asset` for [`add`](#add) and [`set`](#set):
-
-```console
-$ git assetsync releases acme/tool --assets -n 2
-v1.1      2026-10-11  Tool 1.1  (latest, selected by acme/tool)
-    tool-1.1-linux-x64     14.6 MiB
-    tool-1.1-windows.zip   15.2 MiB
-v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
-    tool-1.1-rc1-linux-x64  14.5 MiB
-```
-
-`SOURCE` is the name of a `[source]` or a URL (`owner/repo`: github.com),
-as for `add`; with a URL it also works outside a repository.
-
-| Option | Meaning |
-|---|---|
-| `--assets` | also list the assets of each release, with their sizes (GitLab reports none) |
-| `-n`, `--max-count N` | the newest N releases (default: 10) |
-| `--all` | all releases |
-| `--type github\|gitlab` | platform of the URL's host, as for `add` |
 
 ### `cache`
 
@@ -972,9 +971,26 @@ git config --global assetsync.cacheMaxAge off
 
 Commands that download nothing (like `status`) never remove anything.
 
-### `install-hooks`, `uninstall-hooks`
+### `hooks`
 
-`install-hooks` installs two hooks that report on stderr:
+```
+git assetsync hooks
+git assetsync hooks install [--force]
+git assetsync hooks uninstall
+```
+
+`hooks` shows the state of the two hooks – `installed`, `outdated` (from an
+older version: update with `hooks install`), `not installed`, or a hook of
+another tool without our lines – and the directory, if `core.hooksPath`
+sets it:
+
+```console
+$ git assetsync hooks
+pre-push: installed
+post-merge: hook of another tool, without our lines (add them with 'git assetsync hooks install --force')
+```
+
+`hooks install` installs (or updates) two hooks that report on stderr:
 
 - `pre-push` – reminds of new releases, local modifications and errors
   before pushing
@@ -1023,17 +1039,19 @@ what the hooks do without reinstalling them; only exit code 3 of `hook
 pre-push` refuses a push, as in git-filesync. They are not meant to be run
 by hand (from a terminal, `hook pre-push` checks `HEAD`).
 
-Existing hooks of others are not changed; `install-hooks` prints the lines
+Existing hooks of others are not changed; `hooks install` prints the lines
 to add instead – or, with `--force`, adds them right after the `#!` line,
 before the hook's own commands (also before an `exec` or `exit` at its
 end). In a `pre-push` hook, they must come first: git passes the
 pushed refs on stdin, which the push check reads – the lines keep them for
 the commands after them (such as `git lfs pre-push`), but a command before
 them that reads stdin leaves nothing for the check. Hooks installed by an
-older version are updated in place (`updated`); run `install-hooks` again
+older version are updated in place (`updated`); run `hooks install` again
 after updating from a version before 0.13.1, whose `pre-push` hook didn't
-keep stdin. `uninstall-hooks` removes the hooks, or only its lines from
-hooks that contain other commands as well. With `core.hooksPath` set, the
+keep stdin. `hooks uninstall` removes the hooks, or only its lines from
+hooks that contain other commands as well. Until 0.15, the commands were
+`install-hooks` and `uninstall-hooks`; hooks installed by them keep
+working. With `core.hooksPath` set, the
 hooks go there (with a warning, since other repositories may use it).
 
 ## Further topics
@@ -1247,7 +1265,7 @@ deterministic, so that the same release gives the same result –
 whoever can change it could run commands on every machine that pulls. So
 a filter with commands runs only if it is **trusted in your repository**
 – recorded in its own config (`.git/config`, never committed), with
-[`trust`](#trust). A trust is for the filter as it is: a changed filter,
+[`filter trust`](#filter-trust). A trust is for the filter as it is: a changed filter,
 or a changed script of the repository its commands run (named as
 `{root}/tools/hex2c.py` or `$ASSETSYNC_ROOT/tools/hex2c.py`), needs a new one – and makes the entries using it
 pending, so they are converted again. On a terminal, `pull` and `add` ask;
