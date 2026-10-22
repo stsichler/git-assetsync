@@ -5891,8 +5891,8 @@ class PipeGuard:
     broken = False
     stop = False
 
-    def __init__(self, stream):
-        self._stream = stream
+    def __init__(self, stream, each=False):
+        self._stream, self._each = stream, each   # each: flushed at once (stderr)
 
     def __getattr__(self, name):
         return getattr(self._stream, name)
@@ -5911,7 +5911,10 @@ class PipeGuard:
 
     def write(self, text):
         try:
-            return self._stream.write(text)
+            n = self._stream.write(text)
+            if self._each:        # as from Python 3.9 on, also in 3.8
+                self._stream.flush()
+            return n
         except OSError as e:
             self._gone(e)
             return len(text)
@@ -5930,7 +5933,7 @@ def main(argv=None):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure:
             reconfigure(errors="replace", newline="\n")
-    sys.stdout, sys.stderr = PipeGuard(sys.stdout), PipeGuard(sys.stderr)
+    sys.stdout, sys.stderr = PipeGuard(sys.stdout), PipeGuard(sys.stderr, each=True)
     try:
         rc = run(argv)
         sys.stdout.flush()
