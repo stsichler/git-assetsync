@@ -337,12 +337,16 @@ check "status: exit code 0" "$(rc git assetsync status)" "0"
 check "status --exit-code: 1" "$(rc git assetsync status --exit-code)" "1"
 check "pull without paths refused" "$(rc git assetsync pull)" "2"
 check "pull without paths: message" "$(git assetsync pull 2>&1)" "error: specify file(s) or --all"
-check "pull -v: where it comes from first" "$(git assetsync pull -v --no-edit bin/tool.bin 2>/dev/null | head -1)" \
+# into a pipe closed early (head): the pull still finishes, exit 141 like git
+out=$(PYTHONUNBUFFERED=1 git assetsync pull -v --no-edit bin/tool.bin 2>/dev/null | head -1; echo "rc=${PIPESTATUS[0]}")
+check "pull -v: where it comes from first" "$(printf '%s\n' "$out" | head -1)" \
   "bin/tool.bin: tool-*.bin from acme/tool, latest release; synced v1.0"
+check "pull into a closed pipe: finished, exit 141" "$(printf '%s\n' "$out" | tail -1)" "rc=141"
 check "pull: content" "$(cat bin/tool.bin)" "tool 1.1"
 check "pull: commit message" "$(msg)" \
   "[assetsync] Update bin/tool.bin to acme/tool v1.1 (was v1.0) Release: https://github.com/acme/tool/releases/tag/v1.1 Asset:   tool-1.1.bin "
 check "pull: commit has file and entry" "$(git show --name-only --format= HEAD | sort | oneline)" ".git-assetsync bin/tool.bin "
+check "status into a closed pipe: stops, exit 141" "$(PYTHONUNBUFFERED=1 git assetsync status | (exec 0<&-); echo "${PIPESTATUS[0]}")" "141"
 check "pull: entry updated" "$(reg file.bin/tool.bin.synced) $(reg file.bin/tool.bin.blob)" "v1.1 $(git rev-parse HEAD:bin/tool.bin)"
 check "pull: nothing left" "$(git status --porcelain)" ""
 check "after pull: clean" "$(st)" ""
@@ -611,11 +615,16 @@ mkdir -p sub
 check "... the proposed command fits the current directory" \
   "$(cd sub && git assetsync pull ../lm.txt 2>&1 | grep -o "discard them with '[^']*'")" \
   "discard them with 'git assetsync restore -SW ../lm.txt'"
-pullc --overwrite lm.txt
+out=$(git assetsync pull --overwrite --no-edit lm.txt 2>/dev/null)
 check "pull --overwrite restores" "$(cat lm.txt)" "lm 1"
+check "pull --overwrite: a committed modification isn't lost, not named" "$(printf '%s\n' "$out" | grep -c '^discarded:')" "0"
 check "pull --overwrite: message" "$(msg)" \
   "[assetsync] Restore lm.txt from acme/lm v1 Release: https://github.com/acme/lm/releases/tag/v1 Asset:   lm.txt Local modifications of this repository were discarded. "
 check "after restore: clean" "$(st)" ""
+echo mine > lm.txt
+out=$(git assetsync pull --overwrite --no-edit lm.txt 2>/dev/null)
+id=$(printf '%s\n' "$out" | sed -n 's/^discarded: lm.txt (git show \([0-9a-f]*\) to get it back)$/\1/p')
+check "pull --overwrite: an uncommitted one named, to get back" "$(git show "$id") $(cat lm.txt) $(st)" "mine lm 1 "
 
 # uncommitted modification, with a new release
 echo dirty > lm.txt
@@ -699,8 +708,10 @@ check "existing different file: refused" "$(asd add mine.bin acme/pair --asset o
 check "... file kept" "$(cat mine.bin)" "mine"
 check "--force doesn't overwrite it" "$(asd add --force mine.bin acme/pair --asset one.bin 2>&1 | tail -1 | oneline; cat mine.bin)" \
   "error: 'mine.bin' exists and differs from one.bin - use --overwrite to replace it mine"
-quiet asd add --overwrite mine.bin acme/pair --asset one.bin
+out=$(asd add --overwrite mine.bin acme/pair --asset one.bin 2>/dev/null)
 check "add --overwrite: replaced" "$(cat mine.bin) $(git status --porcelain mine.bin)" "one A  mine.bin"
+id=$(printf '%s\n' "$out" | sed -n 's/^discarded: mine.bin (git show \([0-9a-f]*\) to get it back)$/\1/p')
+check "add --overwrite: what it discarded, to get back" "$(git show "$id")" "mine"
 git reset -q --hard; rm -f mine.bin; echo mine > mine.bin
 cp "$F/one.bin" same.bin
 check "existing identical file: fine" "$(rc asd add same.bin acme/pair --asset one.bin)" "0"
@@ -2502,15 +2513,21 @@ addc d/ acme/rs --asset rs.tar.gz --filter unpack
 addc f.txt acme/rs --asset rf.txt
 # a file: the working tree by default
 echo changed > f.txt
-check "restore: file" "$(git assetsync restore f.txt) $(cat f.txt) $(st f.txt)" "f.txt: restored (acme/rs v1) rf 1 "
+check "restore: file" "$(git assetsync restore f.txt) $(cat f.txt) $(st f.txt)" "discarded: f.txt (git show 5ea2ed416fbd to get it back)
+f.txt: restored (acme/rs v1) rf 1 "
 check "restore: nothing to restore" "$(git assetsync restore f.txt)" "f.txt: nothing to restore"
+check "restore: what it discarded, to get back" "$(git show 5ea2ed416fbd)" "changed"
+echo staged > f.txt && git add f.txt
+check "restore: a staged change isn't lost, not named" "$(git assetsync restore f.txt)" "f.txt: restored (acme/rs v1)"
+quiet git assetsync restore -S f.txt
 # staged changes: -S restores the index only, -SW both
 echo changed > f.txt && git add f.txt
 check "restore -S: the index only" "$(git assetsync restore -S f.txt) $(git diff --cached --quiet; echo $?) $(cat f.txt)" \
   "f.txt: restored in the index (acme/rs v1) 0 changed"
 git add f.txt
 check "restore -SW: both" "$(git assetsync restore -SW f.txt) $(git status --porcelain f.txt)$(cat f.txt)" \
-  "f.txt: restored and staged (acme/rs v1) rf 1"
+  "discarded: f.txt (git show 5ea2ed416fbd to get it back)
+f.txt: restored and staged (acme/rs v1) rf 1"
 # a committed modification: restore -SW, then commit
 echo changed > f.txt && git commit -qam change
 check "committed modification: status names restore" \
@@ -2529,16 +2546,19 @@ check "restore: line endings as configured now" "$(git assetsync restore f.txt >
 git rm -q .gitattributes && git commit -qm "no crlf" && git checkout -q -- . && rm -f f.txt && git checkout -q -- f.txt
 # from a subdirectory
 mkdir -p s2 && echo changed > f.txt
-check "restore: from a subdirectory" "$(cd s2 && git assetsync restore ../f.txt) $(cat f.txt)" "f.txt: restored (acme/rs v1) rf 1"
+check "restore: from a subdirectory" "$(cd s2 && git assetsync restore ../f.txt) $(cat f.txt)" "discarded: f.txt (git show 5ea2ed416fbd to get it back)
+f.txt: restored (acme/rs v1) rf 1"
 # a directory: changed, deleted and new files; ignored ones stay; modes as synced
 echo x > d/a.txt; rm d/sub/b.txt; echo new > d/new.txt; mkdir -p d/build && echo out > d/build/o.log
 git rm -q --cached d/run.sh
 check "restore dir: the working tree" "$(git assetsync restore d) $(cd d && find . -type f | sort | oneline)$(cat d/a.txt d/sub/b.txt | oneline)" \
-  "d/: restored (acme/rs v1) ./a.txt ./build/o.log ./new.txt ./run.sh ./sub/b.txt one two "
+  "discarded: d/a.txt (git show 587be6b4c3f9 to get it back)
+d/: restored (acme/rs v1) ./a.txt ./build/o.log ./new.txt ./run.sh ./sub/b.txt one two "
 check "... the index not, files of others stay" "$(git status --porcelain d | oneline)" "D  d/run.sh ?? d/new.txt ?? d/run.sh "
 echo x > d/a.txt
 check "restore -SW dir" "$(git assetsync restore -SW d) $(git status --porcelain d | grep -v new.txt)$(git ls-files -s d/run.sh | cut -d' ' -f1) $(st d)" \
-  "d/: restored and staged (acme/rs v1) 100755 "
+  "discarded: d/a.txt (git show 587be6b4c3f9 to get it back)
+d/: restored and staged (acme/rs v1) 100755 "
 rm d/new.txt
 # errors: not synced yet, base not available
 git config -f .git-assetsync file.h.txt.source acme/rs
@@ -2575,7 +2595,8 @@ addc g.txt acme/rs --asset rf.txt
 echo changed > g.txt
 check "rm: refused with uncommitted changes" "$( (git assetsync rm f.txt g.txt 2>&1; cat g.txt; reg file.f.txt.source) | oneline)" \
   "error: g.txt: has uncommitted changes - use -f to remove it anyway changed acme/rs "
-check "rm -f" "$(git assetsync rm -f g.txt) $(ls g.txt 2>/dev/null)$(reg file.g.txt.source)" "removed g.txt "
+check "rm -f" "$(git assetsync rm -f g.txt) $(ls g.txt 2>/dev/null)$(reg file.g.txt.source)" "discarded: g.txt (git show 5ea2ed416fbd to get it back)
+removed g.txt "
 git commit -qm "rm g"
 # a committed modification doesn't count; a file already deleted is fine
 addc g.txt acme/rs --asset rf.txt
@@ -2592,7 +2613,8 @@ check "rm dir: a changed file refused" "$(git assetsync rm d 2>&1)" "error: d/: 
 mkdir -p s2
 check "rm -f dir, from a subdirectory: files of others kept" \
   "$(cd s2 && git assetsync rm -f ../d) $(cd d && find . -type f | sort | oneline)$(git ls-files d | lines)" \
-  "removed d/ (1 other file kept) ./build/o.log ./new.txt 0"
+  "discarded: d/a.txt (git show 587be6b4c3f9 to get it back)
+removed d/ (1 other file kept) ./build/o.log ./new.txt 0"
 check "... the source stays while used" "$(reg dir.d.source)$(reg source.acme/rs.url)" "https://github.com/acme/rs"
 check "rm: a path inside an entry" "$(rc git assetsync rm d/a.txt)" "2"
 
@@ -2657,7 +2679,8 @@ check "... verify gets it" "$(git assetsync verify vendor) $(git assetsync statu
 cd "$T" && rm -rf r31c && git clone -q --no-local r31 r31c && cd r31c
 echo changed > vendor/include/a.h; echo changed > vendor/README.md
 check "clone: restore gets the base" "$(git assetsync restore vendor) $(cat vendor/include/a.h vendor/README.md | oneline)" \
-  "vendor/: restored (acme/ov v3) a2 changed "
+  "discarded: vendor/include/a.h (git show 5ea2ed416fbd to get it back)
+vendor/: restored (acme/ov v3) a2 changed "
 git checkout -q vendor
 cd "$T" && rm -rf r31c && git clone -q --no-local r31 r31c && cd r31c
 echo changed > vendor/include/a.h

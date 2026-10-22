@@ -276,7 +276,9 @@ Advanced commands - change entries, sources and filters; set up:
     verify [PATH...]            filter the assets each entry was synced with
                                 again and compare with the recorded base:
                                 is the committed state reproducible? (exit
-                                1 if not); nothing in the repository changes
+                                1 if not); working tree, index and branches
+                                stay - only a missing base of a directory is
+                                kept in this clone
         -v, --verbose           first name where each entry comes from (as
                                 status -v)
 
@@ -312,7 +314,13 @@ Advanced commands - change entries, sources and filters; set up:
     Common options:
         --color[=WHEN], --no-color  always, never or auto (default)
 
-Exit codes: 0 ok, 1 unfinished (not committed, --exit-code), 2 error.
+Exit codes: 0 ok, 1 unfinished (not committed, --exit-code), 2 error, 141
+output into a pipe closed early (| head; a command that changes something
+finishes its work first).
+
+Content that restore, rm -f or --overwrite discard - neither committed nor
+staged - is kept as a Git object first: "discarded: PATH (git show ID to
+get it back)"; git gc removes it after a while.
 
 Files stored in Git LFS and line-ending conversions are handled: a file
 is recorded as `git add` stores it. Output is colored like git's
@@ -365,6 +373,7 @@ from urllib.request import urlopen
 __version__ = "0.17.0"
 REGISTRY = ".git-assetsync"
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
+EXIT_PIPE = 141           # output into a closed pipe: like a program ended by SIGPIPE, as git
 EXIT_REFUSED = 3          # hook pre-push: refuse the push (assetsync.pushCheck = error)
 HOOK_MARKER = "git-assetsync"
 # What the installed hooks run - an interface, so that later versions need no
@@ -4203,7 +4212,47 @@ def commit_paths(repo, rels, msgfile, edit, only=None):
                     check=False).returncode == 0:
             return None
         cmd = ["git", "commit", "-F", str(msgfile)] + (["-e"] if edit else [])
-        return subprocess.run(cmd, cwd=repo.top, env=env).returncode == 0
+        if edit:              # the editor needs the terminal
+            sys.stdout.flush()
+            return subprocess.run(cmd, cwd=repo.top, env=env).returncode == 0
+        # its summary through our output, which may be a closed pipe by now
+        p = subprocess.run(cmd, cwd=repo.top, env=env, stdout=subprocess.PIPE)
+        print(p.stdout.decode("utf-8", "replace"), end="")
+        return p.returncode == 0
+
+
+def save_discarded(repo, paths, known=None):
+    """Before these files of the working tree are replaced or deleted: those
+    whose content is neither committed nor staged are kept as objects, and
+    how to get them back is printed (restore, rm -f, --overwrite). known:
+    {path: blob} of the working tree files already hashed."""
+    files = sorted(p for p in set(paths) if (repo.top / p).is_file()
+                   and not (repo.top / p).is_symlink())
+    if not files:
+        return
+    known = dict(known or {})
+    rest = [p for p in files if p not in known]
+    if rest:
+        known.update(zip(rest, repo.git(["hash-object", "--stdin-paths"],
+                                        data="\n".join(rest).encode("utf-8")).stdout.decode().split()))
+    kept = set()              # staged or committed: there to get back
+    for i in range(0, len(files), 100):
+        part = files[i:i + 100]
+        for args in (["ls-files", "-s", "-z", "--"] + [lit(p) for p in part],
+                     ["ls-tree", "-z", "HEAD", "--"] + part):
+            p = repo.git(args, check=False)
+            for item in p.stdout.decode("utf-8", "replace").split("\0"):
+                info, _, path = item.partition("\t")
+                if path and known.get(path) in info.split():
+                    kept.add(path)
+    lost = [p for p in files if p not in kept]
+    if not lost:
+        return
+    # as they are (no filters): `git show` gives the file back exactly
+    ids = repo.git(["hash-object", "-w", "--no-filters", "--stdin-paths"],
+                   data="\n".join(lost).encode("utf-8")).stdout.decode().split()
+    for path, oid in zip(lost, ids):
+        print(f"{paint('discarded:', 'yellow')} {path} (git show {oid[:12]} to get it back)")
 
 
 def install_file(repo, rel, target, files, overwrite=False):
@@ -4217,6 +4266,8 @@ def install_file(repo, rel, target, files, overwrite=False):
         raise FsError(f"'{rel}' exists and differs from {name} - use --overwrite to replace it")
     if target.is_dir():
         raise FsError(f"'{rel}' is a directory")
+    if cur and cur != blob:
+        save_discarded(repo, [rel], {rel: cur})
     target.parent.mkdir(parents=True, exist_ok=True)
     if repo.fetched:
         repo.fetched.pop(rel, None)         # changes now
@@ -4283,6 +4334,10 @@ def install_dir(repo, rel, target, files, base, overwrite=False):
         shown = ", ".join(others[:3]) + (f" and {len(others) - 3} more" if len(others) > 3 else "")
         raise FsError(f"'{rel}/': files of others in the way of the release: {shown} - use "
                       "--overwrite to replace them")
+    gone = sorted(set(base) - set(new))
+    save_discarded(repo, [p for o in others for p in ([o] if (repo.top / o).is_file()
+                                                      else repo.dir_files(o))]
+                   + gone + [p for p in new if p in base])
     for path in others:
         full = repo.top / path
         if full.is_dir() and not full.is_symlink():
@@ -4292,7 +4347,6 @@ def install_dir(repo, rel, target, files, base, overwrite=False):
     if others:
         repo.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--pathspec-from-file=-",
                   "--pathspec-file-nul"], data="\0".join(lit(p) for p in others).encode("utf-8"))
-    gone = sorted(set(base) - set(new))
     for path in gone:
         if (repo.top / path).is_file():
             (repo.top / path).unlink()
@@ -4384,7 +4438,7 @@ def install_files(repo, jobs):
     their stat data in the index). Returns {path: its blob, or the FsError
     for it}."""
     ids = repo.add_files({rel: src for rel, _, _, (src, _), _ in jobs})
-    result, ok = {}, []
+    result, ok, replaced = {}, [], {}
     for rel, target, name, (_, executable), overwrite in jobs:
         cur = repo.worktree_blob(target)
         if cur and cur != ids[rel] and not overwrite:
@@ -4395,9 +4449,12 @@ def install_files(repo, jobs):
         else:
             result[rel] = ids[rel]
             ok.append(("100755" if executable else "100644", ids[rel], rel))
+            if cur and cur != ids[rel]:
+                replaced[rel] = cur
             target.parent.mkdir(parents=True, exist_ok=True)
             if repo.fetched:
                 repo.fetched.pop(rel, None)         # changes now
+    save_discarded(repo, replaced, replaced)
     if ok:
         repo.git(["update-index", "-z", "--add", "--index-info"],
                  data="".join(f"{m} {o}\t{r}\0" for m, o, r in ok).encode("utf-8"))
@@ -4565,18 +4622,18 @@ def cmd_pull(ctx, repo, args):
         pulled.append(job[0])
         msgs.append(msg)
         paths |= done_paths
-    for st in hints:          # after pull --release: the selection stays
-        one_off_hint(ctx, st)
     if args.all and not done and rc == EXIT_OK:
         print(paint("everything up to date", "green"))
-    if not pulled:
-        return rc
-    reg.finish()              # .git-assetsync written and staged once, for all
-    # one commit for all, of their files and entries only
-    name = pulled[0].shown if len(pulled) == 1 else entries_text(pulled)
-    return max(rc, commit_staged(repo, name, pull_message(pulled, msgs), args,
-                                 "updated and staged", rels=[e.rel for e in pulled],
-                                 only=paths))
+    if pulled:
+        reg.finish()          # .git-assetsync written and staged once, for all
+        # one commit for all, of their files and entries only
+        name = pulled[0].shown if len(pulled) == 1 else entries_text(pulled)
+        rc = max(rc, commit_staged(repo, name, pull_message(pulled, msgs), args,
+                                   "updated and staged", rels=[e.rel for e in pulled],
+                                   only=paths))
+    for st in hints:          # after pull --release: the selection stays
+        one_off_hint(ctx, st)
+    return rc
 
 
 def given_source(reg, args):
@@ -5263,8 +5320,10 @@ def cmd_restore(ctx, repo, args):
     if index:
         repo.git(["update-index", "-z", "--add", "--index-info"],
                  data="".join(f"{m} {o}\t{p}\0" for m, o, p in index).encode("utf-8"))
+    written = [i for _, f in fixes for i in f.get("worktree", [])]
+    save_discarded(repo, [path for _, _, path in written])
     try:
-        write_files(repo, [i for _, f in fixes for i in f.get("worktree", [])])
+        write_files(repo, written)
     except FsError as e:
         error(str(e))
         return EXIT_ERROR
@@ -5333,6 +5392,8 @@ def cmd_rm(ctx, repo, args):
         if own[entry.rel] & changed:
             raise FsError(f"{entry.shown}: has uncommitted changes - use -f to remove it anyway")
     paths = sorted(set().union(*own.values())) if own and not args.dry_run else []
+    if args.force:
+        save_discarded(repo, paths)
     if paths:                 # all at once
         repo.git(["rm", "-q", "-f", "--ignore-unmatch", "--pathspec-from-file=-",
                   "--pathspec-file-nul"], data="\0".join(lit(p) for p in paths).encode("utf-8"))
@@ -5822,6 +5883,46 @@ def describe_commands(parser):
                 describe_commands(p)
 
 
+class PipeGuard:
+    """sys.stdout / sys.stderr: once the reader is gone (output piped into
+    e.g. `head`, which exited early), the rest goes to the null device. A
+    command that only looks then stops (stop); one that changes something
+    finishes its work - never half of it - and main() returns EXIT_PIPE."""
+    broken = False
+    stop = False
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+    def _gone(self, e):
+        # Windows reports a closed pipe as EINVAL
+        if not isinstance(e, BrokenPipeError) and getattr(e, "errno", None) != 22:
+            raise e
+        PipeGuard.broken = True
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), self._stream.fileno())
+        except (OSError, ValueError):
+            pass
+        if PipeGuard.stop:
+            raise BrokenPipeError()
+
+    def write(self, text):
+        try:
+            return self._stream.write(text)
+        except OSError as e:
+            self._gone(e)
+            return len(text)
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except OSError as e:
+            self._gone(e)
+
+
 def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         # LF line ends like git's output, also on Windows (no CRLF translation);
@@ -5829,7 +5930,17 @@ def main(argv=None):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure:
             reconfigure(errors="replace", newline="\n")
+    sys.stdout, sys.stderr = PipeGuard(sys.stdout), PipeGuard(sys.stderr)
+    try:
+        rc = run(argv)
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except BrokenPipeError:   # a command that only looks: stopped
+        rc = EXIT_PIPE
+    return EXIT_PIPE if PipeGuard.broken and rc == EXIT_OK else rc
 
+
+def run(argv):
     colorp = argparse.ArgumentParser(add_help=False)
     colorp.add_argument("--color", nargs="?", const="always", default="auto",
                         choices=["always", "never", "auto"], help="colored output (default: auto)")
@@ -6161,6 +6272,9 @@ def main(argv=None):
     if not args.cmd:
         args = ap.parse_args(["status"])
     args.extra = extra
+    # commands that only look stop when nobody reads their output any more
+    PipeGuard.stop = args.cmd in ("status", "diff", "difftool", "verify") or \
+        args.cmd == "source" and args.action in (None, "releases")
     try:
         try:
             repo = Repo()
@@ -6196,13 +6310,6 @@ def main(argv=None):
         return EXIT_ERROR
     except KeyboardInterrupt:
         return 130
-    except BrokenPipeError:
-        # output piped into e.g. `head`, which exited early
-        try:
-            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
-        except OSError:
-            pass
-        return EXIT_OK
 
 
 if __name__ == "__main__":

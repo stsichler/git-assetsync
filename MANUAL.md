@@ -264,6 +264,19 @@ local modifications – with what the release gives; **`--force`** lets it
 do something it refuses by default, without losing local content (replace
 an entry, add the lines to hooks of other tools).
 
+**Discarded content can be got back.** When `restore`, `rm -f` or
+`--overwrite` replace or delete a file whose content is neither committed
+nor staged, they keep that content as a Git object first and say how to
+get it back:
+
+```
+discarded: lib/data.bin (git show 1a2b3c4d5e6f to get it back)
+```
+
+`git show 1a2b3c4d5e6f > lib/data.bin` writes it back exactly as it was.
+Nothing refers to the object, so `git gc` removes it after a while
+(normally two weeks).
+
 ### Common options
 
 | Option | Meaning |
@@ -583,7 +596,8 @@ Like `git rm`: removes the entries from `.git-assetsync` together with
 their files and stages both (commit when you like) – of a directory, the
 files its release gave; files of yours there stay (`rm` says how many).
 It refuses – for all paths given – if one of those files has uncommitted
-changes; `-f` removes them anyway, and the changes are lost. A committed
+changes; `-f` removes them anyway (their content can be [got
+back](#commands) for a while). A committed
 modification doesn't count, and a file already deleted is fine. To keep the files and only
 remove the entries, use [`unlink`](#unlink).
 
@@ -919,7 +933,10 @@ the newest one) from the [download cache](#download-cache) or the
 platform, applies its filter again, and compares the result with the
 recorded base (`blob` / `tree`) – as `git add` would store it, so files
 stored differently since (moved to Git LFS, line endings normalized) still
-count as the same. The working tree and the index are not touched.
+count as the same. The working tree, the index and the branches are not
+touched; only in a clone that lacks the base of a directory entry is it
+kept, once verified (see [Files of your own in a
+directory](#files-of-your-own-in-a-directory)).
 
 ```console
 $ git assetsync verify
@@ -1591,6 +1608,7 @@ them. For GitLab sources, install `glab` in the job (and give
 | `0` | ok |
 | `1` | unfinished: `pull` without the commit done; `status --exit-code` with something to pull or a modified file; `verify` found a difference |
 | `2` | error (also: `pull` refused a modified file) |
+| `141` | the output went into a pipe that was closed early (e.g. `\| head`), as with git: a command that only looks (`status`, `diff`, `difftool`, `verify`, `source`, `source releases`) stops there; one that changes something finishes its work first – never only half of it |
 
 `--dry-run` / `-n` exit with 0, or 2 on errors.
 
