@@ -575,7 +575,7 @@ git assetsync filter add glab-binary --extract --include bin/glab
 git assetsync add tools/glab https://gitlab.com/gitlab-org/cli \
     --asset '*_linux_amd64.tar.gz' --filter glab-binary
 
-git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
+git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' LICENSE
 git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' --filter zlib-headers
 ```
 
@@ -1131,8 +1131,8 @@ has the name of its step:
 | `--extract [PATTERN…]` | unpack the matching files (without a pattern: all), which must be archives – a file that is none is an error, like a broken archive: ZIP, tar, tar.gz/.tgz, tar.bz2, tar.xz, single `.gz`/`.bz2`/`.xz` files (named without the suffix), and 7z with an external 7-Zip (see below). The type is recognized by the content, not the name. All archives go into one root; the files not matching stay as they are. With archives and other files among the assets, choose the archives: `--extract '*.zip'` |
 | `--subdir PATH` | only the files below `PATH`, which becomes the root |
 | `--strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive); files with no more than `N` directories are left out, as `tar` does |
-| `--include PATTERN` | only the files matching the pattern |
-| `--exclude PATTERN` | not the files matching the pattern |
+| `--include PATTERN…` | only the files matching any of the patterns |
+| `--exclude PATTERN…` | not the files matching any of the patterns |
 | `--move PATTERN TARGET` | move the matching files to `TARGET`, see below |
 | `--copy PATTERN TARGET` | the same, but the files also stay where they are |
 | `--apply PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
@@ -1140,13 +1140,12 @@ has the name of its step:
 | `--convert PATTERN TARGET COMMAND` | convert each matching file with a command of your own (e.g. bin2c), see [Commands in filters](#commands-in-filters) |
 | `--run PATTERN COMMAND` | run a command on the matching files at once (`'*'`: all), see [Commands in filters](#commands-in-filters) |
 
-**Several `--include` options in a row make one step** that keeps the
-files matching *any* of their patterns – they don't filter one after the
-other (which would leave nothing). The same for `--exclude`: one step that
-removes the files matching any of the patterns. So
+Each option is one step. **The patterns of one option** count together:
+`--include` keeps the files matching *any* of them, `--exclude` removes
+the files matching any of them. So
 
 ```sh
-git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
+git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' LICENSE
 ```
 
 keeps the headers *and* the license:
@@ -1158,9 +1157,9 @@ keeps the headers *and* the license:
 	step = include '/*.h' LICENSE
 ```
 
-Only options in between separate them: `--include '*.h' --exclude 'x*'
---include 'a*'` makes three steps, applied one after the other (headers,
-not starting with `x`, starting with `a`). `filter show` lists the steps.
+Two options are two steps, applied one after the other: `--include
+'/*.h' --include LICENSE` would keep the headers first and then, of
+those, only `LICENSE` – nothing. `filter show` lists the steps.
 
 Patterns are like in `.gitignore` (and `git filesync add --include`),
 relative to the root after the previous steps: without a `/` a pattern
@@ -1201,35 +1200,68 @@ step did.
 
 #### Filters using filters
 
-The step `apply PATTERN NAME` applies the filter `NAME` to the files
-matching `PATTERN` only; they keep their paths, and the result joins the
-other files again (a path that collides with one of them is an error).
-Since the files are the assets before `extract`, one directory entry can
-treat the assets of a release differently:
+Most steps take a pattern and leave the other files alone, so files of
+different kinds can usually be treated in one filter. Some steps act on
+all files, though – `strip`, `subdir`, and `include`, which keeps only
+the matching ones – and `extract` unpacks all archives into one root. When
+that must not touch the other files, the step **`apply PATTERN NAME`**
+lets another, named filter treat some of them on their own:
+
+1. The files matching `PATTERN` are set aside – at the first step of the
+   filter, these are the assets, named as they are.
+2. The filter `NAME` runs on those files alone, as if they were all the
+   files there are; the other files don't take part.
+3. What it gives joins the other files again (a path that collides with
+   one of them is an error). If nothing matches, `apply` does nothing.
+
+For example, a release of `acme/sdk` with three assets – two ZIPs of the
+same layout, and a firmware image:
+
+```
+sdk-2.1-headers.zip    sdk-2.1/include/sdk.h, sdk-2.1/README.md
+sdk-2.1-libs.zip       sdk-2.1/lib/libsdk.a,  sdk-2.1/README.md
+fw-boardA.bin
+```
+
+In one go, `--extract 'sdk-*.zip' --strip 1` fails: both ZIPs have
+`sdk-2.1/README.md`, and `--strip 1` would also drop `fw-boardA.bin`,
+which is in no directory. With a filter `unpack` applied to each ZIP on
+its own:
 
 ```sh
-git assetsync filter add headers --extract --strip 1 --include '*.h' --move '*.h' include/
-git assetsync filter add firmware --move '*' firmware/
-git assetsync filter add sdk --apply 'sdk-*-headers.zip' headers --apply 'fw-*.bin' firmware
+git assetsync filter add unpack --extract --strip 1 --exclude README.md
+git assetsync filter add sdk --apply 'sdk-*-headers.zip' unpack \
+    --apply 'sdk-*-libs.zip' unpack --move 'fw-*.bin' firmware/
 git assetsync add vendor/sdk/ acme/sdk --filter sdk
 ```
 
+```
+vendor/sdk/
+  include/sdk.h            <- sdk-2.1-headers.zip, via unpack
+  lib/libsdk.a             <- sdk-2.1-libs.zip, via unpack
+  firmware/fw-boardA.bin   <- moved by the last step
+```
+
 ```ini
-[filter "headers"]
+[filter "unpack"]
 	step = extract
 	step = strip 1
-	step = include '*.h'
-	step = move '*.h' include/
-[filter "firmware"]
-	step = move '*' firmware/
+	step = exclude README.md
 [filter "sdk"]
-	step = apply 'sdk-*-headers.zip' headers
-	step = apply 'fw-*.bin' firmware
+	step = apply 'sdk-*-headers.zip' unpack
+	step = apply 'sdk-*-libs.zip' unpack
+	step = move 'fw-*.bin' firmware/
 [dir "vendor/sdk"]
 	source = acme/sdk
 	filter = sdk
 	...
 ```
+
+The two `apply` steps are two runs of `unpack`, one per ZIP. That is also
+the second use of `apply`: a filter written once serves several
+filters and assets. `unpack` is a filter like any other – other entries
+can use it directly, and `filter test unpack sdk-2.1-libs.zip` tries it on
+its own.
 
 A filter may use other filters, but not itself (also not through others).
 A changed filter changes all entries that use it, directly or through
@@ -1297,7 +1329,7 @@ Two steps run commands, to convert files with tools of your own:
   took all files: write `run '*' COMMAND` for that now.
 
 ```sh
-git assetsync filter add firmware --extract --include '*.bin' --include '*.hex' \
+git assetsync filter add firmware --extract --include '*.bin' '*.hex' \
     --convert '*.bin' 'src/{stem}.c' 'xxd -i {in} > {out}' \
     --convert '*.hex' 'src/{stem}_hex.c' 'python3 {root}/tools/hex2c.py {in} {out}'
 ```

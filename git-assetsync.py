@@ -259,11 +259,11 @@ Advanced commands - change entries, sources and filters; set up:
         -o, --output DIR        write the result to DIR (new or empty)
     filter add NAME STEP-OPTIONS...  define a new filter; the steps in the
                                 order given:
-        --extract [PATTERN...], --subdir PATH, --strip N, --include PATTERN,
-        --exclude PATTERN, --move PATTERN TARGET, --copy PATTERN TARGET,
+        --extract [PATTERN...], --subdir PATH, --strip N, --include PATTERN...,
+        --exclude PATTERN..., --move PATTERN TARGET, --copy PATTERN TARGET,
         --apply PATTERN NAME, --changelog PATTERN...,
         --convert PATTERN TARGET COMMAND, --run PATTERN COMMAND
-                                (consecutive --include / --exclude: one step)
+                                (each option one step)
     filter set NAME STEP-OPTIONS...  replace the steps of a filter
     filter rename OLD NEW       rename a filter, also where it is used
     filter remove NAME          remove a filter nothing uses
@@ -4658,10 +4658,9 @@ class StepOption(argparse.Action):
 
 
 def filter_steps(args):
-    """Filter steps from the options of filter add / set, in the order given;
-    consecutive --include (--exclude) options make one include (exclude)
-    step with all their patterns. None if none are given."""
-    steps, last = [], None
+    """Filter steps from the options of filter add / set: one per option, in
+    the order given. None if none are given."""
+    steps = []
     for kind, value in getattr(args, "steps", None) or []:
         if kind == "extract":
             steps.append(shlex.join(["extract"] + list(value)))
@@ -4671,14 +4670,8 @@ def filter_steps(args):
             if value < 1:
                 raise FsError("--strip needs a number of at least 1")
             steps.append(f"strip {value}")
-        elif kind in ("include", "exclude"):
-            if last == kind:
-                steps[-1] = shlex.join(shlex.split(steps[-1]) + [value])
-            else:
-                steps.append(shlex.join([kind, value]))
-        else:                           # move, copy, apply, convert, run
+        else:       # include, exclude, move, copy, apply, changelog, convert, run
             steps.append(shlex.join([kind] + ([value] if isinstance(value, str) else list(value))))
-        last = kind
     for step in steps:
         parse_step(step)
     return steps or None
@@ -5978,11 +5971,10 @@ def run(argv):
                    help="only the files below PATH, as the root")
     g.add_argument("--strip", action=StepOption, type=int, metavar="N",
                    help="remove N leading directories from the paths")
-    g.add_argument("--include", action=StepOption, metavar="PATTERN",
-                   help="only files matching (gitignore-like; consecutive ones make one step: "
-                        "files matching any of them)")
-    g.add_argument("--exclude", action=StepOption, metavar="PATTERN",
-                   help="not the files matching")
+    g.add_argument("--include", action=StepOption, nargs="+", metavar="PATTERN",
+                   help="only the files matching any of the patterns (gitignore-like)")
+    g.add_argument("--exclude", action=StepOption, nargs="+", metavar="PATTERN",
+                   help="not the files matching any of the patterns")
     g.add_argument("--move", action=StepOption, nargs=2, metavar=("PATTERN", "TARGET"),
                    help="move the matching files: into TARGET/ (with a trailing '/'), or "
                         "to TARGET with {path} {dir} {parent} {name} {stem} {ext}")

@@ -213,7 +213,7 @@ A directory, unpacked from an archive by a filter – with a trailing `/`; files
 of your own may be there too:
 
 ```sh
-git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' --include LICENSE
+git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' LICENSE
 git assetsync add third_party/zlib/ https://github.com/madler/zlib --asset 'zlib-*.tar.gz' \
     --filter zlib-headers
 ```

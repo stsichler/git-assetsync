@@ -1411,7 +1411,7 @@ release madler/zlib v1.3 10 "$F/zlib-1.3-win64.zip" "$F/checksums.txt"
 
 new_repo r18
 printf '*.lib\n*.log\n' > .gitignore && git add .gitignore && git commit -qm ignore
-filt zwin --extract --strip 1 --include 'include/*.h' --include 'lib/x64/*.lib' --exclude '*.pdb'
+filt zwin --extract --strip 1 --include 'include/*.h' 'lib/x64/*.lib' --exclude '*.pdb'
 OUT=$(asd add lib/zlib/ madler/zlib --asset 'zlib-*-win64.zip' --filter zwin 2>&1)
 check "dir: added" "$(echo "$OUT" | grep '^added')" "added lib/zlib/ <- madler/zlib v1.3 (zlib-1.3-win64.zip)"
 check "dir: files (ignored *.lib included)" "$(git ls-files lib | oneline)" \
@@ -1845,13 +1845,16 @@ mkarchive "$F/pkg.zip" "$T/pk"
 printf 'fw\000' > "$F/fw.bin"
 release acme/pk v1 10 "$F/pkg.zip" "$F/fw.bin"
 new_repo r22
-# steps in the order of the options; consecutive --include make one keep
-filt ord --include '*.zip' --extract --include '*.h' --include '*.lib' --exclude 'z*'
+# steps in the order of the options, one per option; its patterns count together
+filt ord --include '*.zip' --extract --include '*.h' '*.lib' --exclude 'z*'
 check "order: as given" "$(git config -f .git-assetsync --get-all filter.ord.step | oneline)" \
   "include '*.zip' extract include '*.h' '*.lib' exclude 'z*' "
 quiet asd add o/ acme/pk --filter ord
 check "order: result" "$(git ls-files o | oneline)" "o/src/x/a.h o/src/y/b.h "
 git reset -q --hard; rm -rf o
+filt ordm --include '*.zip' --extract --include '*.h' --include '*.lib' --exclude 'z*' 'q*'
+check "two --include options: two steps" "$(git config -f .git-assetsync --get-all filter.ordm.step | oneline)" \
+  "include '*.zip' extract include '*.h' include '*.lib' exclude 'z*' 'q*' "
 
 # move / copy
 filt mv --extract --move '*.h' include/ --move 'boards/*/app.bin' 'firmware/{parent}.bin' \
