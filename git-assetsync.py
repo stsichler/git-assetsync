@@ -2053,7 +2053,7 @@ class Repo:
                          data="".join(f"{r}\n" for r in files).encode("utf-8"))
             work = dict(zip(files, p.stdout.decode("utf-8", "replace").split()))
         self.fetched = {r: (head.get(r), work.get(r)) for r in rels}
-        self.lfs_pointers(head[r] for r in rels if head.get(r) and head[r] != bases[r])
+        self.lfs_pointers(o for r in rels for o in self.fetched[r] if o and o != bases[r])
         pairs = [(bases[r], r) for r in rels
                  if bases[r] and any(o and o != bases[r] for o in self.fetched[r])]
         try:
@@ -3799,7 +3799,8 @@ def diff_items(ctx, repo, reg, args):
     """(rc, [(state, base items, other items)]) of all entries that differ:
     other = the working tree or what pull would install
     (--upstream)."""
-    rc, raw = EXIT_OK, []
+    rc, raw, upstream = EXIT_OK, [], []
+    keep = ExitStack()        # with --upstream: the filtered files, stored for all at once
     entries = select_entries(repo, reg, args.paths, containing=True)
     prefetch_files(repo, entries)
     repo.head_modes()
@@ -3821,7 +3822,10 @@ def diff_items(ctx, repo, reg, args):
             if args.upstream:
                 for w in st.warnings:
                     warn(f"{entry.shown}: {w}")
-                _, other = filter_items(repo, reg, entry, st.origin, st.release, st.assets)
+                _, files = filtered_files(repo, reg, entry, st.origin, st.release, st.assets,
+                                          keep)
+                upstream.append((entry, st, files))
+                continue
             elif entry.is_dir:      # its files, not others'
                 other = repo.worktree_items(entry.rel, base_paths(repo, entry) or set())
             else:                   # prefetched; the mode as git add would take it
@@ -3835,6 +3839,12 @@ def diff_items(ctx, repo, reg, args):
         except FsError as e:
             error(f"{entry.shown}: {e}")
             rc = EXIT_ERROR
+    with keep:
+        for (entry, st, _), other in zip(upstream, stored_items(repo, [f for _, _, f in upstream])):
+            base = base_items(repo, entry)
+            same = set(base) & set(other)
+            raw.append((entry, st, [i for i in base if i not in same],
+                        [i for i in other if i not in same]))
     # working files that differ: stored (in scratch()) with one git command for all
     files = [p for e, _, _, other in raw if not e.is_dir and not args.upstream
              for _, _, p in other]
@@ -4824,28 +4834,40 @@ def human_size(n):
     return f"{n:.1f} GiB"
 
 
+def filtered_files(repo, reg, entry, origin, release, assets, keep):
+    """Filter the assets of release for an entry: (digest, {path in the
+    repository: (file, executable)}), the files kept (keep: an ExitStack)
+    until stored - with stored_items(), for many entries at once."""
+    trusted = ensure_trusted(repo, entry.steps, reg.filters)
+    env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
+           "ASSETSYNC_ENTRY": entry.shown}
+    work = keep.enter_context(Work(entry.shown, repo.top, env, trusted))
+    files, digest = entry_files(origin, release, assets, entry.steps, reg.filters, work)
+    if not entry.is_dir:
+        return digest, {entry.rel: f for f in one_file(files, entry.shown, entry.rel).values()}
+    return digest, {f"{entry.rel}/{name}": f for name, f in files.items()}
+
+
+def stored_items(repo, groups):
+    """[[(mode, id, path)]] of groups of files {path: (file, executable)}, as
+    `git add` would store them - with one git add for all (add_files())."""
+    ids = repo.add_files({path: src for files in groups for path, (src, _) in files.items()})
+    return [[("100755" if executable else "100644", ids[path], path)
+             for path, (_, executable) in sorted(files.items())] for files in groups]
+
+
 def filter_items(repo, reg, entry, origin, release, assets):
     """Filter the assets of release for an entry, without touching the working
     tree or the index: (digest, [(mode, id, path)]) - the files as `git add`
     would store them at their paths in the repository."""
-    trusted = ensure_trusted(repo, entry.steps, reg.filters)
-    env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
-           "ASSETSYNC_ENTRY": entry.shown}
-    with Work(entry.shown, repo.top, env, trusted) as work:
-        files, digest = entry_files(origin, release, assets, entry.steps, reg.filters, work)
-        if not entry.is_dir:
-            files = {entry.rel: f for f in one_file(files, entry.shown, entry.rel).values()}
-        else:
-            files = {f"{entry.rel}/{name}": f for name, f in files.items()}
-        ids = repo.add_files({path: src for path, (src, _) in files.items()})
-        return digest, [("100755" if executable else "100644", ids[path], path)
-                        for path, (_, executable) in sorted(files.items())]
+    with ExitStack() as keep:
+        digest, files = filtered_files(repo, reg, entry, origin, release, assets, keep)
+        return digest, stored_items(repo, [files])[0]
 
 
-def verify_one(repo, reg, entry):
-    """(ok, text) of filtering the assets an entry was synced with again and
-    comparing the result with its recorded base - without touching the
-    working tree or the index. None if there is nothing to verify."""
+def verify_plan(repo, reg, entry, keep):
+    """What verify compares for an entry: (release, filtered files) - or
+    (ok, text) at once (None: nothing to verify; False: the assets differ)."""
     if not entry.synced or not entry.blob:
         return None, "not synced yet, nothing to verify"
     expand_steps(entry.steps, reg.filters)
@@ -4856,21 +4878,34 @@ def verify_one(repo, reg, entry):
     if not release:
         raise FsError(f"release {entry.synced} of {origin.label} no longer exists")
     assets = select_assets(release, entry.asset, origin.label, entry.is_dir)
-    st = State(entry=entry, rel=entry.rel)
-    digest, items = filter_items(repo, reg, entry, origin, release, assets)
+    digest, files = filtered_files(repo, reg, entry, origin, release, assets, keep)
     if digest != (entry.digest or "").lower():
         return False, (f"the assets of {release.tag} differ from those it was synced with "
                        "(re-uploaded?)")
+    return release, files
+
+
+def verify_compare(repo, entry, release, items, keeps):
+    """(ok, text) of comparing what the assets give again (items) with the
+    recorded base. keeps: a directory's base that isn't here, kept if it
+    is what they give."""
+    st = State(entry=entry, rel=entry.rel)
     if not entry.is_dir:
         (_, new, _), = items
         if matches_base(repo, st, new):
             return True, f"verified ({release.tag})"
         return False, f"differs from what {release.tag} gives now"
-    new = repo.make_tree([(m, o, path[len(entry.rel) + 1:]) for m, o, path in items])
-    if new == entry.blob:     # also when its base wasn't in this clone: now it is
-        repo.keep_tree(new)
+    rel_items = [(m, o, path[len(entry.rel) + 1:]) for m, o, path in items]
+    new = repo.make_tree(rel_items)
+    if new == entry.blob:
+        if keeps:             # now it is here: kept in the repository
+            try:
+                with repo.real():
+                    repo.keep_tree(repo.make_tree(rel_items))
+            except FsError:
+                pass
         return True, f"verified ({release.tag})"
-    if not repo.has_tree(entry.blob):
+    if keeps:
         return False, f"differs from what {release.tag} gives now"
     if tree_matches_base(repo, st, new):
         return True, f"verified ({release.tag})"
@@ -4881,32 +4916,45 @@ def verify_one(repo, reg, entry):
 
 def cmd_verify(ctx, repo, args):
     """Is the committed state reproducible? Filters the assets each entry
-    was synced with again and compares the result with its base."""
+    was synced with again and compares the result with its base - the
+    results of all stored at once; only looks (scratch()), except for a
+    directory's base it gets again, which is kept."""
     reg = Registry(repo)
     rc = EXIT_OK
     entries = select_entries(repo, reg, args.paths, containing=True)
     if not entries:
         print(f"no synced files ({REGISTRY} not found or empty)")
-    for entry in entries:
-        problem = path_problem(entry.rel)
-        try:
-            if problem:
-                raise FsError(problem)
+    results = []              # (entry, (ok, text) | FsError | (release, files, keeps))
+    with repo.scratch(), ExitStack() as keep:
+        for entry in entries:
+            try:
+                problem = path_problem(entry.rel)
+                if problem:
+                    raise FsError(problem)
+                keeps = bool(entry.is_dir and entry.blob and not repo.has_tree(entry.blob))
+                plan = verify_plan(repo, reg, entry, keep)
+                results.append((entry, plan + (keeps,) if isinstance(plan[1], dict) else plan))
+            except FsError as e:
+                results.append((entry, e))
+        todo = [r for _, r in results if isinstance(r, tuple) and len(r) == 3]
+        items = iter(stored_items(repo, [files for _, files, _ in todo]))
+        for entry, result in results:
             if args.verbose:
                 print(f"{entry.shown}: {paint(origin_text(entry), 'dim')}", flush=True)
-            # only looks - unless it gets the missing base of a directory, which stays
-            keeps = entry.is_dir and entry.blob and not repo.has_tree(entry.blob)
-            with nullcontext() if keeps else repo.scratch():
-                ok, text = verify_one(repo, reg, entry)
-        except FsError as e:
-            error(f"{entry.shown}: {e}")
-            rc = EXIT_ERROR
-            continue
-        style = "green" if ok else "dim" if ok is None else "boldred"
-        first, _, rest = text.partition("\n")
-        print(f"{entry.shown}: {paint(first, style)}" + (f"\n{rest}" if rest else ""))
-        if ok is False:
-            rc = max(rc, EXIT_PENDING)
+            try:
+                if isinstance(result, FsError):
+                    raise result
+                ok, text = verify_compare(repo, entry, result[0], next(items), result[2]) \
+                    if len(result) == 3 else result
+            except FsError as e:
+                error(f"{entry.shown}: {e}")
+                rc = EXIT_ERROR
+                continue
+            style = "green" if ok else "dim" if ok is None else "boldred"
+            first, _, rest = text.partition("\n")
+            print(f"{entry.shown}: {paint(first, style)}" + (f"\n{rest}" if rest else ""))
+            if ok is False:
+                rc = max(rc, EXIT_PENDING)
     return rc
 
 
