@@ -29,6 +29,8 @@ assets of a project on GitHub or GitLab:
                                    ; match one); without: its only asset
         synced = <tag of the release the file comes from>
         digest = sha256:<hash of that asset>
+        assetid = sha256:<...>     ; only without digests from the platform:
+                                   ; which upload it was (id, URL, size)
         blob = <id of the file as committed>
     [dir "third_party/zlib"]       ; files of a directory (others may be there)
         source = madler/zlib
@@ -63,7 +65,8 @@ matching files only), changelog PATTERN... (reads only: the text of the
 matching files goes with the release notes into pull's commit message,
 shortened like them), convert PATTERN TARGET COMMAND (each matching file:
 {in} -> {out}, which replaces it at TARGET; TARGET/: {out} a directory),
-run COMMAND ({in} a directory with all files, {out} one for the result).
+run PATTERN COMMAND ({in} a directory with the matching files, '*' for
+all; {out} one for the result, which replaces them).
 A step that matches no files does nothing; a filter that leaves no files
 at all is an error, and so are results that would replace each other.
 Commands run with sh -c (ASSETSYNC_SH; on Windows Git's sh) in a working
@@ -259,7 +262,7 @@ Advanced commands - change entries, sources and filters; set up:
         --extract [PATTERN...], --subdir PATH, --strip N, --include PATTERN,
         --exclude PATTERN, --move PATTERN TARGET, --copy PATTERN TARGET,
         --apply PATTERN NAME, --changelog PATTERN...,
-        --convert PATTERN TARGET COMMAND, --run COMMAND
+        --convert PATTERN TARGET COMMAND, --run PATTERN COMMAND
                                 (consecutive --include / --exclude: one step)
     filter set NAME STEP-OPTIONS...  replace the steps of a filter
     filter rename OLD NEW       rename a filter, also where it is used
@@ -1076,6 +1079,18 @@ def assets_digest(pairs):
     return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def assets_id(assets):
+    """For assets the platform reports no digest of (GitLab, older GitHub
+    releases): a fingerprint of what it reports about them instead - name,
+    id, URL, size - which changes when one is replaced (a new upload, a link
+    to another URL). None if there are digests: they say more."""
+    if assets_digest([(a.name, a.digest) for a in assets]):
+        return None
+    text = "".join(f"{a.name}\t{a.id}\t{a.url or ''}\t{'' if a.size is None else a.size}\n"
+                   for a in sorted(assets, key=lambda a: a.name))
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def cache_root():
     """The download cache: ASSETSYNC_CACHE, or the platform's cache dir."""
     if os.environ.get("ASSETSYNC_CACHE"):
@@ -1563,9 +1578,12 @@ def parse_step(step):
           "include": bool(args), "exclude": bool(args),
           "move": len(args) == 2 and all(args), "copy": len(args) == 2 and all(args),
           "apply": len(args) == 2 and all(args), "changelog": bool(args) and all(args),
-          "convert": len(args) == 3 and all(args), "run": len(args) == 1 and bool(args[0])}.get(name)
+          "convert": len(args) == 3 and all(args), "run": len(args) == 2 and all(args)}.get(name)
     if ok is None:
         raise FsError(f"unknown filter step '{step}' (known: {', '.join(STEPS)})")
+    if name == "run" and len(args) == 1:      # before 0.19.0: no pattern
+        raise FsError(f"filter step '{step}': run needs a pattern first, like the other "
+                      f"steps - for all files: {shlex.join(['run', '*'] + args)}")
     if not ok:
         raise FsError(f"malformed filter step '{step}'")
     if name in ("move", "copy", "convert"):
@@ -1888,13 +1906,26 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
                 raise FsError(f"{work.what}: '{step}': filter {fname} is not trusted")
             what = f"{work.what}: '{step}'"
             if name == "run":
+                # the matching files into {in}; what it writes to {out} replaces them
+                rx = glob_regex(args[0])
+                subset = {r: v for r, v in files.items() if rx.match(r)}
+                if not subset:
+                    if report:
+                        report(step, "no files match")
+                    continue
                 d = work.new_dir()
-                materialize(files, d / "in")
+                materialize(subset, d / "in")
                 (d / "out").mkdir()
-                run_command(args[0], {"in": "in", "out": "out"}, work, what, d)
-                files = collect_dir(d / "out", what, work)
+                run_command(args[1], {"in": "in", "out": "out"}, work, what, d)
+                rest = {r: v for r, v in files.items() if r not in subset}
+                for r, v in collect_dir(d / "out", what, work).items():
+                    if r in rest:
+                        raise FsError(f"{what}: its '{r}' collides with a file it wasn't given")
+                    rest[r] = v
+                files = rest
                 if report:
-                    report(step, f"{before} -> {plural(len(files), 'file')}")
+                    report(step, f"{len(subset)} of {plural(before, 'file')} -> "
+                                 f"{plural(len(files) - before + len(subset), 'file')}")
                 continue
             pattern, target, command = args
             rx = glob_regex(pattern)
@@ -3009,6 +3040,7 @@ class Entry:
     asset = property(lambda self: self.v.get("asset", ""))
     synced = property(lambda self: self.v.get("synced", ""))
     digest = property(lambda self: self.v.get("digest", ""))
+    assetid = property(lambda self: self.v.get("assetid", ""))
     # the base: blob of a file, tree of a directory, as committed
     blob = property(lambda self: self.v.get(BASE_KEY[self.kind], ""))
     filterhash = property(lambda self: self.v.get("filterhash") or None)
@@ -3311,7 +3343,10 @@ def evaluate(ctx, repo, entry):
         st.fetched = True
         now = assets_digest([(a.name, a.digest) for a in st.assets])
         st.tag_changed = st.release.tag != entry.synced
-        st.digest_changed = bool(now and entry.digest and now != entry.digest.lower())
+        if now:
+            st.digest_changed = bool(entry.digest and now != entry.digest.lower())
+        else:         # no digests: what the platform says about the assets
+            st.digest_changed = bool(entry.assetid and assets_id(st.assets) != entry.assetid)
         st.filter_changed = filter_hash(entry.steps, entry.reg.filters, repo) != entry.filterhash
         st.changed = st.tag_changed or st.digest_changed or st.filter_changed
     st.pending = st.changed or st.worktree == "missing"
@@ -4390,6 +4425,7 @@ def pull_done(repo, reg, job, base, stats=None):
                         between=between, limits=limits)
     entry.set("synced", st.release.tag)
     entry.set("digest", digest)
+    entry.set("assetid", assets_id(st.assets))
     entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
     entry.set(BASE_KEY[entry.kind], base)
     print(f"{entry.shown}: {paint('updated', 'green')}")
@@ -4721,7 +4757,7 @@ def cmd_add(ctx, repo, args):
     for k, v in (("source", name), ("release", spec.get("release")),
                  ("prerelease", spec.get("prerelease")), ("asset", args.asset),
                  ("filter", args.filter),
-                 ("synced", release.tag), ("digest", digest),
+                 ("synced", release.tag), ("digest", digest), ("assetid", assets_id(assets)),
                  ("filterhash", filter_hash(steps, reg.filters, repo)), (BASE_KEY[kind], base)):
         if v:
             entry.set(k, v)
@@ -5962,9 +5998,10 @@ def run(argv):
                    help="convert each matching file with COMMAND (run by sh): {in} the file, "
                         "{out} the result, which replaces it at TARGET (placeholders as for "
                         "--move; TARGET/: {out} is a directory); {root}: the repository")
-    g.add_argument("--run", action=StepOption, metavar="COMMAND",
-                   help="run COMMAND on all files: {in} a directory with them, {out} an empty "
-                        "directory for the result, which replaces them")
+    g.add_argument("--run", action=StepOption, nargs=2, metavar=("PATTERN", "COMMAND"),
+                   help="run COMMAND on the matching files ('*': all) at once: {in} a "
+                        "directory with them, {out} an empty directory for the result, which "
+                        "replaces them")
 
     p = sub.add_parser("restore", parents=[colorp],
                        help="restore what the release gave (the synced version), without pulling")

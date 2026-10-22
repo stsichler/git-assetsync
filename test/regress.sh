@@ -378,6 +378,7 @@ check "pull: content" "$(cat bin/tool.bin)" "tool 1.1"
 check "pull: commit message" "$(msg)" \
   "[assetsync] Update bin/tool.bin to acme/tool v1.1 (was v1.0) Release: https://github.com/acme/tool/releases/tag/v1.1 Asset:   tool-1.1.bin "
 check "pull: commit has file and entry" "$(git show --name-only --format= HEAD | sort | oneline)" ".git-assetsync bin/tool.bin "
+check "pull: no assetid where there is a digest" "$(reg file.bin/tool.bin.assetid)" ""
 check "status into a closed pipe: stops, exit 141" "$(PYTHONUNBUFFERED=1 git assetsync status | (exec 0<&-); echo "${PIPESTATUS[0]}")" "141"
 check "pull: entry updated" "$(reg file.bin/tool.bin.synced) $(reg file.bin/tool.bin.blob)" "v1.1 $(git rev-parse HEAD:bin/tool.bin)"
 check "pull: nothing left" "$(git status --porcelain)" ""
@@ -624,6 +625,15 @@ asset nod.bin nodigest
 release --nodigest acme/nod v1 10 "$F/nod.bin"
 quiet asd add nod.bin acme/nod --asset nod.bin
 check "no digest in the API: computed" "$(reg file.nod.bin.digest)" "sha256:$(sha "$F/nod.bin")"
+# ... and a re-upload noticed by what GitHub says about the asset (a new id)
+git commit -q --no-edit
+check "no digest: assetid recorded" "$(reg file.nod.bin.assetid | cut -c1-7)" "sha256:"
+asset nod.bin nodigesT      # the same size: only the id tells
+reupload acme/nod v1 "$F/nod.bin"
+check "no digest: re-upload pending" "$(st nod.bin)" "P"
+pullc nod.bin
+check "... pulled" "$(cat nod.bin) $(git log -1 --format=%s)" "nodigesT [assetsync] Update nod.bin from acme/nod v1 (asset replaced)"
+check "... then up to date" "$(st nod.bin)" ""
 
 
 # =============================================================================
@@ -1688,6 +1698,7 @@ release --host gitlab.com grp/cache4 v1 10 "$F/c4.txt"
 quiet asd add h.txt https://gitlab.com/grp/cache4 && git commit -q --no-edit
 sedi 's/"links": "api"/"links": "upload"/' "$GH/gitlab.com/grp/cache4/1/release.json"
 printf 'gitlab4, new link\n' > "$GH/gitlab.com/grp/cache4/1/assets/c4.txt"
+check "GitLab: a link to another URL pending (assetid)" "$(st h.txt)" "P"
 check "cache: GitLab link to another URL: not the cached file" "$(git assetsync verify h.txt | grep -c 'verified')" "0"
 reset_calls
 check "cache: pull --overwrite from the cache" "$(echo x > a.txt; git commit -qam x; pullcm --overwrite a.txt >/dev/null 2>&1; cat a.txt) $(downloads)" "cached 0"
@@ -2012,12 +2023,29 @@ pullc c
 check "changed script: pulled" "$(cat c/gen/notes.TXT)" "HELLO
 !"
 # without trust in CI: ASSETSYNC_TRUST=all
-filt rn --run 'cp -R {in}/. {out}/ && echo "$ASSETSYNC_RELEASE $ASSETSYNC_ENTRY {in} {out}" > {out}/env.txt'
+filt rn --run '*' 'cp -R {in}/. {out}/ && echo "$ASSETSYNC_RELEASE $ASSETSYNC_ENTRY {in} {out}" > {out}/env.txt'
 check "ASSETSYNC_TRUST=all" "$(ASSETSYNC_TRUST=all asd add r/ acme/cmd --filter rn >/dev/null 2>&1; git ls-files r | oneline)" \
   "r/data.hex r/env.txt r/fw.bin r/notes.txt "
 check "run: environment, {in} and {out}" "$(cat r/env.txt)" "v1 r/ in out"
 check "ASSETSYNC_TRUST=all: not recorded" "$(git assetsync filter trust | grep '^filter rn')" "filter rn: not trusted (used by r/)"
 git reset -q --hard; rm -rf r
+# run with a pattern: only those files, the result replaces them
+filt rp --run '*.txt' 'tr a-z A-Z < {in}/notes.txt > {out}/NOTES.txt; ls {in} > {out}/given.txt'
+filt rpc --run '*.txt' 'cp {in}/notes.txt {out}/fw.bin'
+filt rp0 --run '*.none' 'false'
+quiet git assetsync filter trust --all
+quiet asd add rp/ acme/cmd --filter rp
+check "run PATTERN: only the matching files, replaced by the result" "$(git ls-files rp | oneline)$(cat rp/given.txt)" \
+  "rp/NOTES.txt rp/data.hex rp/fw.bin rp/given.txt notes.txt"
+git reset -q --hard; rm -rf rp
+check "run PATTERN: a result at another file's path" "$(asd add e/ acme/cmd --filter rpc 2>&1 | grep -c "its 'fw.bin' collides with a file it wasn't given")" "1"
+check "run PATTERN: no match, nothing done" "$(asd add r0/ acme/cmd --filter rp0 >/dev/null 2>&1; git ls-files r0 | oneline)" \
+  "r0/data.hex r0/fw.bin r0/notes.txt "
+git reset -q --hard; rm -rf r0
+check "run without a pattern (before 0.19.0): what to write now" \
+  "$(git config -f .git-assetsync filter.old.step "run 'cp -R {in}/. {out}/'"; git assetsync filter show old 2>&1 | tail -1)" \
+  "error: filter step 'run 'cp -R {in}/. {out}/'': run needs a pattern first, like the other steps - for all files: run '*' 'cp -R {in}/. {out}/'"
+git checkout -q .git-assetsync
 # errors
 filt fail --convert '*.txt' x.out 'echo broken >&2; exit 3'
 filt none --convert '*.txt' x.out 'true'

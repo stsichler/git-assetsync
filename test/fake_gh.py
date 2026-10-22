@@ -36,7 +36,10 @@ def fail(status, message):
 
 
 def asset_id(path):
-    return int(hashlib.sha1(path.as_posix().encode()).hexdigest()[:8], 16)
+    """Like GitHub, an asset uploaded again (here: the file written again)
+    gets a new id."""
+    stamp = (ROOT / path).stat().st_mtime_ns
+    return int(hashlib.sha1(f"{path.as_posix()}\n{stamp}".encode()).hexdigest()[:8], 16)
 
 
 def releases(host, repo):

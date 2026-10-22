@@ -125,7 +125,9 @@ Git-config format:
   based on: the release tag, the asset's SHA-256 and the id of the file
   as `git add` stores it (after line-ending conversion and Git LFS). With
   `blob`, `status` knows offline whether the committed file and the
-  working tree file are still the asset.
+  working tree file are still the asset. Where the platform reports no
+  digests, `assetid` records which uploads they were (see
+  [Integrity](#integrity)).
 - **`[dir "PATH"]`** – a directory and the assets it comes from: like
   `[file]`, but `asset` may match several assets (without it: all), and
   the base is `tree`, the id of the directory as committed.
@@ -1136,7 +1138,7 @@ has the name of its step:
 | `--apply PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
 | `--changelog PATTERN…` | reads only: the text of the matching files goes with the release notes into the commit message of `pull`, see [Changelogs from the assets](#changelogs-from-the-assets) |
 | `--convert PATTERN TARGET COMMAND` | convert each matching file with a command of your own (e.g. bin2c), see [Commands in filters](#commands-in-filters) |
-| `--run COMMAND` | run a command on all files at once, see [Commands in filters](#commands-in-filters) |
+| `--run PATTERN COMMAND` | run a command on the matching files at once (`'*'`: all), see [Commands in filters](#commands-in-filters) |
 
 **Several `--include` options in a row make one step** that keeps the
 files matching *any* of their patterns – they don't filter one after the
@@ -1287,9 +1289,12 @@ Two steps run commands, to convert files with tools of your own:
   trailing `/`, `TARGET` is a directory and `{out}` an empty directory: all
   files the command writes there go into it (e.g. a `.c` and a `.h`). To
   keep the original as well, `--copy` it first.
-- **`run COMMAND`** runs `COMMAND` once: `{in}` is a directory with all
-  files so far, `{out}` an empty directory; the files the command writes
-  there are the result.
+- **`run PATTERN COMMAND`** runs `COMMAND` once for all files matching
+  `PATTERN` (`'*'`: all files so far): `{in}` is a directory with them, at
+  their paths, `{out}` an empty directory; the files the command writes
+  there replace them, the other files stay. A result at the path of one
+  of the other files is an error. Until 0.18, `run` had no pattern and
+  took all files: write `run '*' COMMAND` for that now.
 
 ```sh
 git assetsync filter add firmware --extract --include '*.bin' --include '*.hex' \
@@ -1493,10 +1498,18 @@ June 2025); the download is checked against it and refused if it differs.
 For older assets, the digest is computed from the download; their size is
 checked. Either way the digest is recorded in the entry, and a later
 change of the asset in the same release (a re-upload with other content)
-shows up as pending – if GitHub reports digests for it.
+shows up as pending.
 
-GitLab reports no digests: the digest is computed from the download, and
-a re-uploaded asset of the same release is not noticed.
+Where the platform reports no digests – GitLab, and GitHub for older
+assets – the entry also records `assetid`, a fingerprint of what the
+platform says about the assets: name, id, URL and size. A re-upload gets
+a new id on GitHub; on GitLab, a replaced asset is a link with a new id or
+a new URL. Either way `status` shows the entry as pending, without a
+download. Not noticed is only other content behind the same URL (e.g. a
+generic package overwritten, or a link to a server elsewhere) – there,
+not even `verify` sees it while the download cache has the old file
+(`git assetsync cache clear`, then `verify`). Entries synced before 0.19.0
+get `assetid` with their next `pull`.
 
 ### Download cache
 
