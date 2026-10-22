@@ -714,7 +714,7 @@ refused, with a hint to move the files to that one (`set <file>...
 ### `source map`
 
 ```
-git assetsync source map [URL|SOURCE [DIR]] [--flat] [--global] [--unset]
+git assetsync source map [URL|SOURCE [DIR]] [--flat] [--pattern PATTERN] [--global] [--unset]
 ```
 
 Takes the releases of a source from the local folder `DIR` instead of
@@ -760,6 +760,27 @@ git assetsync source map acme/tool --unset                # remove it again
 
   The layout is kept with the mapping (`assetsync.<url>.layout = flat`);
   `source map` without `--flat` switches back to subdirectories.
+- With **`--pattern PATTERN`**, only the subdirectories – with `--flat`,
+  the files – whose names match it count, so several sources can share
+  one folder, e.g. the output folder of a build that makes the releases of
+  several projects:
+
+  ```
+  ~/build/out/
+    tool-1.2/  tool-1.3/      <- acme/tool
+    lib-0.9/                  <- acme/lib
+  ```
+
+  ```sh
+  git assetsync source map acme/tool ~/build/out --pattern 'tool-*'
+  git assetsync source map acme/lib  ~/build/out --pattern 'lib-*'
+  ```
+
+  The pattern is matched case-sensitively against the whole name (`*`,
+  `?`, `[…]`). Releases of other sources aren't seen at all, not even as
+  a pinned tag, so their names must differ. It is kept with the mapping
+  (`assetsync.<url>.pattern`); `source map` without `--pattern` takes all
+  again.
 - A release is dated by its **newest file**: the latest release is the one
   built last, also when a build overwrites the files of an existing
   folder (then `status` shows its assets as replaced). The [release

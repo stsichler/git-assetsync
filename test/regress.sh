@@ -2260,6 +2260,38 @@ quiet git assetsync source map https://github.com/acme/flat "$FL"
 check "map again without --flat: folders" "$(git config assetsync.https://github.com/acme/flat.layout; git assetsync source releases acme/flat | sed -n 2p | cut -d' ' -f1)" "sub"
 quiet git assetsync source map https://github.com/acme/flat --unset
 check "map --unset: layout too" "$(git config --get-regexp 'assetsync\..*flat' | lines)" "0"
+# --pattern: several sources share a folder
+SH=$T/sharedrel
+mkdir -p "$SH/tool-1" "$SH/tool-2" "$SH/lib-1"
+printf 't1\n' > "$SH/tool-1/t.bin"; printf 't2\n' > "$SH/tool-2/t.bin"; printf 'l1\n' > "$SH/lib-1/l.bin"
+touch -t 202601011200 "$SH/tool-1/t.bin"; touch -t 202602011200 "$SH/tool-2/t.bin"
+touch -t 202603011200 "$SH/lib-1/l.bin"
+check "map --pattern" "$(git assetsync source map acme/tool "$SH" --pattern 'tool-*' | tr '\\' / | sed 's/^.* -> //')" \
+  "$SH (only tool-*)"
+quiet git assetsync source map acme/lib "$SH" --pattern 'lib-*'
+check "map --pattern: in .git/config" "$(git config assetsync.https://github.com/acme/tool.pattern)" "tool-*"
+check "map --pattern: list" "$(git assetsync source map | sed 's/^.* -> //' | tr '\\' / | oneline)" \
+  "$SH (only tool-*) $SH (only lib-*) "
+check "map --pattern: only matching folders" "$(git assetsync source releases acme/tool | sed 1d | cut -d' ' -f1 | oneline)" \
+  "tool-2 tool-1 "
+check "... named" "$(git assetsync source releases acme/tool | head -1 | tr '\\' /)" \
+  "releases in the local folder $SH, only tool-* (git assetsync source map)"
+addc t.bin acme/tool
+check "map --pattern: latest of the matching ones" "$(reg file.t.bin.synced) $(cat t.bin)" "tool-2 t2"
+check "map --pattern: other tags not seen" "$(git assetsync pull -n --release lib-1 t.bin 2>&1 | tr '\\' /)" \
+  "error: t.bin: no release with tag 'lib-1' in acme/tool (local folder $SH, only tool-*)"
+check "map --pattern: only with DIR" "$(git assetsync source map acme/tool --pattern 'x*' 2>&1)" \
+  "error: --pattern goes with the folder: source map URL|SOURCE DIR --pattern PATTERN"
+check "map --pattern: nothing matching" "$(git assetsync source map acme/tool "$SH" --pattern 'x*' 2>&1 | grep -c 'has no release folders matching x\* yet')" "1"
+quiet git assetsync source map acme/tool "$SH"
+check "map again without --pattern: all" "$(git config assetsync.https://github.com/acme/tool.pattern; git assetsync source releases acme/tool | sed 1d | lines)" "3"
+mkdir -p "$SH/flat"
+printf 'a\n' > "$SH/flat/tool-1.bin"; printf 'b\n' > "$SH/flat/lib-1.bin"
+check "map --flat --pattern" "$(git assetsync source map acme/tool "$SH/flat" --flat --pattern 'tool-*' | sed 's/^.* (/(/')" \
+  "(flat, only tool-*)"
+check "... only matching files" "$(git assetsync source releases acme/tool | sed 1d | cut -d' ' -f1 | oneline)" "tool-1 "
+quiet git assetsync source map acme/tool --unset
+check "map --unset: pattern too" "$(git config --get-regexp 'assetsync\..*tool' | lines)" "0"
 cd "$T/r26"
 # the pre-push check: the release must be on the server, with these assets
 git init -q --bare "$T/r26.git" && git remote add origin "$T/r26.git"
