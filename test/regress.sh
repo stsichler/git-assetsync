@@ -161,6 +161,30 @@ sha() { "$PYTHON" -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],
 # reg KEY - value in .git-assetsync ("" if not set)
 reg() { git config -f .git-assetsync "$1"; }
 
+# A local folder a source is mapped to is only read - it may be a read-only
+# network share. readonly DIR... - make the folders read-only (where the
+# system allows; not for root, partly on Windows) and note their state:
+# paths, sizes, modification times, contents; writable DIR... - writable
+# again, to put a new release there; untouched DIR... - the differences
+# from the noted state (none: empty)
+folder_state() {
+  "$PYTHON" - "$1" <<'EOF2'
+import hashlib, os, sys
+top = sys.argv[1]
+for d, dirs, files in sorted(os.walk(top)):
+    dirs.sort()
+    for n in sorted(dirs + files):
+        p = os.path.join(d, n)
+        st = os.lstat(p)
+        data = open(p, "rb").read() if os.path.isfile(p) else b""
+        print(os.path.relpath(p, top).replace(os.sep, "/"), st.st_size if data else "-",
+              st.st_mtime_ns, hashlib.sha256(data).hexdigest()[:16])
+EOF2
+}
+readonly_dir() { for d; do chmod -R a-w "$d"; folder_state "$d" > "$d.state"; done; }
+writable() { for d; do chmod -R u+w "$d"; done; }
+untouched() { for d; do folder_state "$d" | diff "$d.state" - | grep '^[<>]'; done; }
+
 # msg - message of the last commit, one line, empty lines dropped
 msg() { git log -1 --format=%B | sed '/^$/d' | oneline; }
 
@@ -2210,6 +2234,7 @@ L=$T/localrel
 mkdir -p "$L/v1" "$L/v2"
 printf 'one\n' > "$L/v1/t.bin"; printf 'two\n' > "$L/v2/t.bin"
 touch -t 202610121200 "$L/v1/t.bin"; touch -t 202610101200 "$L/v2/t.bin"   # v1 is newer
+readonly_dir "$L"
 new_repo r26
 check "map" "$(git assetsync source map https://github.com/acme/loc "$L" | tr '\\' /)" \
   "[local] https://github.com/acme/loc -> $L"
@@ -2224,12 +2249,14 @@ check "map: commit message" "$(git log -1 --format=%B | grep '^Release:')" \
 check "map: not in .git-assetsync" "$(grep -ci 'localrel' .git-assetsync)" "0"
 check "map: status names the folder" "$(git assetsync status | grep -c 'from the local folder')" "1"
 check "map: up to date" "$(git assetsync status -s)" ""
-mkdir -p "$L/v3"; printf 'three\n' > "$L/v3/t.bin"
+check "map: local folder untouched" "$(untouched "$L")" ""
+writable "$L"; mkdir -p "$L/v3"; printf 'three\n' > "$L/v3/t.bin"; readonly_dir "$L"
 check "map: a new release folder" "$(git assetsync status | grep 'pending:' | sed 's/^[[:space:]]*//')" \
   "pending:    t.bin  (v1 -> v3, local folder)"
 pullc t.bin
 check "map: pulled" "$(reg file.t.bin.synced) $(cat t.bin)" "v3 three"
-printf 'three, rebuilt\n' > "$L/v3/t.bin"
+check "map: local folder untouched by pull" "$(untouched "$L")" ""
+writable "$L"; printf 'three, rebuilt\n' > "$L/v3/t.bin"; readonly_dir "$L"
 check "map: rebuilt in place" "$(git assetsync status -s)" "P  t.bin"
 pullc t.bin
 check "map: pulled again" "$(cat t.bin)" "three, rebuilt"
@@ -2254,6 +2281,7 @@ printf 'old\n' > "$FL/rel20250101.tar.gz"; printf 'hidden\n' > "$FL/.rel20991231
 touch -t 202501011200 "$FL/rel20250101.tar.gz"
 touch -t 202602131200 "$FL/rel20260213.7z" "$FL/rel20260213.xml"
 touch -t 202604101200 "$FL/rel20260410.7z" "$FL/rel20260410.xml"
+readonly_dir "$FL"
 cd "$T"; new_repo r26f
 check "map --flat" "$(git assetsync source map --flat https://github.com/acme/flat "$FL" | tr '\\' / | sed 's/^.* -> //')" "$FL (flat)"
 check "map --flat: list" "$(git assetsync source map | grep -c '(flat)$')" "1"
@@ -2277,6 +2305,7 @@ mkdir -p "$SH/tool-1" "$SH/tool-2" "$SH/lib-1"
 printf 't1\n' > "$SH/tool-1/t.bin"; printf 't2\n' > "$SH/tool-2/t.bin"; printf 'l1\n' > "$SH/lib-1/l.bin"
 touch -t 202601011200 "$SH/tool-1/t.bin"; touch -t 202602011200 "$SH/tool-2/t.bin"
 touch -t 202603011200 "$SH/lib-1/l.bin"
+readonly_dir "$SH"
 check "map --pattern" "$(git assetsync source map acme/tool "$SH" --pattern 'tool-*' | tr '\\' / | sed 's/^.* -> //')" \
   "$SH (only tool-*)"
 quiet git assetsync source map acme/lib "$SH" --pattern 'lib-*'
@@ -2296,8 +2325,9 @@ check "map --pattern: only with DIR" "$(git assetsync source map acme/tool --pat
 check "map --pattern: nothing matching" "$(git assetsync source map acme/tool "$SH" --pattern 'x*' 2>&1 | grep -c 'has no release folders matching x\* yet')" "1"
 quiet git assetsync source map acme/tool "$SH"
 check "map again without --pattern: all" "$(git config assetsync.https://github.com/acme/tool.pattern; git assetsync source releases acme/tool | sed 1d | lines)" "3"
-mkdir -p "$SH/flat"
-printf 'a\n' > "$SH/flat/tool-1.bin"; printf 'b\n' > "$SH/flat/lib-1.bin"
+check "map --pattern: local folder untouched" "$(untouched "$SH")" ""
+writable "$SH"; mkdir -p "$SH/flat"
+printf 'a\n' > "$SH/flat/tool-1.bin"; printf 'b\n' > "$SH/flat/lib-1.bin"; readonly_dir "$SH"
 check "map --flat --pattern" "$(git assetsync source map acme/tool "$SH/flat" --flat --pattern 'tool-*' | sed 's/^.* (/(/')" \
   "(flat, only tool-*)"
 check "... only matching files" "$(git assetsync source releases acme/tool | sed 1d | cut -d' ' -f1 | oneline)" "tool-1 "
@@ -2307,6 +2337,7 @@ check "map --unset: pattern too" "$(git config --get-regexp 'assetsync\..*tool' 
 SN=$T/sortrel
 for d in rel20260101 rel20260501 rel20261022; do mkdir -p "$SN/$d"; printf '%s\n' $d > "$SN/$d/s.bin"; done
 touch -t 202601011200 "$SN/rel20261022/s.bin"; touch -t 202612011200 "$SN/rel20260501/s.bin"
+readonly_dir "$SN"
 check "map --sort name" "$(git assetsync source map acme/sorted "$SN" --sort name | sed 's/^.* (/(/')" "(sorted by name)"
 check "... in .git/config" "$(git config assetsync.https://github.com/acme/sorted.sort)" "name"
 check "--sort name: releases by name" "$(git assetsync source releases acme/sorted | sed 1d | cut -d' ' -f1 | oneline)" \
@@ -2354,7 +2385,8 @@ rm .git/hooks/pre-push; quiet git assetsync hooks install
 check "push check: by hand (HEAD)" "$(git assetsync hook pre-push 2>&1 | grep -c 'not on the server')" "0"
 # published as tested: no warning; other assets on the server: a warning
 cp "$L/v3/t.bin" "$F/t.bin"; release acme/loc v3 13 "$F/t.bin"
-mkdir -p "$L/v4"; printf 'four\n' > "$L/v4/t.bin"
+check "push check: local folder untouched" "$(untouched "$L")" ""
+writable "$L"; mkdir -p "$L/v4"; printf 'four\n' > "$L/v4/t.bin"; readonly_dir "$L"
 pullc t.bin
 printf 'four, other build\n' > "$F/t.bin"; release acme/loc v4 14 "$F/t.bin"
 OUT=$(git push -q origin main 2>&1)
@@ -2369,6 +2401,8 @@ git commit -q --allow-empty -m next2
 sedi 's/^\tsynced = v4$/\tsynced = v5/' .git-assetsync && git commit -qam v5
 OUT=$(ASSETSYNC_GH=false git -c assetsync.pushCheck=error push -q origin main 2>&1); RC=$?
 check "push check: server not reachable" "$RC $(echo "$OUT" | grep -c 'cannot check whether release v5 is on the server')" "0 1"
+check "map: the local folders untouched" "$(untouched "$L" "$FL" "$SH" "$SN")" ""
+writable "$L" "$FL" "$SH" "$SN"
 
 
 # =============================================================================
