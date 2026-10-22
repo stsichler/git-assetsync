@@ -2292,6 +2292,29 @@ check "map --flat --pattern" "$(git assetsync source map acme/tool "$SH/flat" --
 check "... only matching files" "$(git assetsync source releases acme/tool | sed 1d | cut -d' ' -f1 | oneline)" "tool-1 "
 quiet git assetsync source map acme/tool --unset
 check "map --unset: pattern too" "$(git config --get-regexp 'assetsync\..*tool' | lines)" "0"
+# --sort name: the newest release is the one with the greatest name
+SN=$T/sortrel
+for d in rel20260101 rel20260501 rel20261022; do mkdir -p "$SN/$d"; printf '%s\n' $d > "$SN/$d/s.bin"; done
+touch -t 202601011200 "$SN/rel20261022/s.bin"; touch -t 202612011200 "$SN/rel20260501/s.bin"
+check "map --sort name" "$(git assetsync source map acme/sorted "$SN" --sort name | sed 's/^.* (/(/')" "(sorted by name)"
+check "... in .git/config" "$(git config assetsync.https://github.com/acme/sorted.sort)" "name"
+check "--sort name: releases by name" "$(git assetsync source releases acme/sorted | sed 1d | cut -d' ' -f1 | oneline)" \
+  "rel20261022 rel20260501 rel20260101 "
+addc s.bin acme/sorted --release rel20260101
+quiet git assetsync set s.bin --latest && git commit -qm latest -- .git-assetsync
+check "--sort name: latest by name" "$(git assetsync status | grep 'pending: *s.bin' | sed 's/^[[:space:]]*//')" \
+  "pending:    s.bin  (rel20260101 -> rel20261022, local folder)"
+pullc s.bin
+check "--sort name: skipped by name" "$(git log -1 --format=%B | grep '^Since:')" "Since:   rel20260501"
+quiet git assetsync set s.bin --release 'rel202605*' && git commit -qm pattern -- .git-assetsync
+check "--sort name: pattern" "$(git assetsync pull -n s.bin)" "would: Update s.bin to acme/sorted rel20260501 (was rel20261022)"
+quiet git assetsync set s.bin --latest && git commit -qm latest -- .git-assetsync
+quiet git assetsync source map acme/sorted "$SN"
+check "map again without --sort: by date" "$(git config assetsync.https://github.com/acme/sorted.sort; git assetsync pull -n s.bin)" \
+  "would: Update s.bin to acme/sorted rel20260501 (was rel20261022)"
+check "--sort: only with DIR" "$(git assetsync source map acme/sorted --sort name 2>&1)" \
+  "error: --sort goes with the folder: source map URL|SOURCE DIR --sort name"
+quiet git assetsync source map acme/sorted --unset
 cd "$T/r26"
 # the pre-push check: the release must be on the server, with these assets
 git init -q --bare "$T/r26.git" && git remote add origin "$T/r26.git"

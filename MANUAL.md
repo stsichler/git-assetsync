@@ -714,7 +714,8 @@ refused, with a hint to move the files to that one (`set <file>...
 ### `source map`
 
 ```
-git assetsync source map [URL|SOURCE [DIR]] [--flat] [--pattern PATTERN] [--global] [--unset]
+git assetsync source map [URL|SOURCE [DIR]] [--flat] [--pattern PATTERN] [--sort date|name]
+                         [--global] [--unset]
 ```
 
 Takes the releases of a source from the local folder `DIR` instead of
@@ -783,7 +784,17 @@ git assetsync source map acme/tool --unset                # remove it again
   again.
 - A release is dated by its **newest file**: the latest release is the one
   built last, also when a build overwrites the files of an existing
-  folder (then `status` shows its assets as replaced). The [release
+  folder (then `status` shows its assets as replaced).
+- With **`--sort name`**, the release with the greatest name is the
+  newest instead – for names that tell the order, like `rel20261022`.
+  File dates don't matter then, so building an older release again (or
+  copying the folder, which may change the dates) doesn't make it the
+  latest. Names are compared character by character, not as versions:
+  `v1.10` comes before `v1.9`, so they need a fixed width (dates, leading
+  zeros). It decides everything that asks which release is newer: the
+  latest, the newest matching a pattern, the releases skipped by an
+  update, the order of `source releases`. Kept as `assetsync.<url>.sort
+  = name`; `source map` without it sorts by date again. The [release
   selection](#selecting-the-release) applies as usual – a pattern takes
   the newest matching folder, a pinned tag that folder; prereleases and
   drafts don't exist here, and there are no release notes.

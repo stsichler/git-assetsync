@@ -223,8 +223,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 folder DIR instead (local development and
                                 tests; never committed): one subdirectory
                                 per release, named like its tag, with the
-                                assets; newest = newest file date. Without
-                                DIR: list the mappings
+                                assets; newest = newest file date (see
+                                --sort). Without DIR: list the mappings
         --flat                  DIR holds the assets of all releases as files;
                                 a file belongs to the release named like it
                                 without its extension (.tar.gz etc. count as
@@ -232,6 +232,9 @@ Advanced commands - change entries, sources and filters; set up:
         --pattern PATTERN       only the subdirectories (--flat: files)
                                 matching it, e.g. 'tool-*': several sources
                                 can share a folder
+        --sort date|name        which release is newest: the one with the
+                                newest files (default), or the greatest name
+                                (rel20261022; compared character by character)
         --global                for all repositories (default: this one)
         --unset                 remove the mapping
     source releases SOURCE|URL  list the releases, newest first, marked:
@@ -589,6 +592,12 @@ class Release:
     assets: list = field(default_factory=list)
     notes: str = ""           # description / changelog (Markdown)
     local: bool = False       # from a local folder (map), not published
+    sort_key: str = ""        # a local folder sorted by name: the tag
+
+    @property
+    def order(self):
+        """What decides which release is newer: its date, or its name."""
+        return self.sort_key or self.date
 
 
 class NotFound(FsError):
@@ -840,11 +849,12 @@ class LocalFolder:
     its tag, its files are the assets - or, flat, its files are the assets,
     grouped into releases by their names without extension. With a pattern,
     only the matching subdirectories (flat: files) count, so several sources
-    can share a folder. A release is dated by its newest file. No notes,
-    prereleases or drafts; nothing is cached."""
+    can share a folder. A release is dated by its newest file, which makes
+    it newer than others - or by_name (--sort name): its name. No notes, prereleases or
+    drafts; nothing is cached."""
 
-    def __init__(self, folder, url, flat=False, pattern=None):
-        self.dir, self.flat, self.pattern = Path(folder), flat, pattern
+    def __init__(self, folder, url, flat=False, pattern=None, by_name=False):
+        self.dir, self.flat, self.pattern, self.by_name = Path(folder), flat, pattern, by_name
         self.host, self.project = parse_url(url)
         self.label = self.project
 
@@ -864,14 +874,14 @@ class LocalFolder:
         return sorted((f for f in d.iterdir() if f.is_file() and not f.name.startswith(".")),
                       key=lambda f: f.name)
 
-    @staticmethod
-    def release(tag, files, d):
+    def release(self, tag, files, d):
         """The release tag with these files as assets (none: dated by d)."""
         mtime = max([f.stat().st_mtime for f in files] or [d.stat().st_mtime])
         date = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(mtime)) + \
             f".{int(mtime % 1 * 1e6):06d}Z"
         assets = [LocalAsset(f.name, f.name, f.stat().st_size, url=str(f)) for f in files]
-        return Release(tag, tag, date, "", assets=assets, local=True)
+        return Release(tag, tag, date, "", assets=assets, local=True,
+                       sort_key=tag if self.by_name else "")
 
     def releases(self, limit=None):
         self.check_project()
@@ -886,7 +896,7 @@ class LocalFolder:
 
     def latest(self):
         rels = self.releases()
-        return max(rels, key=lambda r: r.date) if rels else None
+        return max(rels, key=lambda r: r.order) if rels else None
 
     def by_tag(self, tag):
         self.check_project()
@@ -904,15 +914,15 @@ PLATFORMS = {"github": GitHub, "gitlab": GitLab}
 # source URLs mapped to local folders (see map): normalized URL -> Mapping;
 # loaded by main()
 MAPPINGS = {}
-MAP_VARS = ("localpath", "layout", "pattern")
+MAP_VARS = ("localpath", "layout", "pattern", "sort")
 MAP_REGEX = r"^assetsync\..+\.(" + "|".join(MAP_VARS) + ")$"
-Mapping = namedtuple("Mapping", "scope key url folder flat pattern")
+Mapping = namedtuple("Mapping", "scope key url folder flat pattern by_name")
 
 
 def local_mappings(scope=None, cwd=None):
     """List of Mappings from assetsync.<url>.localpath entries (with layout =
-    flat and pattern in the same scope), in git's precedence order (system,
-    global, local: last wins)."""
+    flat, pattern and sort = name in the same scope), in git's precedence
+    order (system, global, local: last wins)."""
     args = ["config", "--show-scope"] + ([scope] if scope else []) + ["--get-regexp", MAP_REGEX]
     paths, more = [], {}
     for line in out(git(args, cwd=cwd, check=False)).splitlines():
@@ -924,12 +934,15 @@ def local_mappings(scope=None, cwd=None):
         else:
             more[(sc, url, var)] = val
     return [Mapping(sc, key, url, d, more.get((sc, url, "layout"), "").strip().lower() == "flat",
-                    more.get((sc, url, "pattern")) or None) for sc, key, url, d in paths]
+                    more.get((sc, url, "pattern")) or None,
+                    more.get((sc, url, "sort"), "").strip().lower() == "name")
+            for sc, key, url, d in paths]
 
 
 def mapping_text(m):
-    """'FOLDER (flat, only PATTERN)' of a mapping."""
-    opts = (["flat"] if m.flat else []) + ([f"only {m.pattern}"] if m.pattern else [])
+    """'FOLDER (flat, only PATTERN, sorted by name)' of a mapping."""
+    opts = (["flat"] if m.flat else []) + ([f"only {m.pattern}"] if m.pattern else []) \
+        + (["sorted by name"] if m.by_name else [])
     return f"{m.folder}" + (f" ({', '.join(opts)})" if opts else "")
 
 
@@ -960,7 +973,7 @@ def platform_of(url, kind=None, remote=False):
     to one (unless remote); kind: its type key, else derived from the host."""
     if not remote and norm_url(url) in MAPPINGS:
         m = MAPPINGS[norm_url(url)]
-        return LocalFolder(m.folder, url, m.flat, m.pattern)
+        return LocalFolder(m.folder, url, m.flat, m.pattern, m.by_name)
     host, path = parse_url(url)
     kind = (kind or ("github" if host == "github.com" else
                      "gitlab" if host == "gitlab.com" or "gitlab" in host.split(".")[0]
@@ -1004,7 +1017,7 @@ def select_release(origin, rule, prerelease):
         what = f"with a tag matching '{rule}'" if rule else ""
         raise FsError(f"no release {what} in {origin.where}".replace("  ", " ")
                       + ("" if prerelease else " (prereleases not counted)"))
-    return max(cands, key=lambda r: r.date)
+    return max(cands, key=lambda r: r.order)
 
 
 def match_asset(release, pattern, label, choose="--asset PATTERN"):
@@ -3520,6 +3533,8 @@ def cmd_map(args, repo):
         raise FsError("--flat goes with the folder: source map --flat URL|SOURCE DIR")
     if args.pattern and not args.dir:
         raise FsError("--pattern goes with the folder: source map URL|SOURCE DIR --pattern PATTERN")
+    if args.sort and not args.dir:
+        raise FsError("--sort goes with the folder: source map URL|SOURCE DIR --sort name")
     if not args.dir and not args.unset:      # listing: all scopes visible here
         print_mappings(local_mappings(cwd=top), url)
         return EXIT_OK
@@ -3560,7 +3575,9 @@ def cmd_map(args, repo):
         git(["config", scope, f"assetsync.{url}.layout", "flat"], cwd=top)
     if args.pattern:
         git(["config", scope, f"assetsync.{url}.pattern", args.pattern], cwd=top)
-    m = Mapping(name, "", url, d, args.flat, args.pattern)
+    if args.sort == "name":
+        git(["config", scope, f"assetsync.{url}.sort", "name"], cwd=top)
+    m = Mapping(name, "", url, d, args.flat, args.pattern, args.sort == "name")
     print(f"{paint(f'[{name}]', 'cyan')} {url} -> {mapping_text(m)}")
     folder = LocalFolder(d, url, args.flat, args.pattern)
     only = f" matching {args.pattern}" if args.pattern else ""
@@ -3759,7 +3776,7 @@ def releases_between(st):
     entry, new = st.entry, st.release
     try:
         old = st.origin.by_tag(entry.synced)
-        if not old or not old.date or not new.date:
+        if not old or not old.order or not new.order:
             return None
         rule, pre = entry.spec.get("release"), is_true(entry.spec.get("prerelease"))
         others = [r for r in st.origin.releases() if r.tag not in (old.tag, new.tag)
@@ -3767,11 +3784,11 @@ def releases_between(st):
                   and (not rule or not is_pattern(rule) or fnmatch.fnmatchcase(r.tag, rule))]
     except FsError:
         return None
-    if old.date < new.date:
-        skipped = [r for r in others if old.date < r.date < new.date]
-        return "Since", sorted(skipped, key=lambda r: r.date, reverse=True)
-    reverted = [old] + [r for r in others if new.date < r.date < old.date]
-    return "Reverted", sorted(reverted, key=lambda r: r.date, reverse=True)
+    if old.order < new.order:
+        skipped = [r for r in others if old.order < r.order < new.order]
+        return "Since", sorted(skipped, key=lambda r: r.order, reverse=True)
+    reverted = [old] + [r for r in others if new.order < r.order < old.order]
+    return "Reverted", sorted(reverted, key=lambda r: r.order, reverse=True)
 
 
 def notes_lines(notes, max_lines=NOTES_LINES, more_hint="[... see the release page for more]"):
@@ -5104,7 +5121,7 @@ def cmd_releases(ctx, repo, args):
         url, kind = source_url(args.source), args.type
     origin = platform_of(url, kind)
     rels = sorted(origin.releases(None if args.all else args.max_count),
-                  key=lambda r: r.date, reverse=True)
+                  key=lambda r: r.order, reverse=True)
     if not args.all:
         rels = rels[:args.max_count]
     if isinstance(origin, LocalFolder):
@@ -6035,6 +6052,10 @@ def main(argv=None):
     a.add_argument("--pattern", metavar="PATTERN",
                    help="only the subdirectories (--flat: files) matching it, e.g. 'tool-*': "
                         "several sources can share a folder")
+    a.add_argument("--sort", choices=("date", "name"),
+                   help="which release is newest: the one with the newest files (date, the "
+                        "default) or the greatest name (e.g. rel20261022; compared character by "
+                        "character)")
     a.add_argument("--unset", action="store_true", help="remove the mapping")
     a.add_argument("--global", dest="glob", action="store_true",
                    help="in the global git config, for all repositories")

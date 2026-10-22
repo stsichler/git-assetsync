@@ -124,7 +124,8 @@ from other Git repositories see git-filesync.
   a size limit)
 - Local folders as releases (`source map`, like git-filesync's): test a build in
   another repository before publishing it; several sources can share a
-  folder (`--pattern`); the pre-push hook warns about entries whose release
+  folder (`--pattern`), the newest release by name instead of file date
+  (`--sort name`); the pre-push hook warns about entries whose release
   isn't published yet
 - Colored output, reminder hooks, CI-friendly exit codes
 - One self-contained Python script, standard library only
