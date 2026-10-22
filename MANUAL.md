@@ -45,8 +45,8 @@ contain the version, so the pattern stays the same across releases while
 the path in your repository doesn't change.
 
 Updates are never applied automatically: `status` shows that a new release
-is out, `pull` updates the file (directory) and commits it with a message
-naming the release. All commands run inside your repository.
+is out, `pull` updates the file (directory) and stages it with a proposed
+commit message naming the release; you commit. All commands run inside your repository.
 
 ### Files and directories
 
@@ -150,9 +150,8 @@ checks and stages it afterwards, or with `git config -f .git-assetsync
 written by hand without them is fetched by the next `pull` (an existing
 file at its path is only replaced if it is the same, a directory with
 files only with `--overwrite`). Changes to
-the file are committed along with the next `pull` – or, if they concern
-other files' entries, that `pull` refuses until they are committed (see
-[`pull`](#pull)).
+the file are committed along with what the next `pull` stages, or on
+their own.
 
 ### No local modifications
 
@@ -210,7 +209,7 @@ Basic commands – what you need day to day:
 | Command | Purpose |
 |---|---|
 | [`status [PATH…]`](#status) | state of the entries, like `git status` |
-| [`pull PATH…`, `pull --all`](#pull) | update files and directories to the selected release (or once another one) and commit |
+| [`pull PATH…`, `pull --all`](#pull) | update files and directories to the selected release (or once another one) and stage them, with a proposed commit message |
 | [`diff [PATH…]`](#diff) | local modifications against what the release gave; what `pull` would bring |
 | [`difftool [PATH…]`](#difftool) | the same in your difftool, file by file or (`-d`) as two directories |
 | [`restore PATH…`](#restore) | discard local modifications: back to what the release gave, without pulling |
@@ -238,17 +237,15 @@ Commands named like a Git command behave like it (`status`, `pull`, `diff`,
 `difftool`, `restore`, `add`, `rm`, `mv`; `source` like `git remote`): same
 kind of output, same exit codes, same caution with uncommitted changes.
 
-**Only `pull` commits**, like `git pull` – and for the same reason: it
-brings in changes from elsewhere, and its commit message comes from there
-(the release, its notes and those of releases skipped) – one commit for
-all entries it updates. All other commands carry out a
-decision of yours, often together with changes of your own, so – like `git
-add`, `git rm`, `git mv`, `git restore` – they only change the working tree
-or stage, and you commit: `add`, `rm`, `mv`, `set`, `unlink`, `edit`,
-`source` and `filter` stage, `restore` (without `-S`) leaves the index
-alone. `pull --no-commit` only stages, like `git merge --no-commit`. `add`
-and `pull --no-commit` prepare a proposed commit message that a plain `git
-commit` offers (see [Proposed commit messages](#proposed-commit-messages)).
+**No command commits.** Like `git add`, `git rm`, `git mv`, `git restore`
+– and `pull` like `git merge --squash` – they only change the working tree
+or stage, and you commit, when and with what you like: `pull`, `add`, `rm`,
+`mv`, `set`, `unlink`, `edit`, `source` and `filter` stage, `restore`
+(without `-S`) leaves the index alone. `pull` and `add` prepare a proposed
+commit message that a plain `git commit` offers (see [Proposed commit
+messages](#proposed-commit-messages)) – for `pull` it names the release,
+its notes and those of releases skipped. What else is staged then goes
+into the same commit; that's up to you.
 
 Without a command, `status` runs. `PATH` may be a file or a directory (all
 entries below it) and is relative to the current directory. A path inside
@@ -318,8 +315,8 @@ Not committed yet:
 - **Locally modified files** – the file (directory) differs from what the
   release gave: in the working tree or committed – both are not allowed,
   and `restore -SW` (then a commit) brings it back either way.
-- **Not committed yet** – an entry added (or pulled with `--no-commit`)
-  and staged, not committed yet.
+- **Not committed yet** – an entry added or pulled and staged, not
+  committed yet.
 
 With nothing to report: `nothing to pull, all N files unmodified` (or
 directories). Errors
@@ -340,48 +337,42 @@ exit with 2.
 ### `pull`
 
 ```
-git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [--no-edit] [-v]
-                   [--no-commit] [-n]
+git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [-v] [-n]
 ```
 
-Updates each given file or directory to what the release its source
-selects gives (after the filter), and commits them together with their
-entries in `.git-assetsync` – one commit for all, whose message has a part
-for each entry (with one entry, just that). In a directory, the files of
-the release are replaced: those the new release no longer has are
-removed, new ones added.
-The editor opens with the [proposed message](#proposed-commit-messages)
-unless `--no-edit` is given. An entry that is up to date is reported as
-such; one whose filter was changed (with [`set`](#set)) is filtered again,
-from the [download cache](#download-cache) if possible.
+Updates each given file or directory to what the release its entry
+selects gives (after the filter) and stages them together with their
+entries in `.git-assetsync` – like `git merge --squash`, without
+committing. A plain `git commit` then offers the [proposed
+message](#proposed-commit-messages), one for all entries, with a part for
+each (with one entry, just that); `git commit --no-edit` takes it as it
+is:
+
+```sh
+git assetsync pull --all
+git commit --no-edit
+```
+
+In a directory, the files of the release are replaced: those the new
+release no longer has are removed, new ones added; files of others there
+stay as they are. An entry that is up to date is reported as such; one
+whose filter was changed (with [`set`](#set)) is filtered again, from the
+[download cache](#download-cache) if possible. If `pull --overwrite` only
+brought back what is committed, there is nothing to commit, and it says
+so.
 
 `pull` refuses a file with local modifications, committed or not (see
 [No local modifications](#no-local-modifications)); the other files are
 pulled anyway, and the exit code is 2.
 
-`pull` commits only the file (directory) and `.git-assetsync`, as staged –
-other staged changes stay staged, and executable bits are kept also with
-`core.filemode=false` (Windows). Like `git commit -- PATH`, it doesn't
-commit during a merge, cherry-pick or revert. If `.git-assetsync`
-has uncommitted changes to entries of other files, it refuses, since the
-commit would take them along without their files; commit them first, or
-use `--no-commit`. Uncommitted changes to `[source]` sections are fine:
-they go into the commit – e.g. change `release` of a source and pull, in
-one commit.
 
 | Option | Meaning |
 |---|---|
 | `--all` | all entries with something to pull (with `--overwrite` also modified ones) |
 | `--release TAG\|PATTERN` | this release instead of the one the entry selects, once – see below; a pattern takes the newest matching release; not with `--all` |
 | `--overwrite` | discard local modifications: restore or update the file (directory) anyway; in a directory also replace files of yours in the way of the release's |
-| `--no-edit` | commit with the proposed message, without opening the editor |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` shows it (assets, source, release selection, filter, the release synced) |
-| `--no-commit` | update and stage only; a plain `git commit` then offers the proposed message (via `.git/SQUASH_MSG`) |
 | `-n`, `--dry-run` | only report what would happen; nothing is downloaded or changed |
-
-If the commit is not done (e.g. the editor is closed with an empty
-message, or a hook rejects it), the changes stay staged and `pull` tells
-how to commit them with the proposed message; the exit code is then 1.
 
 **Another release, once:** `pull --release TAG PATH…` updates the files to
 that release instead of the selected one – also an older one, e.g. to go
@@ -643,7 +634,7 @@ git assetsync set PATH… [--source URL|SOURCE [--type github|gitlab]] [--releas
 Changes the entries of files and directories – their source, release
 selection, asset or filter – where `add` would need `--force`. Only
 `.git-assetsync` is changed (and staged); `status` then shows what
-changes, and `pull` updates the files and commits the change with them.
+changes, and `pull` updates the files and stages them, for one commit with the change.
 
 | Option | Effect |
 |---|---|
@@ -710,7 +701,7 @@ git assetsync source set-type NAME (github|gitlab | --unset)
 Lists and changes the `[source]` sections, like `git remote` does for
 remotes. The changing actions only change `.git-assetsync` and stage it;
 `status` then shows what changes for the files of the source, and `pull`
-updates them and commits the change of the source along with them.
+updates and stages them, for one commit with the change of the source.
 
 | Action | Meaning |
 |---|---|
@@ -1445,7 +1436,7 @@ git config assetsync.notesLines 40
 git config --global assetsync.notesTotalLines 200
 ```
 
-`add` and `pull --no-commit` stage only and put the proposal into
+`add` and `pull` stage only and put the proposal into
 `.git/SQUASH_MSG`, which a plain `git commit` offers (as do IDEs like VS
 Code); proposals of several commands are collected, and git removes the
 file after the commit. If `.git/SQUASH_MSG` is in use by git itself (after
@@ -1606,7 +1597,7 @@ them. For GitLab sources, install `glab` in the job (and give
 | Code | Meaning |
 |---|---|
 | `0` | ok |
-| `1` | unfinished: `pull` without the commit done; `status --exit-code` with something to pull or a modified file; `verify` found a difference |
+| `1` | something to do: `status --exit-code` with something to pull or a modified file; `verify` or `diff --exit-code` found a difference |
 | `2` | error (also: `pull` refused a modified file) |
 | `141` | the output went into a pipe that was closed early (e.g. `\| head`), as with git: a command that only looks (`status`, `diff`, `difftool`, `verify`, `source`, `source releases`) stops there; one that changes something finishes its work first – never only half of it |
 

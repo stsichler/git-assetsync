@@ -11,7 +11,7 @@
 projects.** Check in a binary, a firmware image, or headers and libraries
 unpacked from a ZIP that another project publishes as release assets on
 GitHub or GitLab, see when a new release is out, and update with one
-command, in a commit that says where it came from.
+command – with a proposed commit message that says where it came from.
 
 ```console
 $ git assetsync status
@@ -32,7 +32,7 @@ tool binary, a firmware image, a generated header, a data file. Downloading
 it by hand works – until nobody knows which release the checked-in copy is
 from or whether there is a newer one. git-assetsync records for each such
 file the release and asset it comes from, tells you when a newer release
-is out, and updates the file with a meaningful commit.
+is out, and updates the file with a meaningful commit message.
 
 Because each file is committed in your repository, the repository stays
 **self-contained**: after a plain clone or checkout every file is there –
@@ -72,7 +72,7 @@ them.
 | Selecting files | include / exclude, subdirectory, strip, move / copy into a new structure; named filters, reusable and per asset | include / exclude paths, new root | include / exclude |
 | Converting with tools of your own | yes (e.g. bin2c), in filters you trust | – | – |
 | What's new | `status` like `git status`: new releases, local modifications (those offline) | – (`sync` fetches and writes) | `st` |
-| Updating | `pull` commits, with a message naming the release and its notes | writes the files and a lock file | stages the changes |
+| Updating | `pull` stages, with a proposed commit message naming the release and its notes | writes the files and a lock file | stages the changes |
 | Local modifications | reported; `pull` refuses them, `--overwrite` discards | overwritten | discarded |
 | Form | one Python script, standard library only | Go binary | Python script |
 
@@ -183,8 +183,10 @@ git commit
 # 2. See whether a new release is out
 git assetsync status
 
-# 3. Update – the editor opens with the proposed commit message
+# 3. Update: staged like git merge --squash, then committed - git commit
+#    offers the proposed message
 git assetsync pull bin/tool
+git commit
 ```
 
 Proposed commit message:
@@ -223,7 +225,7 @@ Basic commands – what you need day to day:
 | Command | Purpose |
 |---|---|
 | `status [PATH…]` | state of the entries, like `git status`: new releases, local modifications |
-| `pull PATH…`, `pull --all` | update files and directories to the selected release (`--release`: once another one) and commit |
+| `pull PATH…`, `pull --all` | update files and directories to the selected release (`--release`: once another one) and stage them, with a proposed commit message |
 | `diff [PATH…]`, `difftool [PATH…]` | local modifications; `--upstream`: what `pull` would bring – in your difftool also as two directories (`-d`) |
 | `restore PATH…` | discard local modifications: back to what the release gave, like `git restore` |
 | `add PATH SOURCE` | take a file or directory from release assets |

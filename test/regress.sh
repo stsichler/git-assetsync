@@ -27,7 +27,7 @@
 #    3. Asset selection and integrity
 #    4. Local modifications: refused by pull, discarded with --overwrite
 #    5. .git-assetsync registry: sources, unlink, mv, commit consistency
-#    6. Commit proposals: --no-commit, SQUASH_MSG
+#    6. Commit proposals: pull stages, SQUASH_MSG
 #    7. Offline: --no-fetch, one API request per source
 #    8. Line endings
 #    9. Git LFS
@@ -133,8 +133,16 @@ rc() { "$@" >/dev/null 2>&1; echo $?; }
 # commit with the proposed message, as 'git commit --no-edit' offers it
 addc() { git assetsync add "$@" >/dev/null 2>&1 && git commit -q --no-edit >/dev/null 2>&1; }
 
+# commitp - commit what is staged with the proposed message, if anything
+commitp() { git diff --cached --quiet 2>/dev/null || git commit -q --no-edit >/dev/null 2>&1; }
+
+# pullcm ARGS... - 'git assetsync pull' (which only stages, like git merge
+# --squash), then commit what it staged with the proposed message; the
+# output and exit code are those of pull
+pullcm() { git assetsync pull "$@"; local r=$?; commitp; return $r; }
+
 # pullc PATH... - pull and commit without the editor, quietly
-pullc() { git assetsync pull --no-edit "$@" >/dev/null 2>&1; }
+pullc() { pullcm "$@" >/dev/null 2>&1; }
 
 # asd ARGS... - git-assetsync run directly, not through the git alias (Git
 # for Windows runs aliases through its MSYS shell, which expands wildcard
@@ -362,7 +370,7 @@ check "status --exit-code: 1" "$(rc git assetsync status --exit-code)" "1"
 check "pull without paths refused" "$(rc git assetsync pull)" "2"
 check "pull without paths: message" "$(git assetsync pull 2>&1)" "error: specify file(s) or --all"
 # into a pipe closed early (head): the pull still finishes, exit 141 like git
-out=$(PYTHONUNBUFFERED=1 git assetsync pull -v --no-edit bin/tool.bin 2>/dev/null | head -1; echo "rc=${PIPESTATUS[0]}")
+out=$(PYTHONUNBUFFERED=1 git assetsync pull -v bin/tool.bin 2>/dev/null | head -1; echo "rc=${PIPESTATUS[0]}"); commitp
 check "pull -v: where it comes from first" "$(printf '%s\n' "$out" | head -1)" \
   "bin/tool.bin: tool-*.bin from acme/tool, latest release; synced v1.0"
 check "pull into a closed pipe: finished, exit 141" "$(printf '%s\n' "$out" | tail -1)" "rc=141"
@@ -393,7 +401,7 @@ asd add other.bin acme/tool --asset 'tool-*.bin' >/dev/null 2>&1 && git commit -
 asset tool-1.3.bin "tool 1.3"
 release acme/tool v1.3 13 "$F/tool-1.3.bin"
 N=$(git rev-list --count HEAD)
-quiet git assetsync pull --all --no-edit
+quiet pullcm --all
 check "pull --all: both updated" "$(cat bin/tool.bin other.bin | oneline)" "tool 1.3 tool 1.3 "
 check "pull --all: one commit for all" "$(($(git rev-list --count HEAD) - N)) $(git log -1 --format=%s)" \
   "1 [assetsync] Update 2 files from acme/tool"
@@ -402,7 +410,7 @@ check "... with the message of each" "$(git log -1 --format=%B | grep -c '^Updat
 asset tool-1.4.bin "tool 1.4"
 release acme/tool v1.4 14 "$F/tool-1.4.bin"
 echo mine > other.bin
-check "pull --all: a refused entry left out" "$(rc git assetsync pull --all --no-edit) $(git log -1 --format=%s) $(cat other.bin)" \
+check "pull --all: a refused entry left out" "$(rc pullcm --all) $(git log -1 --format=%s) $(cat other.bin)" \
   "2 [assetsync] Update bin/tool.bin to acme/tool v1.4 (was v1.3) mine"
 git checkout -q other.bin
 
@@ -417,7 +425,7 @@ check "add: no release notes" "$(git log -1 --format=%B | grep -c 'First release
 asset rn.txt "rn 2"
 printf '<!-- template\r\ncomment -->\r\n## What'"'"'s Changed\r\n\r\n\r\n* Fix A by @x\r\n* Fix B\r\n\r\n' > "$F/notes2.md"
 release --notes "$F/notes2.md" acme/rn v2 11 "$F/rn.txt"
-git assetsync pull rn.txt >/dev/null 2>&1        # with the editor: comment lines stripped
+git assetsync pull rn.txt >/dev/null 2>&1; git commit -q >/dev/null 2>&1   # with the editor: comment lines stripped
 check "pull: release notes, indented, comments and blank lines dropped" \
   "$(git log -1 --format=%B | sed -n '/^Release notes:$/,$p')" \
   "$(printf 'Release notes:\n  ## What'"'"'s Changed\n\n  * Fix A by @x\n  * Fix B')"
@@ -568,7 +576,7 @@ check "new release without the asset: error" "$(st)" "E"
 check "... message" "$(git assetsync status 2>&1 | head -1)" \
   "error: app.tgz: release v4 of acme/app has no asset matching 'app-linux.*' (assets: other.txt)"
 check "... exit code 2" "$(rc git assetsync status)" "2"
-check "... pull fails" "$(rc git assetsync pull --no-edit app.tgz)" "2"
+check "... pull fails" "$(rc pullcm app.tgz)" "2"
 cd "$T"
 
 # without --asset: the release's only asset; no asset key recorded
@@ -632,21 +640,21 @@ echo changed > lm.txt && git commit -qam "local change"
 check "committed modification: M" "$(st)" " M"
 check "status: section" "$(git assetsync status | grep -cE "^${TAB}modified:[[:space:]]+lm\.txt  \(NOT ALLOWED\)")" "1"
 check "status --exit-code: 1" "$(rc git assetsync status --exit-code)" "1"
-check "pull refused" "$(rc git assetsync pull --no-edit lm.txt)" "2"
+check "pull refused" "$(rc pullcm lm.txt)" "2"
 check "pull refused: message" "$(git assetsync pull lm.txt 2>&1 | grep -c 'local modifications NOT ALLOWED')" "1"
 check "... file unchanged" "$(cat lm.txt)" "changed"
 mkdir -p sub
 check "... the proposed command fits the current directory" \
   "$(cd sub && git assetsync pull ../lm.txt 2>&1 | grep -o "discard them with '[^']*'")" \
   "discard them with 'git assetsync restore -SW ../lm.txt'"
-out=$(git assetsync pull --overwrite --no-edit lm.txt 2>/dev/null)
+out=$(pullcm --overwrite lm.txt 2>/dev/null)
 check "pull --overwrite restores" "$(cat lm.txt)" "lm 1"
 check "pull --overwrite: a committed modification isn't lost, not named" "$(printf '%s\n' "$out" | grep -c '^discarded:')" "0"
 check "pull --overwrite: message" "$(msg)" \
   "[assetsync] Restore lm.txt from acme/lm v1 Release: https://github.com/acme/lm/releases/tag/v1 Asset:   lm.txt Local modifications of this repository were discarded. "
 check "after restore: clean" "$(st)" ""
 echo mine > lm.txt
-out=$(git assetsync pull --overwrite --no-edit lm.txt 2>/dev/null)
+out=$(pullcm --overwrite lm.txt 2>/dev/null)
 id=$(printf '%s\n' "$out" | sed -n 's/^discarded: lm.txt (git show \([0-9a-f]*\) to get it back)$/\1/p')
 check "pull --overwrite: an uncommitted one named, to get back" "$(git show "$id") $(cat lm.txt) $(st)" "mine lm 1 "
 
@@ -660,7 +668,7 @@ check "pending + uncommitted" "$(st)" "PM"
 check "pull refused" "$(git assetsync pull lm.txt 2>&1 | grep -c "local modifications NOT ALLOWED.*git assetsync restore -SW lm.txt")" "1"
 check "... file unchanged" "$(cat lm.txt)" "dirty"
 check "pull --all --overwrite: discards and updates" \
-  "$(git assetsync pull --all --overwrite --no-edit 2>&1 | grep -c 'warning: lm.txt: discarding local modifications')" "1"
+  "$(pullcm --all --overwrite 2>&1 | grep -c 'warning: lm.txt: discarding local modifications')" "1"
 check "... content" "$(cat lm.txt)" "lm 2"
 check "... message" "$(git log -1 --format=%s)" "[assetsync] Update lm.txt to acme/lm v2 (was v1)"
 
@@ -780,22 +788,21 @@ check "mv into itself: refused" "$(git assetsync mv tools tools/x 2>&1)" "error:
 check "mv dir without entries: refused" "$(mkdir plain && git assetsync mv plain x 2>&1)" "error: 'plain' is not synced"
 git reset -q --hard HEAD~2 && rm -rf tools plain
 
-# pull commits only its own file and entry: others' uncommitted entries refuse
+# pull stages its file and entry; other uncommitted entries stay as they are
 asset one.bin "one v2"
 asset two.bin "two v2"
 release acme/pair v2 11 "$F/one.bin" "$F/two.bin"
 git config -f .git-assetsync file.two.bin.asset 'two*' && git add .git-assetsync
-check "uncommitted other entry: pull refused" "$(git assetsync pull --no-edit sub/one.bin 2>&1 | tail -1)" \
-  "error: .git-assetsync has uncommitted changes for two.bin - commit them first, or use --no-commit to stage everything and commit together"
-quiet git assetsync pull --no-commit sub/one.bin
-check "--no-commit: staged together" "$(git status --porcelain | oneline)" "M  .git-assetsync M  sub/one.bin "
+quiet git assetsync pull sub/one.bin
+check "pull: staged with another uncommitted entry" "$(git status --porcelain | oneline) $(reg file.two.bin.asset)" \
+  "M  .git-assetsync M  sub/one.bin  two*"
 git commit -q --no-edit
 check "uncommitted [source] changes go along" "$(git config -f .git-assetsync source.acme/pair.note x && git add .git-assetsync && pullc two.bin; git status --porcelain)" ""
 check "... in the commit" "$(git show --format= --name-only HEAD | sort | oneline)" ".git-assetsync two.bin "
 
 
 # =============================================================================
-section "6. Commit proposals: --no-commit, SQUASH_MSG"
+section "6. Commit proposals: pull stages, SQUASH_MSG"
 # =============================================================================
 cd "$T"
 asset p.txt "p 1"
@@ -816,56 +823,41 @@ git commit -q -m "another message"
 check "copy: a commit without it" "$(ls .git/SQUASH_MSG 2>/dev/null; grep -c '^\[assetsync\] Add sub/p3.txt' .git/ASSETSYNC_SQUASH_MSG)" "1"
 asset p.txt "p 2"
 release acme/p v2 11 "$F/p.txt"
-OUT=$(git assetsync pull --no-commit p1.txt 2>&1)
-check "pull --no-commit: staged" "$(git status --porcelain | oneline)" "M  .git-assetsync M  p1.txt "
-check "pull --no-commit: hint" "$(echo "$OUT" | grep -c '^p1.txt: updated and staged. Commit with:')" "1"
+OUT=$(git assetsync pull p1.txt 2>&1); RC=$?
+check "pull: staged, not committed" "$RC $(git status --porcelain | oneline)$(git log -1 --format=%s)" \
+  "0 M  .git-assetsync M  p1.txt another message"
+check "pull: hint" "$(echo "$OUT" | grep -c '^p1.txt: updated and staged. Commit with:')" "1"
+check "pull: proposed message in SQUASH_MSG" "$(head -1 .git/SQUASH_MSG)" "[assetsync] Update p1.txt to acme/p v2 (was v1)"
 git commit -q --no-edit
-check "pull --no-commit: message" "$(git log -1 --format=%s)" "[assetsync] Update p1.txt to acme/p v2 (was v1)"
+check "pull: a plain commit takes it" "$(git log -1 --format=%s)" "[assetsync] Update p1.txt to acme/p v2 (was v1)"
 # a SQUASH_MSG of git's own is left alone
 echo "squash of someone else" > .git/SQUASH_MSG
-OUT=$(git assetsync pull --no-commit p2.txt 2>&1)
+OUT=$(git assetsync pull p2.txt 2>&1)
 check "foreign SQUASH_MSG kept" "$(cat .git/SQUASH_MSG)" "squash of someone else"
 check "... message file instead" "$(echo "$OUT" | grep -c 'git commit -e -F ".*ASSETSYNC_MSG_p2.txt" -- p2.txt .git-assetsync')" "1"
 rm .git/SQUASH_MSG; git commit -q -F .git/ASSETSYNC_MSG_p2.txt
-# a commit that fails (here: a rejecting hook) leaves the change staged
 asset p.txt "p 3"
 release acme/p v3 12 "$F/p.txt"
-printf '#!/bin/sh\nexit 1\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit
-check "failed commit: exit code 1" "$(rc git assetsync pull --no-edit p1.txt)" "1"
-check "failed commit: staged" "$(git status --porcelain | oneline)" "M  .git-assetsync M  p1.txt "
-rm .git/hooks/pre-commit; git commit -q --no-edit
-check "failed commit: proposal kept" "$(git log -1 --format=%s)" "[assetsync] Update p1.txt to acme/p v3 (was v2)"
+quiet git assetsync pull p1.txt && git commit -q --no-edit
 # in a subdirectory, the proposed command works there: its paths are relative to it
 echo "squash of someone else" > .git/SQUASH_MSG
-CMD=$(cd sub && git assetsync pull --no-commit ../p2.txt 2>&1 | grep -o 'git commit -e -F .*')
+CMD=$(cd sub && git assetsync pull ../p2.txt 2>&1 | grep -o 'git commit -e -F .*')
 check "message file: paths relative to the current directory" "$CMD" \
   'git commit -e -F "../.git/ASSETSYNC_MSG_p2.txt" -- ../p2.txt ../.git-assetsync'
 rm .git/SQUASH_MSG
 (cd sub && eval "${CMD/ -e / }") >/dev/null 2>&1      # without the editor
 check "... and commits there" "$(git log -1 --format=%s)$(git status --porcelain)" \
   "[assetsync] Update p2.txt to acme/p v3 (was v2)"
-# a commit that isn't done leaves all pulled files staged
+# several entries: one proposal for all; other staged files are the user's
 asset p.txt "p 4"
 release acme/p v4 13 "$F/p.txt"
-printf '#!/bin/sh\nexit 1\n' > .git/hooks/pre-commit; chmod +x .git/hooks/pre-commit
-OUT=$(git assetsync pull --all --no-edit 2>&1)
-check "pull --all: a failed commit leaves them staged" \
-  "$(echo "$OUT" | grep -c '^3 files: commit not done; changes stay staged') $(cat p1.txt p2.txt sub/p3.txt | oneline)$(git status --porcelain | oneline)" \
-  "1 p 4 p 4 p 4 M  .git-assetsync M  p1.txt M  p2.txt M  sub/p3.txt "
-rm .git/hooks/pre-commit; git commit -q --no-edit
-check "... a plain commit takes the proposed message" "$(git log -1 --format=%s)" "[assetsync] Update 3 files from acme/p"
-asset p.txt "p 5"
-release acme/p v5 14 "$F/p.txt"
-# only the pulled file and its entry are committed; other staged changes stay staged
 echo other > other.txt; git add other.txt
-quiet git assetsync pull --no-edit p2.txt
-check "pull: commits only its file" "$(git show --name-only --format= HEAD | oneline)$(git status --porcelain)" \
-  ".git-assetsync p2.txt A  other.txt"
-# during a merge, like `git commit -- PATHS`: not committed
-git rev-parse HEAD > .git/MERGE_HEAD
-check "pull during a merge: not committed" \
-  "$(git assetsync pull --no-edit sub/p3.txt 2>&1 | grep -c '^error: cannot commit only these files during a merge')" "1"
-rm .git/MERGE_HEAD; git commit -q --no-edit
+OUT=$(git assetsync pull --all 2>&1)
+check "pull --all: all staged, one proposal" \
+  "$(echo "$OUT" | grep -c '^3 files: updated and staged') $(cat p1.txt p2.txt sub/p3.txt | oneline)$(git status --porcelain | oneline)" \
+  "1 p 4 p 4 p 4 M  .git-assetsync A  other.txt M  p1.txt M  p2.txt M  sub/p3.txt "
+git commit -q --no-edit
+check "... a plain commit takes the proposed message" "$(git log -1 --format=%s)" "[assetsync] Update 3 files from acme/p"
 
 
 # =============================================================================
@@ -975,7 +967,7 @@ done
 git config -f .git-assetsync source.s.url https://github.com/acme/rb
 check "unsafe paths: all errors" "$(git assetsync status -s 2>/dev/null | cut -c1 | sort -u | oneline)" "E "
 check "unsafe paths: error count" "$(git assetsync status 2>&1 | grep -c '^error: ')" "5"
-check "unsafe paths: pull --all writes nothing" "$(git assetsync pull --all --no-edit >/dev/null 2>&1; ls -a .git/hooks | grep -c '^post-merge$'; ls ../evil.txt 2>/dev/null)" "0"
+check "unsafe paths: pull --all writes nothing" "$(pullcm --all >/dev/null 2>&1; ls -a .git/hooks | grep -c '^post-merge$'; ls ../evil.txt 2>/dev/null)" "0"
 check "unsafe paths: hint" "$(git assetsync status 2>&1 | grep -c "remove it with 'git assetsync unlink /tmp/evil.txt'")" "1"
 quiet asd unlink ../evil.txt /tmp/evil.txt .git/hooks/post-merge sub/.GIT/x a//b    # asd: '/tmp' unconverted on Windows
 check "unsafe paths: unlink by name" "$(git config -f .git-assetsync --get-regexp '^file\.' | lines)" "0"
@@ -1186,7 +1178,7 @@ check "GitLab: http link: a warning" "$(echo "$OUT" | grep -c 'warning: http.txt
 git commit -q --no-edit
 asset http.txt "via http 2"
 release --host gitlab.com --links broken grp/http v2 11 "$F/http.txt"
-check "GitLab: failed download" "$(git assetsync pull --no-edit http.txt 2>&1 | grep -c 'download of .*/nothing/http.txt failed: HTTP 404')" "1"
+check "GitLab: failed download" "$(pullcm http.txt 2>&1 | grep -c 'download of .*/nothing/http.txt failed: HTTP 404')" "1"
 check "... nothing changed" "$(cat http.txt; git status --porcelain)" "via http"
 
 # self-managed GitLab: by name, or with type
@@ -1460,7 +1452,7 @@ quiet git assetsync status; quiet git assetsync status -s; quiet git assetsync d
 quiet git assetsync difftool -y -- -x true; quiet git assetsync verify lib/zlib
 check "status, diff, verify: no new objects" "$(find .git/objects -type f | lines)" "$OBJ"
 rm lib/zlib/other.txt
-check "dir: pull refused" "$(rc git assetsync pull --no-edit lib/zlib)" "2"
+check "dir: pull refused" "$(rc pullcm lib/zlib)" "2"
 git commit -qam "local change"
 check "dir: committed modification" "$(st)" " M"
 pullc --overwrite lib/zlib
@@ -1691,7 +1683,7 @@ check "cache: GitLab file deleted by hand, asset re-uploaded" \
   "$(asd add g2.txt https://gitlab.com/grp/cache3 2>&1 | grep -c '^error'; cat g2.txt)" "0
 gitlab3, re-uploaded"
 reset_calls
-check "cache: pull --overwrite from the cache" "$(echo x > a.txt; git commit -qam x; git assetsync pull --overwrite --no-edit a.txt >/dev/null 2>&1; cat a.txt) $(downloads)" "cached 0"
+check "cache: pull --overwrite from the cache" "$(echo x > a.txt; git commit -qam x; pullcm --overwrite a.txt >/dev/null 2>&1; cat a.txt) $(downloads)" "cached 0"
 rm -rf "$ASSETSYNC_CACHE"
 check "cache: deleted cache is filled again" "$(asd add e.txt acme/cache >/dev/null 2>&1; ls "$ASSETSYNC_CACHE/sha256" | lines)" "1"
 check "cache: unusable" "$(ASSETSYNC_CACHE=$T/r20/a.txt/x asd add f.txt acme/cache 2>&1 | sed 's/ (.*) / /' | tr '\\' /)" \
@@ -1734,12 +1726,12 @@ check "cache: no limits" "$(git -c assetsync.cacheMaxAge=off assetsync cache pru
   "no limits set (assetsync.cacheMaxAge, assetsync.cacheMaxSize) - nothing to do"
 # automatically after a download, at most once a day
 git config assetsync.cacheMaxAge 30
-quiet git assetsync pull --overwrite --no-edit x1.txt          # downloads x1 again
+quiet pullcm --overwrite x1.txt          # downloads x1 again
 touch -t 202501011200 "$C1"
-echo x > x2.txt; git commit -qam x; quiet git assetsync pull --overwrite --no-edit x2.txt
+echo x > x2.txt; git commit -qam x; quiet pullcm --overwrite x2.txt
 check "cache: automatic, not twice a day" "$(ls "$ASSETSYNC_CACHE/sha256" | lines)" "2"
 touch -t 202501011200 "$ASSETSYNC_CACHE/last-prune"; rm "$C2"
-echo y > x2.txt; git commit -qam y; quiet git assetsync pull --overwrite --no-edit x2.txt
+echo y > x2.txt; git commit -qam y; quiet pullcm --overwrite x2.txt
 check "cache: automatic after a download" "$(ls "$ASSETSYNC_CACHE/sha256" | grep -c "$(sha "$F/x1.txt")")" "0"
 git config --unset assetsync.cacheMaxAge
 export ASSETSYNC_CACHE=$SAVED_CACHE
@@ -2002,7 +1994,7 @@ git commit -qam "new upper"
 check "changed script: pending" "$(git assetsync status | grep -c 'pending:    c/  (filter changed)')" "1"
 check "changed script: warning" "$(git assetsync status | grep -c "filter conv runs commands and isn't trusted here yet")" "1"
 check "changed script: trust list" "$(git assetsync filter trust | head -1)" "filter conv: changed since trusted (used by c/)"
-check "changed script: pull refused" "$(rc git assetsync pull --no-edit c)" "2"
+check "changed script: pull refused" "$(rc pullcm c)" "2"
 # like a terminal that ends at once (Windows takes NUL for one): not trusted
 check "trust prompt at end of input: no" "$(printf '' | "$PYTHON" -c '
 import importlib.util, sys
@@ -2142,7 +2134,7 @@ git commit -qam "by hand"
 check "diff: committed changes are local too" "$(git assetsync diff -- --name-only)" "f.txt"
 check "diff: status hints at it for a committed modification" \
   "$(git assetsync status | grep -c 'git assetsync diff <file>')" "1"
-quiet git assetsync pull --overwrite --no-edit f.txt
+quiet pullcm --overwrite f.txt
 check "diff: nothing after --overwrite" "$(git assetsync diff)" ""
 # a directory: changed and deleted files; a file of others isn't shown
 printf 'a mine\n' > d/a.txt; rm d/b.txt; printf 'x\n' > d/x.txt
@@ -2157,7 +2149,7 @@ check "diff --upstream" "$(git assetsync diff --upstream -- --name-status 2>/dev
 check "diff --upstream: prefixes" "$(git assetsync diff --upstream | grep -E '^\+\+\+' | oneline)" \
   "+++ upstream/d/b.txt +++ upstream/d/c.txt "
 check "diff --upstream: pull takes it from the cache" \
-  "$(reset_calls; quiet git assetsync pull --no-edit d; downloads)" "0"
+  "$(reset_calls; quiet pullcm d; downloads)" "0"
 check "diff --upstream: nothing left" "$(git assetsync diff --upstream)" ""
 check "diff --upstream --release" "$(git assetsync diff --upstream --release v1 -- --name-status 2>/dev/null | oneline)" \
   "M${TAB}d/b.txt D${TAB}d/c.txt M${TAB}f.txt "
@@ -2168,7 +2160,7 @@ check "diff --release: unknown tag" "$(git assetsync diff --upstream --release v
 # pull --release: once another release, the selection stays
 check "pull --release: dry run" "$(git assetsync pull -n --release v1 f.txt | head -1)" \
   "would: Update f.txt to acme/df v1 (was v2)"
-out=$(git assetsync pull --no-edit --release v1 f.txt)
+out=$(pullcm --release v1 f.txt)
 check "pull --release: hint" "$(printf '%s\n' "$out" | tail -1)" \
   "note: f.txt: it still selects v2 - 'git assetsync pull f.txt' goes back to it; to stay on v1: 'git assetsync set f.txt --release v1'"
 check "pull --release: content" "$(cat f.txt | oneline)" "one two "
@@ -2462,14 +2454,14 @@ check "skipped: listed (pattern, no prerelease)" "$(git log -1 --format=%B | gre
 check "skipped: their notes too, newest first" \
   "$(git log -1 --format=%B | grep -E '^(Release notes|  Notes)' | oneline)" \
   "Release notes v4:   Notes of v4. Release notes v2:   Notes of v2. "
-check "going back: reverted, no notes" "$(git assetsync pull --no-edit --release v1 s.txt >/dev/null 2>&1; git log -1 --format=%B | grep -cE '^Reverted: v4, v2$|^Release notes|Notes of')" "1"
-quiet git -c assetsync.notesTotalLines=1 assetsync pull --no-edit s.txt
+check "going back: reverted, no notes" "$(pullcm --release v1 s.txt >/dev/null 2>&1; git log -1 --format=%B | grep -cE '^Reverted: v4, v2$|^Release notes|Notes of')" "1"
+quiet git -c assetsync.notesTotalLines=1 assetsync pull s.txt; commitp
 check "notesTotalLines: the rest only linked" "$(git log -1 --format=%B | grep -E '^(Release notes|  Notes|\[\.\.\.)' | oneline)" \
   "Release notes v4:   Notes of v4. [... notes of v2 and older: see the release pages] "
-quiet git assetsync pull --no-edit --release v1 s.txt
-quiet git -c assetsync.notesLines=0 assetsync pull --no-edit s.txt
+quiet pullcm --release v1 s.txt
+quiet git -c assetsync.notesLines=0 assetsync pull s.txt; commitp
 check "notesLines=0: no notes, still the list" "$(git log -1 --format=%B | grep -cE '^Since:   v2$|Notes of')" "1"
-check "notesLines: not a number" "$(git -c assetsync.notesLines=many assetsync pull --no-edit --release v1 s.txt 2>&1 | grep -c "assetsync.notesLines: 'many' is not a number of lines")" "1"
+check "notesLines: not a number" "$(git -c assetsync.notesLines=many assetsync pull --release v1 s.txt 2>&1 | grep -c "assetsync.notesLines: 'many' is not a number of lines")" "1"
 
 # the changelog step: text from the assets with the release notes
 mkdir -p "$F/cl"; : > "$F/cl/CHANGELOG.txt"
@@ -2497,8 +2489,8 @@ pullc cl a.txt
 check "changelog: after the notes of the release, before those skipped" \
   "$(git log -1 --format=%B | grep -E '^(Release notes|Changelog|  )' | oneline)" \
   "Release notes c3:   Notes of c3. Changelog (CHANGELOG.txt):   c3: change 3   c2: change 2   c1: change 1 Release notes c2:   Notes of c2. Release notes c3:   Notes of c3. Changelog (CHANGELOG.txt):   c3: change 3   c2: change 2   c1: change 1 Changelog (a.txt):   cl 3 Release notes c2:   Notes of c2. "
-quiet git assetsync pull --no-edit --release c1 cl
-quiet git -c assetsync.notesLines=1 assetsync pull --no-edit cl
+quiet pullcm --release c1 cl
+quiet git -c assetsync.notesLines=1 assetsync pull cl; commitp
 check "changelog: shortened" "$(git log -1 --format=%B | grep -A2 '^Changelog' | oneline)" \
   "Changelog (CHANGELOG.txt):   c3: change 3   [... more in CHANGELOG.txt] "
 # rebuilt: the same release with a new archive - its changelog again, no notes
@@ -2529,11 +2521,11 @@ pullc enc
 check "changelog: Windows-1252, UTF-16" "$(git log -1 --format=%B | grep -A1 '^Changelog' | grep -v '^--' | oneline)" \
   "Changelog (u.txt):   Ünicode Changelog (w.txt):   Änderung "
 # prereleases count when the source takes them; one release forward: as before
-quiet git assetsync pull --no-edit --release v1 s.txt
+quiet pullcm --release v1 s.txt
 quiet git assetsync set s.txt --latest --prerelease && git commit -qm pre -- .git-assetsync
 pullc s.txt
 check "skipped: prereleases when taken" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v3, other-1, v2"
-quiet git assetsync pull --no-edit --release v3 s.txt; pullc s.txt
+quiet pullcm --release v3 s.txt; pullc s.txt
 check "one release forward: no list" "$(git log -1 --format=%B | grep -cE '^Since:|^Release notes:$')" "1"
 
 # =============================================================================
@@ -2683,18 +2675,17 @@ git add third/README.md
 # the next release: its files replaced and deleted, those of others left alone
 quiet git assetsync set third --latest && git commit -qm latest -- .git-assetsync
 release acme/ov v2 11 "$F/ov-2.tar.gz"
-pullc third
+quiet git assetsync pull third
 check "pull: the release's files replaced and deleted" "$(cd third && find . -type f | sort | oneline)$(cat third/include/a.h)" \
   "./README.md ./include/a.h ./include/c.h ./include/mine.h ./lib/x.lib a2"
-check "... commits only its files" "$(git show --name-only --format= HEAD | oneline)" \
-  ".git-assetsync third/include/a.h third/include/b.h third/include/c.h "
-check "... others' staged change stays staged" "$(git status --porcelain | oneline)" "M  third/README.md "
-check "... message: what changed in its files" "$(git log -1 --format=%B | grep '^Files:')" \
+check "... stages its files; others' staged change stays as it is" "$(git status --porcelain | oneline)" \
+  "M  .git-assetsync M  third/README.md M  third/include/a.h D  third/include/b.h A  third/include/c.h "
+check "... message: what changed in its files" "$(grep '^Files:' .git/SQUASH_MSG)" \
   "Files:   1 added, 1 removed, 1 changed (3 in total)"
-git commit -qm "my readme"
+git commit -q --no-edit
 # a file of others in the way of a new release file: refused; --overwrite replaces it
 release acme/ov v3 12 "$F/ov-3.tar.gz"
-check "pull: a file of others in the way" "$(git assetsync pull --no-edit third 2>&1 | grep '^error')" \
+check "pull: a file of others in the way" "$(pullcm third 2>&1 | grep '^error')" \
   "error: 'third/': files of others in the way of the release: third/include/mine.h - use --overwrite to replace them"
 check "... nothing changed" "$(cat third/include/mine.h) $(git status --porcelain)" "mine "
 pullc --overwrite third
@@ -2702,7 +2693,7 @@ check "pull --overwrite: replaced, now the release's" "$(cat third/include/mine.
 # in the way: a name differing only in case, a file where a directory is needed
 echo mine > third/docs && git add third/docs && git commit -qm docs
 release acme/ov v4 13 "$F/ov-4.tar.gz"
-check "pull: in the way also by case, or as a file" "$(git assetsync pull --no-edit third 2>&1 | grep '^error')" \
+check "pull: in the way also by case, or as a file" "$(pullcm third 2>&1 | grep '^error')" \
   "error: 'third/': files of others in the way of the release: third/README.md, third/docs - use --overwrite to replace them"
 rm -rf "$GH/github.com/acme/ov/4"
 # a clone doesn't have the base (it was committed with files of others): status
@@ -2722,16 +2713,16 @@ vendor/: restored (acme/ov v3) a2 changed "
 git checkout -q vendor
 cd "$T" && rm -rf r31c && git clone -q --no-local r31 r31c && cd r31c
 echo changed > vendor/include/a.h
-check "clone: pull --overwrite gets the base" "$(git assetsync pull --overwrite --no-edit vendor 2>/dev/null | tail -1; cat vendor/include/a.h)" \
-  "vendor/: nothing to commit (the same as committed)
+check "clone: pull --overwrite gets the base" "$(pullcm --overwrite vendor 2>/dev/null | tail -1; cat vendor/include/a.h)" \
+  "vendor/: restored - the same as committed, nothing to commit
 a2"
 # ... unless the release it was synced with is gone: pull refuses, --overwrite only adds
 cd "$T" && rm -rf r31c && git clone -q --no-local r31 r31c && cd r31c
 rm -rf "$GH/github.com/acme/ov/3"
 release acme/ov v5 14 "$F/ov-1.tar.gz"
-check "base gone: pull refused" "$(git assetsync pull --no-edit vendor 2>&1)" \
+check "base gone: pull refused" "$(pullcm vendor 2>&1)" \
   "error: vendor/: which files are those of v3 isn't known in this clone, and release v3 of acme/ov no longer exists - with --overwrite the files of v5 are added, none deleted"
-quiet git assetsync pull --overwrite --no-edit vendor
+quiet pullcm --overwrite vendor
 check "... --overwrite: added, none deleted" "$(cd vendor && find . -type f | sort | oneline)$(cat vendor/include/a.h)" \
   "./README.md ./docs ./include/a.h ./include/b.h ./include/c.h ./include/mine.h ./lib/x.lib a1"
 check "... now known" "$(st vendor) $(git ls-tree -r --name-only $(reg dir.vendor.tree) | oneline)" " include/a.h include/b.h lib/x.lib "
@@ -2739,7 +2730,7 @@ check "... now known" "$(st vendor) $(git ls-tree -r --name-only $(reg dir.vendo
 mkdir -p "$T/ov6/include" && echo a6 > "$T/ov6/include/A.h" && echo lib > "$T/ov6/x.lib"
 mkarchive "$F/ov-6.tar.gz" "$T/ov6"
 release acme/ov v6 15 "$F/ov-6.tar.gz"
-quiet git assetsync pull --no-edit vendor
+quiet pullcm vendor
 check "a file renamed in case: replaced" "$(git ls-files vendor/include | oneline)$(cat vendor/include/A.h)" \
   "vendor/include/A.h vendor/include/c.h vendor/include/mine.h a6"
 # rm: the release's files go, those of others stay

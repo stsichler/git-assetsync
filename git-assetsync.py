@@ -79,9 +79,9 @@ Commands (run inside the repository; without a command: status). PATH may
 be a file or a directory (= all entries below it); a path inside a
 directory entry stands for that entry in status, diff, difftool, verify
 and pull (commands that change entries refuse it). Options follow the
-command. Only pull commits (like git pull, one commit for all entries it
-updates); the other commands only change the working tree or stage, and
-you commit.
+command. No command commits: they change the working tree and stage, and
+you commit - add and pull with a proposed message (like git merge
+--squash: a plain `git commit` offers it).
 
 Basic commands - what you need day to day:
 
@@ -98,8 +98,10 @@ Basic commands - what you need day to day:
         --no-fetch              don't ask the platform for new releases
 
     pull PATH... | --all        update the files (directories) to the selected
-                                release and commit them, in one commit, with
-                                a message naming each release
+                                release and stage them (like `git merge
+                                --squash`); a plain `git commit` offers the
+                                proposed message (via .git/SQUASH_MSG),
+                                naming each release
                                 (with its release notes and those of skipped
                                 releases, shortened: assetsync.notesLines per
                                 release, default 20, assetsync.notesTotalLines
@@ -113,12 +115,9 @@ Basic commands - what you need day to day:
                                 selection stays, status shows the selected
                                 one as pending (to stay: set --release)
         --overwrite             discard local modifications
-        --no-edit               commit without opening the editor
         -v, --verbose           first name where each entry comes from: its
                                 asset(s), source, release selection, filter,
                                 the release synced (as status -v)
-        --no-commit             only stage; a plain `git commit` offers the
-                                proposed message (via .git/SQUASH_MSG)
         -n, --dry-run           only report what would happen
 
     diff [PATH...] [-- OPTS]    local modifications: what the release gave
@@ -217,7 +216,7 @@ Advanced commands - change entries, sources and filters; set up:
     source set-type NAME github|gitlab | --unset
                                 platform of the host (--unset: derived)
                                 (all: only .git-assetsync is staged; pull
-                                updates the files and commits the change)
+                                updates and stages the files)
     source map [URL|SOURCE [DIR]]
                                 take the releases of a source from the local
                                 folder DIR instead (local development and
@@ -314,7 +313,7 @@ Advanced commands - change entries, sources and filters; set up:
     Common options:
         --color[=WHEN], --no-color  always, never or auto (default)
 
-Exit codes: 0 ok, 1 unfinished (not committed, --exit-code), 2 error, 141
+Exit codes: 0 ok, 1 something to do (status --exit-code, diff, verify), 2 error, 141
 output into a pipe closed early (| head; a command that changes something
 finishes its work first).
 
@@ -4079,18 +4078,6 @@ def cmd_difftool(ctx, repo, args):
     return rc
 
 
-def check_other_entries(reg, rels, args):
-    """One commit = these files + their entries; other uncommitted entries
-    would end up in it without their files."""
-    if args.no_commit:
-        return
-    others = reg.uncommitted() - set(rels)
-    if others:
-        raise FsError(f"{REGISTRY} has uncommitted changes for {', '.join(sorted(others))}"
-                      " - commit them first, or use --no-commit to stage everything "
-                      "and commit together")
-
-
 def message_file(repo, name, msg, rels=None):
     """Keep the proposed commit message in .git/ASSETSYNC_MSG_<name>; returns
     the file and the command that commits the files (default: name) and
@@ -4148,77 +4135,6 @@ def report_staged(repo, name, msg, done, rels=None, how="Commit with"):
     """Tell how to commit what a command staged without committing."""
     cmd, note = commit_hint(repo, name, msg, rels)
     print(f"{name}: {done}. {how}:\n    {cmd}\n({note})")
-
-
-def commit_staged(repo, name, msg, args, done, rels=None, only=None):
-    """Commit the staged files (default: name) and their entries with the
-    proposed message (in the editor unless --no-edit). With --no-commit,
-    leave them staged and tell how to commit. done: e.g. 'updated and staged';
-    only: of the files below rels, only these paths."""
-    rels = [name] if rels is None else rels
-    if args.no_commit:
-        report_staged(repo, name, msg, paint(done, "green"), rels)
-        return EXIT_OK
-    msgfile, _ = message_file(repo, name, msg, rels)
-    done = commit_paths(repo, rels + [REGISTRY], msgfile, not args.no_edit, only)
-    if done is None:          # e.g. pull --overwrite discarding uncommitted changes only
-        msgfile.unlink()
-        print(f"{name}: nothing to commit (the same as committed)")
-        return EXIT_OK
-    if not done:
-        report_staged(repo, name, msg, paint("commit not done", "yellow")
-                      + "; changes stay staged", rels, "Commit later with")
-        return EXIT_PENDING
-    msgfile.unlink()
-    return EXIT_OK
-
-
-def commit_paths(repo, rels, msgfile, edit, only=None):
-    """Commit only these paths, as they are staged - like `git commit --
-    PATHS`, which, though, takes them from the working tree again: with
-    core.filemode=false (Windows) it would lose executable bits set with
-    update-index --chmod. The commit is made from a temporary index (HEAD
-    with these paths as staged), so hooks run as usual. only: of the files
-    below rels, only these (and .git-assetsync). True if done, None if
-    there was nothing to commit."""
-    for name, what in (("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"),
-                       ("REVERT_HEAD", "revert")):
-        if (repo.gitdir / name).exists():
-            error(f"cannot commit only these files during a {what} (like `git commit -- "
-                  "PATHS`) - finish it first")
-            return False
-    specs = [lit(r) for r in rels]
-
-    allowed = None if only is None else set(only) | {REGISTRY}
-
-    def wanted(listing, path=lambda item: item):
-        if allowed is None:
-            return listing
-        keep = [i for i in listing.split(b"\0")
-                if i and path(i).decode("utf-8", "replace") in allowed]
-        return b"".join(i + b"\0" for i in keep)
-    staged = wanted(repo.git(["ls-files", "-s", "-z", "--"] + specs).stdout,
-                    lambda i: i.partition(b"\t")[2])
-    with repo.temp_index() as env:
-        if repo.git(["rev-parse", "-q", "--verify", "HEAD"], check=False).returncode == 0:
-            repo.git(["read-tree", "HEAD"], env=env)
-        # what HEAD has at these paths, removed; then what is staged
-        old = wanted(repo.git(["ls-files", "-z", "--"] + specs, env=env).stdout)
-        if old:
-            repo.git(["update-index", "-z", "--force-remove", "--stdin"], data=old, env=env)
-        if staged:
-            repo.git(["update-index", "-z", "--index-info"], data=staged, env=env)
-        if repo.git(["diff-index", "--cached", "--quiet", "HEAD"], env=env,
-                    check=False).returncode == 0:
-            return None
-        cmd = ["git", "commit", "-F", str(msgfile)] + (["-e"] if edit else [])
-        if edit:              # the editor needs the terminal
-            sys.stdout.flush()
-            return subprocess.run(cmd, cwd=repo.top, env=env).returncode == 0
-        # its summary through our output, which may be a closed pipe by now
-        p = subprocess.run(cmd, cwd=repo.top, env=env, stdout=subprocess.PIPE)
-        print(p.stdout.decode("utf-8", "replace"), end="")
-        return p.returncode == 0
 
 
 def save_discarded(repo, paths, known=None, index_stays=False):
@@ -4582,9 +4498,6 @@ def cmd_pull(ctx, repo, args):
     else:
         raise FsError("specify file(s) or --all")
     prefetch_files(repo, entries)     # each pull changes only its own files
-    # one commit = these files + their entries; other uncommitted entries would
-    # end up in it without their files
-    check_other_entries(reg, [e.rel for e in entries], args)
     ctx.override = args.release
     rc, done = EXIT_OK, 0
     pulled, msgs, paths, later, hints = [], [], set(), [], []
@@ -4627,11 +4540,16 @@ def cmd_pull(ctx, repo, args):
         print(paint("everything up to date", "green"))
     if pulled:
         reg.finish()          # .git-assetsync written and staged once, for all
-        # one commit for all, of their files and entries only
+        # staged only, like `git merge --squash`: one proposed message for all
         name = pulled[0].shown if len(pulled) == 1 else entries_text(pulled)
-        rc = max(rc, commit_staged(repo, name, pull_message(pulled, msgs), args,
-                                   "updated and staged", rels=[e.rel for e in pulled],
-                                   only=paths))
+        staged = repo.git(["diff-index", "--cached", "--name-only", "-z", "HEAD"], check=False)
+        if staged.returncode == 0 and not set(out(staged).split("\0")) & (paths | {REGISTRY}):
+            # e.g. pull --overwrite discarding uncommitted changes only
+            print(f"{name}: {paint('restored', 'green')} - the same as committed, nothing to "
+                  "commit")
+        else:
+            report_staged(repo, name, pull_message(pulled, msgs),
+                          paint("updated and staged", "green"), [e.rel for e in pulled])
     for st in hints:          # after pull --release: the selection stays
         one_off_hint(ctx, st)
     return rc
@@ -5478,8 +5396,8 @@ def source_text(s, name, reg):
 
 def cmd_source(ctx, repo, args):
     """Like `git remote`: list, rename and change the [source]s. Only
-    .git-assetsync is changed (and staged); `pull` then updates the files
-    and commits the change with them."""
+    .git-assetsync is changed (and staged); `pull` then updates and stages
+    the files."""
     reg = Registry(repo)
     action = args.action
     if not action:
@@ -5986,11 +5904,8 @@ def run(argv):
                    help="this release instead of the one the entry selects (a pattern: the "
                         "newest matching), once - the selection stays as it is")
     p.add_argument("--overwrite", action="store_true", help="discard local modifications")
-    p.add_argument("--no-edit", action="store_true", help="commit without opening the editor")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="first name where each entry comes from (as status -v)")
-    p.add_argument("--no-commit", action="store_true",
-                   help="only stage; a plain 'git commit' offers the proposed message")
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="only report what would happen")
 
