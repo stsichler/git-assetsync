@@ -2398,6 +2398,64 @@ quiet git assetsync pull --no-edit --release v1 s.txt
 quiet git -c assetsync.notesLines=0 assetsync pull --no-edit s.txt
 check "notesLines=0: no notes, still the list" "$(git log -1 --format=%B | grep -cE '^Since:   v2$|Notes of')" "1"
 check "notesLines: not a number" "$(git -c assetsync.notesLines=many assetsync pull --no-edit --release v1 s.txt 2>&1 | grep -c "assetsync.notesLines: 'many' is not a number of lines")" "1"
+
+# the changelog step: text from the assets with the release notes
+mkdir -p "$F/cl"; : > "$F/cl/CHANGELOG.txt"
+for v in 1 2 3; do
+  printf 'cl %s\n' $v > "$F/cl/a.txt"
+  { printf 'c%s: change %s\n' $v $v; cat "$F/cl/CHANGELOG.txt"; } > "$F/cl.tmp" && mv "$F/cl.tmp" "$F/cl/CHANGELOG.txt"
+  mkarchive "$F/cl-$v.tar.gz" "$F/cl"
+  printf 'Notes of c%s.\n' $v > "$F/cl-notes.md"
+  release --notes "$F/cl-notes.md" acme/cl c$v 2$v "$F/cl-$v.tar.gz"
+done
+quiet git assetsync filter add cl --extract --changelog CHANGELOG.txt --exclude CHANGELOG.txt
+quiet git assetsync filter add cla --extract --changelog '*.txt' --include a.txt
+check "changelog: the step" "$(git config -f .git-assetsync --get-all filter.cl.step | oneline)" \
+  "extract changelog CHANGELOG.txt exclude CHANGELOG.txt "
+check "changelog: needs a pattern" "$(git assetsync filter add x --changelog 2>&1 | grep -c 'expected at least one argument')" "1"
+git commit -qm filters -- .git-assetsync
+addc cl/ acme/cl --release c1 --filter cl
+addc a.txt acme/cl --release c1 --filter cla
+check "changelog: not for a new entry" "$(git log -1 --format=%B | grep -c Changelog)" "0"
+check "changelog: the file stays out" "$(git ls-files cl a.txt | oneline)" "a.txt cl/a.txt "
+check "filter test: read" "$(git assetsync filter test cl --source acme/cl --release c1 2>&1 | grep '^changelog')" \
+  "changelog CHANGELOG.txt  1 file read"
+quiet git assetsync set cl a.txt --release 'c*' && git commit -qm pattern -- .git-assetsync
+pullc cl a.txt
+check "changelog: after the notes of the release, before those skipped" \
+  "$(git log -1 --format=%B | grep -E '^(Release notes|Changelog|  )' | oneline)" \
+  "Release notes c3:   Notes of c3. Changelog (CHANGELOG.txt):   c3: change 3   c2: change 2   c1: change 1 Release notes c2:   Notes of c2. Release notes c3:   Notes of c3. Changelog (CHANGELOG.txt):   c3: change 3   c2: change 2   c1: change 1 Changelog (a.txt):   cl 3 Release notes c2:   Notes of c2. "
+quiet git assetsync pull --no-edit --release c1 cl
+quiet git -c assetsync.notesLines=1 assetsync pull --no-edit cl
+check "changelog: shortened" "$(git log -1 --format=%B | grep -A2 '^Changelog' | oneline)" \
+  "Changelog (CHANGELOG.txt):   c3: change 3   [... more in CHANGELOG.txt] "
+# rebuilt: the same release with a new archive - its changelog again, no notes
+{ printf 'c3: rebuilt\n'; cat "$F/cl/CHANGELOG.txt"; } > "$F/cl.tmp" && mv "$F/cl.tmp" "$F/cl/CHANGELOG.txt"
+mkarchive "$F/cl-3.tar.gz" "$F/cl"
+reupload acme/cl c3 "$F/cl-3.tar.gz"
+pullc cl
+check "changelog: also for replaced assets" "$(git log -1 --format=%B | grep -E '^(\[assetsync\]|Release notes|Changelog|  )' | oneline)" \
+  "[assetsync] Update cl/ from acme/cl c3 (asset replaced) Changelog (CHANGELOG.txt):   c3: rebuilt   c3: change 3   c2: change 2   c1: change 1 "
+printf 'bin\000ary\n' > "$F/log.bin"; printf 'text\n' > "$F/log.txt"
+quiet git assetsync filter add clb --changelog 'log.*'
+check "filter test: not text skipped" "$(git assetsync filter test clb "$F/log.bin" "$F/log.txt" 2>&1 | grep '^changelog')" \
+  "changelog 'log.*'  1 file read, 1 skipped (not text)"
+quiet git assetsync filter remove clb
+# encodings: UTF-8, else Windows-1252; UTF-16 with a BOM
+mkdir -p "$F/enc1" "$F/enc2"
+printf 'k1\n' > "$F/enc1/keep.bin"; printf 'w\n' > "$F/enc1/w.txt"; printf 'u\n' > "$F/enc1/u.txt"
+printf 'k2\n' > "$F/enc2/keep.bin"
+printf '\304nderung\n' > "$F/enc2/w.txt"
+"$PYTHON" -c 'import sys; open(sys.argv[1], "wb").write("Ünicode\n".encode("utf-16"))' "$F/enc2/u.txt"
+release acme/enc e1 20 "$F/enc1/keep.bin" "$F/enc1/u.txt" "$F/enc1/w.txt"
+release acme/enc e2 21 "$F/enc2/keep.bin" "$F/enc2/u.txt" "$F/enc2/w.txt"
+quiet git assetsync filter add enc --changelog '*.txt' --exclude '*.txt'
+git commit -qm enc -- .git-assetsync
+addc enc/ acme/enc --release e1 --filter enc
+quiet git assetsync set enc --latest && git commit -qm latest -- .git-assetsync
+pullc enc
+check "changelog: Windows-1252, UTF-16" "$(git log -1 --format=%B | grep -A1 '^Changelog' | grep -v '^--' | oneline)" \
+  "Changelog (u.txt):   Ünicode Changelog (w.txt):   Änderung "
 # prereleases count when the source takes them; one release forward: as before
 quiet git assetsync pull --no-edit --release v1 s.txt
 quiet git assetsync set s.txt --latest --prerelease && git commit -qm pre -- .git-assetsync

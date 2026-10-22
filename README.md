@@ -104,7 +104,8 @@ from other Git repositories see git-filesync.
   without assuming a versioning scheme
 - Proposed commit message names the release (and the one before), its page,
   the assets and the filter, and includes the release notes, shortened -
-  also those of releases skipped by the update
+  also those of releases skipped by the update, and with a `changelog`
+  filter step text from the assets (e.g. a `CHANGELOG.txt` in an archive)
 - `status` works offline for local changes; only the check for new releases
   asks the platform
 - Files must stay exactly what the release gives: local modifications are
@@ -122,8 +123,9 @@ from other Git repositories see git-filesync.
   download; cleaned up automatically (files unused for 90 days, optionally
   a size limit)
 - Local folders as releases (`source map`, like git-filesync's): test a build in
-  another repository before publishing it; the pre-push hook warns about
-  entries whose release isn't published yet
+  another repository before publishing it; several sources can share a
+  folder (`--pattern`); the pre-push hook warns about entries whose release
+  isn't published yet
 - Colored output, reminder hooks, CI-friendly exit codes
 - One self-contained Python script, standard library only
 

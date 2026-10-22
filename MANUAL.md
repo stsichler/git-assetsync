@@ -1115,6 +1115,7 @@ has the name of its step:
 | `--move PATTERN TARGET` | move the matching files to `TARGET`, see below |
 | `--copy PATTERN TARGET` | the same, but the files also stay where they are |
 | `--apply PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
+| `--changelog PATTERN…` | reads only: the text of the matching files goes with the release notes into the commit message of `pull`, see [Changelogs from the assets](#changelogs-from-the-assets) |
 | `--convert PATTERN TARGET COMMAND` | convert each matching file with a command of your own (e.g. bin2c), see [Commands in filters](#commands-in-filters) |
 | `--run COMMAND` | run a command on all files at once, see [Commands in filters](#commands-in-filters) |
 
@@ -1213,6 +1214,47 @@ A filter may use other filters, but not itself (also not through others).
 A changed filter changes all entries that use it, directly or through
 other filters: `status` shows them as pending (`filter changed`), `pull`
 applies it. Renaming one changes nothing else.
+
+#### Changelogs from the assets
+
+The step `changelog PATTERN…` reads the files matching any of the
+patterns and adds their text to the [release
+notes](#proposed-commit-messages) in the commit message of `pull`; the
+files themselves stay (remove them with a later `--exclude` if they
+shouldn't be in the repository). This helps where the release page tells
+little or nothing – above all with a [local folder](#source-map), which
+has no release notes at all:
+
+```sh
+git assetsync filter add fw --extract --changelog CHANGELOG.txt --exclude CHANGELOG.txt
+```
+
+```
+[assetsync] Update firmware/ to acme/fw rel20260410 (was rel20260213)
+
+Release: rel20260410 (from a local folder, not published)
+Asset:   rel20260410.7z
+Filter:  fw
+
+Changelog (CHANGELOG.txt):
+  2026-04-10: faster boot
+  2026-02-13: first release
+```
+
+- The text is that of the release pulled, shortened like the notes (by
+  default its first 20 lines – for a changelog with the newest entries
+  on top, those are the new ones), within the limit of all notes; a cut
+  text ends with `[... more in CHANGELOG.txt]`. The text is read as
+  UTF-8 (with or without a BOM); what isn't valid UTF-8 as Windows-1252,
+  as older Windows tools write it; UTF-16 if it starts with a BOM. Other
+  files with a NUL byte aren't text and are skipped – `filter test` says
+  so.
+- It comes with an update to another release, like the release notes,
+  and also when the assets of the same release were replaced (e.g. a
+  local build made again): then it is read anew from them – not for a new
+  entry or going back to an older one.
+- No matching file (e.g. a later release has none) means no text, as
+  with any step.
 
 #### Commands in filters
 
@@ -1330,7 +1372,8 @@ Files:   1 added, 0 removed, 9 changed (12 in total)
 ```
 
 When an entry is updated to another release, its **release notes** (the
-description on the release page) follow, shortened, so the log tells what
+description on the release page; also text from the assets with a
+[`changelog` step](#changelogs-from-the-assets)) follow, shortened, so the log tells what
 changed without following the link: at most 20 lines of at most 200
 characters (cut lines end in `[...]`, a cut text with a hint at the
 release page), HTML comments (left over from templates) and repeated blank

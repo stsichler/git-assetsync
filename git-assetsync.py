@@ -59,7 +59,9 @@ include / exclude PATTERN... (only /
 not the files matching any of them; gitignore-like), move / copy PATTERN
 TARGET (TARGET/: into that directory; else a path with {path} {dir}
 {parent} {name} {stem} {ext}), apply PATTERN NAME (the filter NAME on the
-matching files only), convert PATTERN TARGET COMMAND (each matching file:
+matching files only), changelog PATTERN... (reads only: the text of the
+matching files goes with the release notes into pull's commit message,
+shortened like them), convert PATTERN TARGET COMMAND (each matching file:
 {in} -> {out}, which replaces it at TARGET; TARGET/: {out} a directory),
 run COMMAND ({in} a directory with all files, {out} one for the result).
 A step that matches no files does nothing; a filter that leaves no files
@@ -254,7 +256,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 order given:
         --extract [PATTERN...], --subdir PATH, --strip N, --include PATTERN,
         --exclude PATTERN, --move PATTERN TARGET, --copy PATTERN TARGET,
-        --apply PATTERN NAME, --convert PATTERN TARGET COMMAND, --run COMMAND
+        --apply PATTERN NAME, --changelog PATTERN...,
+        --convert PATTERN TARGET COMMAND, --run COMMAND
                                 (consecutive --include / --exclude: one step)
     filter set NAME STEP-OPTIONS...  replace the steps of a filter
     filter rename OLD NEW       rename a filter, also where it is used
@@ -325,6 +328,7 @@ Manual: https://github.com/stsichler/git-assetsync/blob/main/MANUAL.md
 
 import argparse
 import bz2
+import codecs
 import fnmatch
 import gzip
 import hashlib
@@ -388,6 +392,8 @@ COMMIT_PREFIX = "[assetsync] "
 # release notes in a commit message: at most this many lines of this length per
 # release (assetsync.notesLines), this many in all (assetsync.notesTotalLines)
 NOTES_LINES, NOTES_WIDTH, NOTES_TOTAL_LINES = 20, 200, 60
+# the start of a file a changelog filter step reads (the rest isn't shown anyway)
+CHANGELOG_MAX = 1 << 20
 # releases skipped (or reverted) by a pull, listed in its commit message: at most
 LIST_RELEASES = 10
 # unpacking archives: at most this much and this many files (zip bombs)
@@ -1234,7 +1240,7 @@ def auto_prune():
 
 # filter steps; the options of filter add / set have the same names
 STEPS = ("extract", "subdir", "strip", "include", "exclude", "move", "copy", "apply",
-         "convert", "run")
+         "changelog", "convert", "run")
 # the steps that run commands: only in trusted filters (see trust)
 COMMAND_STEPS = ("convert", "run")
 # placeholders in the target of move / copy, for a file a/b/c.txt
@@ -1267,6 +1273,7 @@ class Work:
         self.n = self.size = self.count = 0
         self.cwd, self.env = cwd, env or {}   # for commands: repository root, ASSETSYNC_*
         self.trusted = set(trusted)           # filters whose commands may run
+        self.changelog = []                   # [(path, text)] the changelog steps read
 
     def new_dir(self):
         self.n += 1
@@ -1532,7 +1539,7 @@ def parse_step(step):
           "strip": len(args) == 1 and args[0].isdigit() and int(args[0]) > 0,
           "include": bool(args), "exclude": bool(args),
           "move": len(args) == 2 and all(args), "copy": len(args) == 2 and all(args),
-          "apply": len(args) == 2 and all(args),
+          "apply": len(args) == 2 and all(args), "changelog": bool(args) and all(args),
           "convert": len(args) == 3 and all(args), "run": len(args) == 1 and bool(args[0])}.get(name)
     if ok is None:
         raise FsError(f"unknown filter step '{step}' (known: {', '.join(STEPS)})")
@@ -1784,6 +1791,21 @@ def ensure_trusted(repo, steps, filters):
     return set(used_filters(steps, filters))
 
 
+def changelog_text(data):
+    """Text of a file a changelog step reads, None if it isn't text: UTF-8
+    (a BOM dropped), else Windows-1252; UTF-16 only with a BOM. Never an
+    error."""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):        # UTF-16 (Windows editors)
+        return data.decode("utf-16", "replace")
+    if b"\0" in data:
+        return None
+    try:   # a character cut off where reading stopped (CHANGELOG_MAX) is no error
+        return codecs.getincrementaldecoder("utf-8-sig")().decode(
+            data, final=len(data) < CHANGELOG_MAX)
+    except UnicodeDecodeError:
+        return data.decode("cp1252", "replace")
+
+
 def run_steps(files, steps, work, filters=None, chain=(), report=None):
     """Apply the filter steps to {path: (file, executable)}; filters: the
     named filters {name: steps}, for 'apply' steps. A step that matches no
@@ -1905,6 +1927,22 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
                 files = rest
                 info = (f"{plural(len(archives), 'archive')} -> "
                         f"{plural(len(files) - before + len(archives), 'file')}")
+        elif name == "changelog":
+            # reads only: the text goes into the commit message of pull
+            rxs = [glob_regex(a) for a in args]
+            matched = sorted(r for r in files if any(x.match(r) for x in rxs))
+            skipped = 0
+            for r in matched:
+                with open(files[r][0], "rb") as f:
+                    data = f.read(CHANGELOG_MAX)
+                text = changelog_text(data)
+                if text is None:
+                    skipped += 1
+                else:
+                    work.changelog.append((r, text))
+            info = (f"{plural(len(matched) - skipped, 'file')} read"
+                    + (f", {skipped} skipped (not text)" if skipped else "")
+                    if matched else "no files match")
         elif name == "subdir":
             sub = args[0].strip("/") + "/"
             files = {r[len(sub):]: v for r, v in files.items() if r.startswith(sub)}
@@ -3019,6 +3057,7 @@ class State:
     unchecked: bool = False   # a directory whose base isn't in this clone: not checked
     base_now: Optional[str] = None    # base as it would be stored now
     files_now: dict = field(default_factory=dict)   # a directory: so, file by file
+    changelog: list = field(default_factory=list)   # [(path, text)] its filter read (pull)
 
 
 def base_unavailable(st, e):
@@ -3735,7 +3774,7 @@ def releases_between(st):
     return "Reverted", sorted(reverted, key=lambda r: r.date, reverse=True)
 
 
-def notes_lines(notes, max_lines=NOTES_LINES):
+def notes_lines(notes, max_lines=NOTES_LINES, more_hint="[... see the release page for more]"):
     """Release notes shortened for a commit message: HTML comments (left
     over from templates) and repeated blank lines dropped, at most
     NOTES_LINES lines of NOTES_WIDTH characters. Indented, so that lines
@@ -3755,7 +3794,7 @@ def notes_lines(notes, max_lines=NOTES_LINES):
     while lines and not lines[-1]:
         lines.pop()
     if more:
-        lines.append("[... see the release page for more]")
+        lines.append(more_hint)
     return [f"  {line}" if line else "" for line in lines]
 
 
@@ -3788,18 +3827,25 @@ def build_message(st, discarded, unchanged=False, stats=None, between=None,
         lines.append(f"{kind + ':':<8} {', '.join(tags[:LIST_RELEASES])}"
                      + (f" and {len(tags) - LIST_RELEASES} more" if len(tags) > LIST_RELEASES
                         else ""))
-    # notes of the new release, then of those skipped; none when going back
+    # notes of the new release, the texts its filter read (changelog step) -
+    # also from replaced assets of the same release - then the notes of
+    # those skipped; none when going back
     with_notes = [release] + others if old and tag != old and kind != "Reverted" else []
+    texts = [(f"Release notes {r.tag}:" if len(with_notes) > 1 else "Release notes:", r.notes,
+              "[... see the release page for more]", r) for r in with_notes]
+    log = st.changelog if with_notes or old and tag == old and st.digest_changed else []
+    texts[1:1] = [(f"Changelog ({path}):", text, f"[... more in {path}]", None)
+                  for path, text in log]
     per, remaining = limits
     sections = []
-    for n, r in enumerate(with_notes if per and remaining else []):
+    for n, (heading, text, more, r) in enumerate(texts if per and remaining else []):
         if remaining <= 0:
-            if any(x.notes.strip() for x in with_notes[n:]):
-                sections += ["", f"[... notes of {r.tag} and older: see the release pages]"]
+            rest = [x for _, t, _, x in texts[n:] if x and t.strip()]
+            if rest:
+                sections += ["", f"[... notes of {rest[0].tag} and older: see the release pages]"]
             break
-        notes = notes_lines(r.notes, min(per, remaining))
+        notes = notes_lines(text, min(per, remaining), more)
         if notes:
-            heading = "Release notes:" if len(with_notes) == 1 else f"Release notes {r.tag}:"
             sections += ["", heading] + notes
             remaining -= len(notes)
     lines += sections
@@ -4289,6 +4335,7 @@ def install(repo, st, origin, release, assets, steps, filters, overwrite, base=(
            "ASSETSYNC_ENTRY": entry.shown}
     with Work(entry.shown, repo.top, env, trusted) as work:
         files, digest = entry_files(origin, release, assets, steps, filters, work)
+        st.changelog = work.changelog
         if entry.is_dir:
             old = entry.blob if base and repo.has_tree(entry.blob or "") else None
             tree = install_dir(repo, entry.rel, entry.target, files, base, overwrite)
@@ -4307,6 +4354,7 @@ def fetch_file(repo, st, steps, filters, keep):
            "ASSETSYNC_ENTRY": entry.shown}
     work = keep.enter_context(Work(entry.shown, repo.top, env, trusted))
     files, digest = entry_files(origin, release, st.assets, steps, filters, work)
+    st.changelog = work.changelog
     (name, value), = one_file(files, entry.shown, entry.rel).items()
     return digest, name, value
 
@@ -5857,6 +5905,9 @@ def main(argv=None):
                    help="copy the matching files to TARGET, as --move does, keeping them where they are")
     g.add_argument("--apply", action=StepOption, nargs=2, metavar=("PATTERN", "NAME"),
                    help="apply the filter NAME to the matching files")
+    g.add_argument("--changelog", action=StepOption, nargs="+", metavar="PATTERN",
+                   help="add the text of the matching files to the release notes in pull's "
+                        "commit message (the files stay)")
     g.add_argument("--convert", action=StepOption, nargs=3,
                    metavar=("PATTERN", "TARGET", "COMMAND"),
                    help="convert each matching file with COMMAND (run by sh): {in} the file, "
