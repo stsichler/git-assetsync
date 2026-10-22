@@ -351,7 +351,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
 
-__version__ = "0.16.0"
+__version__ = "0.16.1"
 REGISTRY = ".git-assetsync"
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
 EXIT_REFUSED = 3          # hook pre-push: refuse the push (assetsync.pushCheck = error)
