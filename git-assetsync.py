@@ -185,7 +185,8 @@ Basic commands - what you need day to day:
     unlink PATH...              remove entries (the files are kept); also
                                 broken ones, by their name
     mv OLD NEW                  move a file or directory (git mv), keeping its
-                                entry
+                                entry; a directory with entries in it moves
+                                with all of them
         -n, --dry-run           (both) only show what would be done
 
 Advanced commands - change entries, sources and filters; set up:
@@ -5270,7 +5271,9 @@ def cmd_rm(ctx, repo, args):
 def cmd_mv(ctx, repo, args):
     reg = Registry(repo)
     old = repo.rel(repo.user_path(args.src))
-    if old not in reg.files:
+    # an entry, or a directory with entries in it: all of them move (like git mv)
+    moved = [old] if old in reg.files else sorted(r for r in reg.files if r.startswith(old + "/"))
+    if not moved:
         raise FsError(f"'{old}' is not synced")
     dst = repo.user_path(args.dst)
     if dst.is_dir():
@@ -5279,17 +5282,22 @@ def cmd_mv(ctx, repo, args):
     problem = path_problem(new)
     if problem:
         raise FsError(f"cannot move to '{new}': {problem}")
+    if new == old or new.startswith(old + "/"):
+        raise FsError(f"cannot move '{old}' into itself")
     if new in reg.files or dst.exists():
         raise FsError(f"'{new}' already exists")
-    others = reg.overlapping(new, exclude=old)
+    renames = {r: new + r[len(old):] for r in moved}
+    others = sorted({o for r in moved for o in reg.overlapping(renames[r]) if o not in renames})
     if others:
         raise FsError(f"cannot move to '{new}': overlaps with the entry for {', '.join(others)}")
+    count = "" if moved == [old] else f" ({len(moved)} entries)"
     if args.dry_run:
-        print(f"would move {old} -> {new}")
+        print(f"would move {old} -> {new}{count}")
         return EXIT_OK
-    # a directory moves as a whole, files of others in it along
-    entry, along = Entry(reg, old), ""
-    if entry.is_dir:
+    # a directory entry moves as a whole, files of others in it along
+    along = ""
+    entry = Entry(reg, old) if moved == [old] else None
+    if entry and entry.is_dir:
         own = base_paths(repo, entry)
         others = [p for p in repo.dir_files(old) if own is not None and p not in own]
         along = f"; {plural(len(others), 'other file')} moved along" if others else ""
@@ -5299,9 +5307,11 @@ def cmd_mv(ctx, repo, args):
     elif (repo.top / old).exists():
         dst.parent.mkdir(parents=True, exist_ok=True)
         (repo.top / old).rename(dst)
-    reg.rename_file(old, new)
+    for r in moved:
+        reg.rename_file(r, renames[r])
     reg.finish()
-    print(f"{paint('moved', 'green')} {old} -> {new} (entry kept{along})")
+    kept = f"{len(moved)} entries kept" if count else "entry kept"
+    print(f"{paint('moved', 'green')} {old} -> {new} ({kept}{along})")
     return EXIT_OK
 
 
@@ -5908,7 +5918,7 @@ def main(argv=None):
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
     p = sub.add_parser("mv", parents=[colorp], help="move a file or directory, keeping its entry")
-    p.add_argument("src", metavar="OLD", help="synced file")
+    p.add_argument("src", metavar="OLD", help="synced file or directory, or a directory with entries in it")
     p.add_argument("dst", metavar="NEW", help="new path or existing directory")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 

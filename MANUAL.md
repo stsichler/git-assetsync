@@ -612,7 +612,9 @@ git assetsync mv OLD NEW [-n]
 
 Moves a file or directory (with `git mv`) and its entry, and stages both.
 `NEW` may be an existing directory. A directory moves with everything in
-it, files of yours too (`mv` says how many).
+it, files of yours too (`mv` says how many). `OLD` may also be an ordinary
+directory with entries in it (e.g. `bin/` with several synced tools): it
+moves like with `git mv`, and all entries in it follow.
 
 ## Advanced commands
 

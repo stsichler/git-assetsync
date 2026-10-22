@@ -727,6 +727,20 @@ check "mv: entry renamed" "$(reg file.sub/one.bin.asset)" "one.bin"
 check "mv: clean" "$(git commit -qm mv && st)" ""
 check "mv to existing: refused" "$(git assetsync mv sub/one.bin two.bin 2>&1)" "error: 'two.bin' already exists"
 
+# mv of a directory with entries in it: all of them follow (like git mv)
+quiet git assetsync mv two.bin sub && git commit -qm "two in sub"
+echo mine > sub/own.txt
+check "mv dir with entries: -n" "$( (git assetsync mv -n sub tools; git status --porcelain) | oneline)" \
+  "would move sub -> tools (2 entries) ?? sub/own.txt "
+check "mv dir with entries" "$(git assetsync mv sub tools)" "moved sub -> tools (2 entries kept)"
+check "... staged, own file along" "$(git status --porcelain | oneline)" \
+  "M  .git-assetsync R  sub/one.bin -> tools/one.bin R  sub/two.bin -> tools/two.bin ?? tools/own.txt "
+check "... entries renamed" "$(reg file.tools/one.bin.source) $(reg file.tools/two.bin.source)" "acme/pair acme/pair"
+check "... clean" "$(git commit -qm mv && st)" ""
+check "mv into itself: refused" "$(git assetsync mv tools tools/x 2>&1)" "error: cannot move 'tools' into itself"
+check "mv dir without entries: refused" "$(mkdir plain && git assetsync mv plain x 2>&1)" "error: 'plain' is not synced"
+git reset -q --hard HEAD~2 && rm -rf tools plain
+
 # pull commits only its own file and entry: others' uncommitted entries refuse
 asset one.bin "one v2"
 asset two.bin "two v2"
