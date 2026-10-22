@@ -736,6 +736,10 @@ out=$(asd add --overwrite mine.bin acme/pair --asset one.bin 2>/dev/null)
 check "add --overwrite: replaced" "$(cat mine.bin) $(git status --porcelain mine.bin)" "one A  mine.bin"
 id=$(printf '%s\n' "$out" | sed -n 's/^discarded: mine.bin (git show \([0-9a-f]*\) to get it back)$/\1/p')
 check "add --overwrite: what it discarded, to get back" "$(git show "$id")" "mine"
+git reset -q --hard; rm -f mine.bin; echo staged > mine.bin; git add mine.bin
+out=$(asd add --overwrite mine.bin acme/pair --asset one.bin 2>/dev/null)
+id=$(printf '%s\n' "$out" | sed -n 's/^discarded: mine.bin (git show \([0-9a-f]*\) to get it back)$/\1/p')
+check "add --overwrite: a staged file too (the index is replaced)" "$(git show "$id")" "staged"
 git reset -q --hard; rm -f mine.bin; echo mine > mine.bin
 cp "$F/one.bin" same.bin
 check "existing identical file: fine" "$(rc asd add same.bin acme/pair --asset one.bin)" "0"
@@ -2626,7 +2630,7 @@ check "rm: file and entry, staged" "$(git assetsync rm g.txt) $(ls g.txt 2>&1 >/
 git commit -qm "rm g"
 # uncommitted changes: refused, also for the others given; -f removes anyway
 addc g.txt acme/rs --asset rf.txt
-echo changed > g.txt
+echo changed > g.txt && git add g.txt     # staged: git rm takes it from the index too
 check "rm: refused with uncommitted changes" "$( (git assetsync rm f.txt g.txt 2>&1; cat g.txt; reg file.f.txt.source) | oneline)" \
   "error: g.txt: has uncommitted changes - use -f to remove it anyway changed acme/rs "
 check "rm -f" "$(git assetsync rm -f g.txt) $(ls g.txt 2>/dev/null)$(reg file.g.txt.source)" "discarded: g.txt (git show 5ea2ed416fbd to get it back)

@@ -318,9 +318,9 @@ Exit codes: 0 ok, 1 unfinished (not committed, --exit-code), 2 error, 141
 output into a pipe closed early (| head; a command that changes something
 finishes its work first).
 
-Content that restore, rm -f or --overwrite discard - neither committed nor
-staged - is kept as a Git object first: "discarded: PATH (git show ID to
-get it back)"; git gc removes it after a while.
+Content that restore, rm -f or --overwrite discard - not committed, nor
+staged where the index stays - is kept as a Git object first: "discarded:
+PATH (git show ID to get it back)"; git gc removes it after a while.
 
 Files stored in Git LFS and line-ending conversions are handled: a file
 is recorded as `git add` stores it. Output is colored like git's
@@ -4221,11 +4221,12 @@ def commit_paths(repo, rels, msgfile, edit, only=None):
         return p.returncode == 0
 
 
-def save_discarded(repo, paths, known=None):
+def save_discarded(repo, paths, known=None, index_stays=False):
     """Before these files of the working tree are replaced or deleted: those
-    whose content is neither committed nor staged are kept as objects, and
-    how to get them back is printed (restore, rm -f, --overwrite). known:
-    {path: blob} of the working tree files already hashed."""
+    whose content isn't committed - nor staged, if the index stays as it is
+    (index_stays) - are kept as objects, and how to get them back is printed
+    (restore, rm -f, --overwrite). known: {path: blob} of the working tree
+    files already hashed."""
     files = sorted(p for p in set(paths) if (repo.top / p).is_file()
                    and not (repo.top / p).is_symlink())
     if not files:
@@ -4235,11 +4236,11 @@ def save_discarded(repo, paths, known=None):
     if rest:
         known.update(zip(rest, repo.git(["hash-object", "--stdin-paths"],
                                         data="\n".join(rest).encode("utf-8")).stdout.decode().split()))
-    kept = set()              # staged or committed: there to get back
+    kept = set()              # committed (or staged, if that stays): there to get back
     for i in range(0, len(files), 100):
         part = files[i:i + 100]
-        for args in (["ls-files", "-s", "-z", "--"] + [lit(p) for p in part],
-                     ["ls-tree", "-z", "HEAD", "--"] + part):
+        for args in ([["ls-files", "-s", "-z", "--"] + [lit(p) for p in part]] if index_stays
+                     else []) + [["ls-tree", "-z", "HEAD", "--"] + part]:
             p = repo.git(args, check=False)
             for item in p.stdout.decode("utf-8", "replace").split("\0"):
                 info, _, path = item.partition("\t")
@@ -5321,7 +5322,7 @@ def cmd_restore(ctx, repo, args):
         repo.git(["update-index", "-z", "--add", "--index-info"],
                  data="".join(f"{m} {o}\t{p}\0" for m, o, p in index).encode("utf-8"))
     written = [i for _, f in fixes for i in f.get("worktree", [])]
-    save_discarded(repo, [path for _, _, path in written])
+    save_discarded(repo, [path for _, _, path in written], index_stays=not args.staged)
     try:
         write_files(repo, written)
     except FsError as e:

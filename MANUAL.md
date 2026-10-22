@@ -265,9 +265,9 @@ do something it refuses by default, without losing local content (replace
 an entry, add the lines to hooks of other tools).
 
 **Discarded content can be got back.** When `restore`, `rm -f` or
-`--overwrite` replace or delete a file whose content is neither committed
-nor staged, they keep that content as a Git object first and say how to
-get it back:
+`--overwrite` replace or delete a file whose content isn't committed –
+nor staged, where the index stays as it is (`restore` without `-S`) –
+they keep that content as a Git object first and say how to get it back:
 
 ```
 discarded: lib/data.bin (git show 1a2b3c4d5e6f to get it back)
