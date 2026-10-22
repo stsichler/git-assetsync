@@ -1106,8 +1106,10 @@ def get_asset(origin, release, asset):
         return Path(asset.url), asset.digest
     root = cache_root()
     store, index = root / "sha256", root / "index"
+    # with the URL where there is one (GitLab links): a link changed to point
+    # elsewhere is another file, even with the same id
     key = "\n".join([type(origin).__name__, origin.host, origin.project, release.tag,
-                     asset.id, asset.name])
+                     asset.id, asset.name] + ([asset.url] if asset.url else []))
     entry = index / hashlib.sha256(key.encode("utf-8")).hexdigest()
     listed = asset.digest.lower() if (asset.digest or "").lower().startswith("sha256:") else None
     known = listed            # else what the index says: no promise, a re-upload may differ

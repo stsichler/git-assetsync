@@ -1682,6 +1682,13 @@ printf 'gitlab3, re-uploaded\n' > "$GH/gitlab.com/grp/cache3/1/assets/c3.txt"
 check "cache: GitLab file deleted by hand, asset re-uploaded" \
   "$(asd add g2.txt https://gitlab.com/grp/cache3 2>&1 | grep -c '^error'; cat g2.txt)" "0
 gitlab3, re-uploaded"
+# GitLab: a link pointing to another URL (same link id) is another file
+asset c4.txt gitlab4
+release --host gitlab.com grp/cache4 v1 10 "$F/c4.txt"
+quiet asd add h.txt https://gitlab.com/grp/cache4 && git commit -q --no-edit
+sedi 's/"links": "api"/"links": "upload"/' "$GH/gitlab.com/grp/cache4/1/release.json"
+printf 'gitlab4, new link\n' > "$GH/gitlab.com/grp/cache4/1/assets/c4.txt"
+check "cache: GitLab link to another URL: not the cached file" "$(git assetsync verify h.txt | grep -c 'verified')" "0"
 reset_calls
 check "cache: pull --overwrite from the cache" "$(echo x > a.txt; git commit -qam x; pullcm --overwrite a.txt >/dev/null 2>&1; cat a.txt) $(downloads)" "cached 0"
 rm -rf "$ASSETSYNC_CACHE"
