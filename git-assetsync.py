@@ -32,8 +32,6 @@ assets of a project on GitHub or GitLab:
         assetid = sha256:<...>     ; only without digests from the platform:
                                    ; which upload it was (id, URL, size)
         blob = <id of the file as committed>
-        mode = 100755              ; its mode as the filter gave it: 100644,
-                                   ; or 100755 (executable)
     [dir "third_party/zlib"]       ; files of a directory (others may be there)
         source = madler/zlib
         asset = zlib-*.tar.gz      ; optional: the assets (glob); without: all
@@ -3251,9 +3249,6 @@ class Entry:
     assetid = property(lambda self: self.v.get("assetid", ""))
     # the base: blob of a file, tree of a directory, as committed
     blob = property(lambda self: self.v.get(BASE_KEY[self.kind], ""))
-    # a [file]'s mode, as its filter gave it (a [dir]'s are in its tree);
-    # None for an entry synced before 0.20.2: not known, doesn't count
-    mode = property(lambda self: self.v.get("mode") or None)
     filterhash = property(lambda self: self.v.get("filterhash") or None)
 
     def set(self, name, value):
@@ -3332,14 +3327,13 @@ def base_unavailable(st, e):
 
 def base_files(repo, entry):
     """[(mode, id, path in the repository)] of the files an entry got from
-    its release - its base; mode None where it isn't recorded (a [file]
-    synced before 0.20.2).
+    its release - its base; mode None where it isn't recorded (a [file]).
     None if the base tree of a directory isn't in this clone (committed
     together with files of others, it never is: see ensure_base)."""
     if not entry.blob:
         return []
     if not entry.is_dir:
-        return [(getattr(entry, "mode", None), entry.blob, entry.rel)]
+        return [(None, entry.blob, entry.rel)]
     if not repo.has_tree(entry.blob):
         return None
     return [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(entry.blob)
@@ -4512,8 +4506,6 @@ def pull_done(repo, reg, job, base):
     entry.set("assetid", assets_id(st.assets))
     entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
     entry.set(BASE_KEY[entry.kind], base)
-    if not entry.is_dir:
-        entry.set("mode", "100755" if job.files[entry.rel][1] else "100644")
     print(f"{entry.shown}: {paint('updated', 'green')}")
     return msg, set(job.base) | set(job.files)
 
@@ -4828,7 +4820,6 @@ def cmd_add(ctx, repo, args):
     old_tree = old_blob if is_dir and base and repo.has_tree(old_blob or "") else None
     with ExitStack() as keep:
         digest, files = filtered_files(repo, reg, new, origin, release, assets, keep)
-        mode = None if is_dir else "100755" if files[rel][1] else "100644"
         base = install_entries(repo, [(new, files, base, args.overwrite)])[rel]
     if isinstance(base, FsError):
         raise base
@@ -4842,8 +4833,7 @@ def cmd_add(ctx, repo, args):
                  ("prerelease", spec.get("prerelease")), ("asset", args.asset),
                  ("filter", args.filter),
                  ("synced", release.tag), ("digest", digest), ("assetid", assets_id(assets)),
-                 ("filterhash", filter_hash(steps, reg.filters, repo)), (BASE_KEY[kind], base),
-                 ("mode", mode)):
+                 ("filterhash", filter_hash(steps, reg.filters, repo)), (BASE_KEY[kind], base)):
         if v:
             entry.set(k, v)
     reg.finish()
