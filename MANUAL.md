@@ -531,7 +531,11 @@ commit --no-edit` takes it as it is).
   current directory. With a trailing `/` (or if it is an existing
   directory) it becomes a [directory entry](#files-and-directories), else
   a file. The name doesn't have to be the asset's, and stays the same when
-  later assets are named differently.
+  later assets are named differently. Like `cp`, `add` makes no
+  directories: the directory a file goes into must exist (else `error:
+  directory 'src/new' does not exist`); a directory entry's own directory
+  may be new, the one above it must exist. `pull` and `restore` make
+  directories that are missing again, as `git checkout` does.
 - **`SOURCE`** is the name of a `[source]` in `.git-assetsync`, or a URL
   (`https://github.com/owner/repo`, `https://gitlab.com/group/project`,
   also with subgroups; the URL of any page of the project works as well);
@@ -624,7 +628,8 @@ git assetsync mv OLD NEW [-n]
 ```
 
 Moves a file or directory (with `git mv`) and its entry, and stages both.
-`NEW` may be an existing directory. A directory moves with everything in
+`NEW` may be an existing directory; like `git mv`, `mv` makes no
+directories – the one `NEW` goes into must exist. A directory moves with everything in
 it, files of yours too (`mv` says how many). `OLD` may also be an ordinary
 directory with entries in it (e.g. `bin/` with several synced tools): it
 moves like with `git mv`, and all entries in it follow.

@@ -55,6 +55,7 @@
 #   31. A directory with files of others
 #   32. Ignored paths, errors while writing, checkout form
 #   33. Comments and own lines in .git-assetsync
+#   34. add and mv make no directories; pull and restore do
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -339,6 +340,7 @@ asset tool-1.0.bin "tool 1.0"
 release --title "Tool 1.0" acme/tool v1.0 10 "$F/tool-1.0.bin"
 
 new_repo r1
+mkdir bin                 # add makes no directory, as cp
 OUT=$(asd add bin/tool.bin acme/tool --asset 'tool-*.bin' 2>&1)
 check "add stages, like git add" "$(git status --porcelain | oneline)" "A  .git-assetsync A  bin/tool.bin "
 check "add: says how to commit" "$(echo "$OUT" | grep -cxE '    git commit|\(it offers the proposed commit message; a copy stays in \.git/ASSETSYNC_SQUASH_MSG\)')" "2"
@@ -1429,6 +1431,7 @@ release madler/zlib v1.3 10 "$F/zlib-1.3-win64.zip" "$F/checksums.txt"
 new_repo r18
 printf '*.lib\n*.log\n' > .gitignore && git add .gitignore && git commit -qm ignore
 filt zwin --extract --strip 1 --include 'include/*.h' 'lib/x64/*.lib' --exclude '*.pdb'
+mkdir -p lib
 OUT=$(asd add lib/zlib/ madler/zlib --asset 'zlib-*-win64.zip' --filter zwin 2>&1)
 check "dir: added" "$(echo "$OUT" | grep '^added')" "added lib/zlib/ <- madler/zlib v1.3 (zlib-1.3-win64.zip)"
 check "dir: files (ignored *.lib included)" "$(git ls-files lib | oneline)" \
@@ -2820,14 +2823,21 @@ release acme/ig v1 16 "$F/ig.bin" "$F/ig.txt"
 new_repo r32
 echo '*.bin' > .gitignore && git add .gitignore && git commit -qm ignore
 # a file entry at a path the repository ignores: added like a directory's files
+mkdir bin
 check "add: a file at an ignored path" "$(rc asd add bin/ig.bin acme/ig --asset ig.bin) $(git ls-files bin)" \
   "0 bin/ig.bin"
 git commit -qm add
-# an error writing (a file where its directory should be): reported, no traceback
+# a file where its directory should be: add refuses; an error writing
+# (pull, which makes missing directories): reported, no traceback
 echo x > blocker && git add blocker && git commit -qm blocker
-out=$(asd add blocker/ig.txt acme/ig --asset ig.txt 2>&1); r=$?
-check "add: a file in the way of its directory" \
-  "$r $(printf '%s\n' "$out" | grep -c Traceback) $(printf '%s\n' "$out" | grep -c '^error: blocker')" "2 0 1"
+check "add: a file where its directory should be" "$(asd add blocker/ig.txt acme/ig --asset ig.txt 2>&1)" \
+  "error: cannot add 'blocker/ig.txt': 'blocker' is not a directory"
+mkdir w && quiet asd add w/ig.txt acme/ig --asset ig.txt && git commit -qm w
+rm -r w && echo x > w
+out=$(asd pull --overwrite w/ig.txt 2>&1); r=$?
+check "pull: a file where its directory should be" \
+  "$r $(printf '%s\n' "$out" | grep -c Traceback) $(printf '%s\n' "$out" | grep -c '^error: w')" "2 0 1"
+rm w && git checkout -q w
 check "... nothing changed" "$(git status --porcelain)" ""
 # rm -f / --overwrite: a staged version that is neither committed nor in the
 # working tree is named too
@@ -2920,6 +2930,30 @@ quiet asd unlink a.txt
 check "registry: unlink removes the section, not the comments of others" \
   "$(grep -c 'a.txt' .git-assetsync) $(comments) $(tail -1 .git-assetsync)" "0 6 # trailing note"
 check "... the group heading above it is its own line" "$(grep -c '^# --- group A ---$' .git-assetsync)" "1"
+
+# =============================================================================
+section "34. add and mv make no directories (as cp and git mv); pull and restore do"
+# =============================================================================
+new_repo r34
+check "add: a file into a directory that isn't there" \
+  "$(asd add new/a.txt acme/cm --asset cm1.txt 2>&1; ls -d new 2>/dev/null)" "error: directory 'new' does not exist"
+check "... also with -n" "$(asd add -n new/a.txt acme/cm --asset cm1.txt 2>&1)" "error: directory 'new' does not exist"
+mkdir sub
+check "... from a subdirectory: the path in the repository" \
+  "$(cd sub && asd add new/a.txt acme/cm --asset cm1.txt 2>&1)" "error: directory 'sub/new' does not exist"
+check "add: a directory whose parent isn't there" \
+  "$(asd add x/y/ acme/cm 2>&1; ls -d x 2>/dev/null)" "error: directory 'x' does not exist"
+check "add: a new directory itself is fine (as cp -r)" "$(rc asd add d/ acme/cm) $(ls d | oneline)" "0 cm1.txt cm2.txt "
+mkdir s && quiet asd add s/a.txt acme/cm --asset cm1.txt && git commit -qm add
+check "mv: into a directory that isn't there (as git mv)" "$(asd mv d z/d 2>&1; ls -d z 2>/dev/null)" \
+  "error: destination directory does not exist, source=d, destination=z/d"
+check "mv: into one that is" "$(mkdir z && asd mv d z/d) $(ls z/d | oneline)" "moved d -> z/d (entry kept) cm1.txt cm2.txt "
+git commit -qm mv
+rm -r s z
+check "restore: makes the directories" "$(quiet asd restore s/a.txt z/d; cat s/a.txt; ls z/d | oneline)" "c1 v2
+cm1.txt cm2.txt "
+rm -r s
+check "pull: makes the directories" "$(quiet asd pull --overwrite s/a.txt; cat s/a.txt)" "c1 v2"
 
 # =============================================================================
 echo

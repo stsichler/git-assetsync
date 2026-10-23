@@ -162,7 +162,9 @@ Basic commands - what you need day to day:
                                 appended if taken);
                                 PATH and .git-assetsync are staged like `git
                                 add` - a plain `git commit` offers the
-                                proposed message
+                                proposed message; like cp, no directory is
+                                made: the one PATH goes into must exist (a
+                                directory PATH/ itself may be new)
         --asset PATTERN         the asset (glob; a file: exactly one match,
                                 default the release's only asset; a
                                 directory: all matching, default all)
@@ -191,7 +193,8 @@ Basic commands - what you need day to day:
                                 broken ones, by their name
     mv OLD NEW                  move a file or directory (git mv), keeping its
                                 entry; a directory with entries in it moves
-                                with all of them
+                                with all of them; as git mv, the directory
+                                NEW goes into must exist
         -n, --dry-run           (both) only show what would be done
 
 Advanced commands - change entries, sources and filters; set up:
@@ -4930,6 +4933,13 @@ def cmd_add(ctx, repo, args):
     if others:
         raise FsError(f"cannot add '{shown_rel}': overlaps with the entry for "
                       f"{', '.join(others)} - entries must not overlap")
+    # like cp: the directory it goes into must be there (a directory entry's
+    # own may be new); pull and restore make what is missing, as git checkout
+    parent = repo.rel(target.parent)
+    if target.parent.exists() and not target.parent.is_dir():
+        raise FsError(f"cannot add '{shown_rel}': '{parent}' is not a directory")
+    if not target.parent.is_dir():
+        raise FsError(f"directory '{parent}' does not exist")
     if args.filter and args.filter not in reg.filters:
         raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
                       f"'git assetsync filter add {args.filter} ...'")
@@ -5626,6 +5636,8 @@ def cmd_mv(ctx, repo, args):
         raise FsError(f"cannot move '{old}' into itself")
     if new in reg.files or dst.exists():
         raise FsError(f"'{new}' already exists")
+    if not dst.parent.is_dir():       # as git mv
+        raise FsError(f"destination directory does not exist, source={old}, destination={new}")
     renames = {r: new + r[len(old):] for r in moved}
     others = sorted({o for r in moved for o in reg.overlapping(renames[r]) if o not in renames})
     if others:
@@ -5642,10 +5654,8 @@ def cmd_mv(ctx, repo, args):
         others = [p for p in repo.dir_files(old) if own is not None and p not in own]
         along = f"; {plural(len(others), 'other file')} moved along" if others else ""
     if repo.git(["ls-files", "--error-unmatch", "--", lit(old)], check=False).returncode == 0:
-        dst.parent.mkdir(parents=True, exist_ok=True)
         repo.git(["mv", "--", old, new])      # takes paths literally
     elif (repo.top / old).exists():
-        dst.parent.mkdir(parents=True, exist_ok=True)
         (repo.top / old).rename(dst)
     for r in moved:
         reg.rename_file(r, renames[r])
