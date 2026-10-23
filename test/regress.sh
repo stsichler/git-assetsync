@@ -2870,8 +2870,9 @@ check "add: a file where its directory should be" "$(asd add acme/ig blocker/ig.
 mkdir w && quiet asd add acme/ig w/ig.txt --asset ig.txt && git commit -qm w
 rm -r w && echo x > w
 out=$(asd pull --overwrite w/ig.txt 2>&1); r=$?
-check "pull: a file where its directory should be" \
-  "$r $(printf '%s\n' "$out" | grep -c Traceback) $(printf '%s\n' "$out" | grep -c '^error: w')" "2 0 1"
+check "pull: a file where its directory should be: refused before anything changes" \
+  "$r $(printf '%s\n' "$out" | grep '^error') $(cat w) $(git status --porcelain | oneline)" \
+  "2 error: 'w' is a file where the directory of w/ig.txt is needed - move it away x  D w/ig.txt ?? w "
 rm w && git checkout -q w
 check "... nothing changed" "$(git status --porcelain)" ""
 # rm -f / --overwrite: a staged version that is neither committed nor in the
@@ -2904,6 +2905,11 @@ check "restore -S: the staged version named, not the working tree's" \
   "$(git show "$s") $(printf '%s\n' "$out" | grep -c '^discarded:') $(printf '%s\n' "$out" | tail -1) $(cat f.txt)" \
   "staged 1 f.txt: restored in the index (acme/ig v1) work"
 git checkout -q f.txt
+# a name starting with ':' is no pathspec magic (not on Windows: no such names)
+if ! command -v cygpath >/dev/null; then
+  quiet asd add acme/ig ':c.txt' --asset ig.txt && git commit -qm colon
+  check "a name starting with ':': clean when committed" "$(st ':c.txt')" ""
+fi
 # filter steps with an empty pattern are malformed, as for the other steps
 check "include/exclude with an empty pattern: malformed" \
   "$(asd filter add e --include a '' 2>&1 | grep -c '^error: malformed filter step'; asd filter add e --exclude '' 2>&1 | grep -c '^error: malformed filter step')" "1
@@ -3019,6 +3025,15 @@ printf 'c1 v2\n' > same/cm1.txt && git commit -qam same2
 check "add: files in the way that are what the release gives: the entry's" \
   "$(rc asd add acme/cm same/) $(git status --porcelain | oneline)$(git ls-tree --name-only $(reg dir.same.tree) | oneline)" \
   "0 M  .git-assetsync cm1.txt cm2.txt "
+# the same content, but not the release's mode: in the way (its bit would change)
+if ! command -v cygpath >/dev/null; then    # Windows: no executable bit
+  git commit -qm same3 && quiet asd filter add unpack --extract && git commit -qm unpack
+  mkdir xm && printf 'x\n' > xm/run.sh && git add xm && git commit -qm xm
+  check "add: the same content, another mode: in the way" "$(asd add acme/xbit xm/ --release v1 --filter unpack 2>&1 | grep '^error')" \
+    "error: 'xm/run.sh' is in the way of the release - use --overwrite to replace it"
+  chmod +x xm/run.sh && git add xm && git commit -qm "x"
+  check "... with its mode: the entry's" "$(rc asd add acme/xbit xm/ --release v1 --filter unpack)" "0"
+fi
 
 # =============================================================================
 echo

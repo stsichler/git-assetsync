@@ -580,6 +580,12 @@ def config_bool(key, default):
     return config_bool_text(values[-1]) if values else default
 
 
+def tree_path(path):
+    """A path for ls-tree, which takes no pathspec magic: never read as such
+    (a name starting with ':')."""
+    return f"./{path}"
+
+
 def lit(path):
     """Pathspec matching exactly this path: no wildcards, no magic. Not via
     GIT_LITERAL_PATHSPECS, which would leak into hooks run by `git commit`."""
@@ -2309,7 +2315,8 @@ class Repo:
             return
         self.heads.update(dict.fromkeys(rels))
         for i in range(0, len(rels), 100):
-            p = self.git(["ls-tree", "-z", "HEAD", "--"] + rels[i:i + 100], check=False)
+            p = self.git(["ls-tree", "-z", "HEAD", "--"] + [tree_path(r) for r in rels[i:i + 100]],
+                         check=False)
             for item in p.stdout.decode("utf-8", "replace").split("\0"):
                 info, _, path = item.partition("\t")
                 if path in self.heads:
@@ -2349,7 +2356,7 @@ class Repo:
     def head_entry(self, rel):
         """(mode, type, id) of what HEAD has at rel, None if nothing."""
         if rel not in self.heads:
-            p = self.git(["ls-tree", "-z", "HEAD", "--", rel], check=False)
+            p = self.git(["ls-tree", "-z", "HEAD", "--", tree_path(rel)], check=False)
             info, _, path = p.stdout.decode("utf-8", "replace").rstrip("\0").partition("\t")
             self.heads[rel] = tuple(info.split(" ")) if path == rel else None
         return self.heads[rel]
@@ -2704,12 +2711,15 @@ class Repo:
         """Paths of the files below a tree."""
         return [path for _, kind, _, path in self.tree_entries(tree) if kind == "blob"]
 
-    def dir_files(self, rel):
-        """Files in the working tree below rel that git sees: tracked and
-        untracked ones, not ignored ones."""
-        p = self.git(["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
-                      lit(rel)])
-        names = dict.fromkeys(n for n in p.stdout.decode("utf-8", "replace").split("\0") if n)
+    def dir_files(self, *rels):
+        """Files in the working tree at or below these paths that git sees:
+        tracked and untracked ones, not ignored ones (one git command per 100
+        of them)."""
+        names = {}
+        for i in range(0, len(rels), 100):
+            p = self.git(["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"]
+                         + [lit(r) for r in rels[i:i + 100]])
+            names.update(dict.fromkeys(n for n in p.stdout.decode("utf-8", "replace").split("\0") if n))
         return [n for n in names if (self.top / n).is_file()]
 
     def fix_eol(self, path):
@@ -4330,7 +4340,8 @@ def save_discarded(repo, worktree, index=(), known=None):
     for i in range(0, len(paths), 100):
         part = paths[i:i + 100]
         for found, at, args in ((staged, 1, ["ls-files", "-s", "-z", "--"] + [lit(p) for p in part]),
-                                (head, 2, ["ls-tree", "-z", "HEAD", "--"] + part)):
+                                (head, 2, ["ls-tree", "-z", "HEAD", "--"]
+                                 + [tree_path(p) for p in part])):
             p = repo.git(args, check=False)
             for item in p.stdout.decode("utf-8", "replace").split("\0"):
                 info, _, path = item.partition("\t")
@@ -4367,12 +4378,12 @@ def remove_empty_dirs(target, paths):
             d = d.parent
 
 
-def in_the_way(repo, rel, new, base):
-    """Paths of others in the directory rel that new files (paths in the
+def in_the_way(repo, rel, new, base, there):
+    """Paths of others at or below rel that new files (paths in the
     repository) not in base would replace: the same path (also in another
     case), a file where a directory is needed, a directory where the file
-    goes. Sorted."""
-    seen = {p.lower(): p for p in repo.dir_files(rel) if p not in base}
+    goes. there: the files git sees there (dir_files()). Sorted."""
+    seen = {p.lower(): p for p in there if p not in base and (p == rel or p.startswith(rel + "/"))}
     own = {p.lower() for p in base}     # renamed in case only: its own file, deleted first
     found = set()
     for path in sorted(set(new) - set(base)):
@@ -4402,22 +4413,33 @@ def install_entries(repo, jobs):
     entry has them. Returns {entry path: its blob (a [file]) or tree, or
     the FsError for it}; files of others there are left alone."""
     result, ready = {}, []
+    seen = repo.dir_files(*[entry.rel for entry, _, _, _ in jobs]) if jobs else []
     for entry, files, base, overwrite in jobs:
         dirs = [p for p in files if (repo.top / p).is_dir()]
-        if entry.is_dir and entry.target.exists() and not entry.target.is_dir():
+        # a file where a directory above the entry is needed: not the entry's to replace
+        above = next((str(d.as_posix()) for d in reversed(Path(entry.rel).parents)
+                      if str(d) != "." and ((repo.top / d).is_file() or (repo.top / d).is_symlink())),
+                     None)
+        if above:
+            result[entry.rel] = FsError(f"'{above}' is a file where the directory of "
+                                        f"{entry.shown} is needed - move it away")
+        elif entry.is_dir and entry.target.exists() and not entry.target.is_dir():
             result[entry.rel] = FsError(f"'{entry.rel}' is a file")
         elif dirs:
             result[entry.rel] = FsError(f"'{dirs[0]}' is a directory in the working tree")
         else:
-            ready.append((entry, files, set(base), overwrite, in_the_way(repo, entry.rel, files, base)))
+            ready.append((entry, files, set(base), overwrite,
+                          in_the_way(repo, entry.rel, files, base, seen)))
     ids = repo.add_files({p: src for _, files, _, _, _ in ready for p, (src, _) in files.items()})
     # what is there now where new files go (in the way, or the entry's own)
     there = repo.worktree_items([p for _, files, base, _, others in ready
                                  for p in files if p in base or p in others])
     jobs, worktree, index, gone_all, theirs_all = [], [], [], [], []
     for entry, files, base, overwrite, others in ready:
-        # a file in the way that is what the release gives: the entry's now
-        others = [o for o in others if not (o in files and there.get(o, (0, 0))[1] == ids[o])]
+        # a file in the way that is what the release gives - also its mode: the
+        # entry's now
+        others = [o for o in others if not (o in files and there.get(o) ==
+                                            ("100755" if files[o][1] else "100644", ids[o]))]
         if len(others) == 1 and not overwrite:
             result[entry.rel] = FsError(f"'{others[0]}' is in the way of the release - use "
                                         "--overwrite to replace it")
@@ -4806,7 +4828,8 @@ def cmd_add(ctx, repo, args):
             base = base or ()
         if not args.overwrite:
             old = State(entry=old_entry, rel=rel)
-            local_state(repo, old)
+            with repo.scratch():      # only looks
+                local_state(repo, old)
             if old.local == "modified":
                 raise FsError(f"'{shown_rel}' has local modifications - use --overwrite to "
                               "discard them")
