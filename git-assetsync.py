@@ -433,16 +433,19 @@ STYLES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33",
 _color = {"out": False, "err": False}
 
 
-def color_wanted(mode, stream, cwd=None):
+def color_wanted(mode, stream):
     """Colors on a stream? Decided like git: --color, NO_COLOR,
-    color.assetsync/color.ui."""
+    color.assetsync/color.ui (never, always, auto - also true, the default:
+    on a terminal that isn't dumb; Git for Windows takes no TERM as cygwin)."""
     if mode == "always":
         return True
     if mode == "never" or os.environ.get("NO_COLOR"):
         return False
-    tty = "true" if stream.isatty() else "false"
-    p = git(["config", "--get-colorbool", "color.assetsync", tty], cwd=cwd, check=False)
-    return out(p) == "true"
+    value = (config_get("color.assetsync") or config_get("color.ui") or "auto").lower()
+    if value in ("always", "never") or not config_bool_text(value):
+        return value == "always"
+    term = os.environ.get("TERM", "cygwin" if os.name == "nt" else "dumb")
+    return stream.isatty() and term != "dumb"
 
 
 def color_mode(argv):
@@ -462,10 +465,9 @@ def color_mode(argv):
     return mode
 
 
-def setup_colors(mode, cwd=None):
+def setup_colors(mode):
     """Decide per stream like git: --color, NO_COLOR, color.assetsync/color.ui."""
-    _color["out"], _color["err"] = color_wanted(mode, sys.stdout, cwd), \
-        color_wanted(mode, sys.stderr, cwd)
+    _color["out"], _color["err"] = color_wanted(mode, sys.stdout), color_wanted(mode, sys.stderr)
     if os.name == "nt" and (_color["out"] or _color["err"]):
         os.system("")          # enables ANSI escape processing in the Windows console
 
@@ -519,6 +521,55 @@ def git(args, cwd=None, data=None, check=True, env=None):
 
 def out(p):
     return p.stdout.decode("utf-8", "replace").strip()
+
+
+_config = None
+
+
+def config_list():
+    """[(scope, key, value)] of git's configuration here - read once (one
+    `git config --list`) instead of a git command per key; config_changed()
+    after writing it. Keys as git lists them (section and name lower case);
+    value None for a key without '= value'."""
+    global _config
+    if _config is None:
+        p = git(["config", "--list", "--show-scope", "-z"], check=False)
+        words = p.stdout.decode("utf-8", "replace").split("\0")
+        _config = []
+        for scope, item in zip(words[0::2], words[1::2]):
+            key, has_val, val = item.partition("\n")
+            _config.append((scope, key, val if has_val else None))
+    return _config
+
+
+def config_changed():
+    global _config
+    _config = None
+
+
+def config_values(key, scope=None):
+    """All values of a key (the last one counts), in the scope if given; a key
+    without '= value' is 'true'."""
+    sect, _, rest = key.partition(".")
+    sub, dot, name = rest.rpartition(".")
+    norm = f"{sect.lower()}.{sub}{dot}{name.lower()}"
+    return ["true" if v is None else v for sc, k, v in config_list()
+            if k == norm and scope in (None, sc)]
+
+
+def config_get(key, default=""):
+    values = config_values(key)
+    return values[-1].strip() if values else default
+
+
+def config_bool_text(value):
+    """A boolean value as git reads it (empty: false)."""
+    return value.strip().lower() not in ("false", "no", "off", "0", "")
+
+
+def config_bool(key, default):
+    values = config_values(key)
+    return config_bool_text(values[-1]) if values else default
 
 
 def lit(path):
@@ -933,15 +984,15 @@ MAP_REGEX = r"^assetsync\..+\.(" + "|".join(MAP_VARS) + ")$"
 Mapping = namedtuple("Mapping", "scope key url folder flat pattern by_name")
 
 
-def local_mappings(scope=None, cwd=None):
+def local_mappings(scope=None):
     """List of Mappings from assetsync.<url>.localpath entries (with layout =
     flat, pattern and sort = name in the same scope), in git's precedence
     order (system, global, local: last wins)."""
-    args = ["config", "--show-scope"] + ([scope] if scope else []) + ["--get-regexp", MAP_REGEX]
     paths, more = [], {}
-    for line in out(git(args, cwd=cwd, check=False)).splitlines():
-        sc, _, rest = line.partition("\t")
-        key, _, val = rest.partition(" ")
+    for sc, key, val in config_list():
+        if scope and sc != scope.lstrip("-") or not re.match(MAP_REGEX, key):
+            continue
+        val = val or ""
         url, _, var = key[len("assetsync."):].rpartition(".")
         if var == "localpath":
             paths.append((sc, key, url, val))
@@ -960,9 +1011,9 @@ def mapping_text(m):
     return f"{m.folder}" + (f" ({', '.join(opts)})" if opts else "")
 
 
-def mappings_for(url, scope=None, cwd=None):
+def mappings_for(url, scope=None):
     """local_mappings() for this URL only."""
-    return [m for m in local_mappings(scope, cwd) if norm_url(m.url) == norm_url(url)]
+    return [m for m in local_mappings(scope) if norm_url(m.url) == norm_url(url)]
 
 
 def parse_url(url):
@@ -1202,8 +1253,7 @@ def cache_limits():
     (default CACHE_MAX_AGE) and assetsync.cacheMaxSize (default none);
     None = no limit ('0' or 'off')."""
     off = ("0", "off", "false", "no", "never")
-    age, size = (out(git(["config", f"assetsync.{key}"], check=False)).strip()
-                 for key in ("cacheMaxAge", "cacheMaxSize"))
+    age, size = config_get("assetsync.cacheMaxAge"), config_get("assetsync.cacheMaxSize")
     if not age:
         max_age = CACHE_MAX_AGE
     elif age.lower() in off:
@@ -1771,8 +1821,7 @@ def trust_hash(name, filters, repo):
 
 def trusted_values(repo):
     """['<hash> <name>'] in the repository's own config (never committed)."""
-    p = repo.git(["config", "--local", "--get-all", "assetsync.trusted"], check=False)
-    return out(p).splitlines()
+    return config_values("assetsync.trusted", "local")
 
 
 def is_trusted(repo, name, filters):
@@ -1788,6 +1837,7 @@ def set_trust(repo, name, filters, trust=True):
     repo.git(["config", "--local", "--unset-all", "assetsync.trusted"], check=False)
     for v in values:
         repo.git(["config", "--local", "--add", "assetsync.trusted", v])
+    config_changed()
 
 
 def untrusted(repo, steps, filters):
@@ -2116,21 +2166,28 @@ class Repo:
     modes = None            # see head_modes()
     filemode = None         # see worktree_mode()
     index_all: Any = False  # see index_items()
-    index = None            # see index_path()
-    objects = None          # see scratch()
     notes_limits = None     # see notes_limits()
 
     def __init__(self):
-        p = git(["rev-parse", "--show-toplevel"], check=False)
-        if p.returncode:
+        # one git command for where everything is
+        p = git(["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-path", "objects",
+                 "--git-path", "index"], check=False)
+        lines = p.stdout.decode("utf-8", "replace").splitlines()
+        if p.returncode or len(lines) != 4:
             raise FsError("not inside a Git working tree")
-        self.top = Path(out(p)).resolve()
-        self.gitdir = Path(out(git(["rev-parse", "--absolute-git-dir"])))
+        self.top = Path(lines[0]).resolve()
+        self.gitdir = Path(lines[1])
+        # relative to the current directory, where it ran
+        self.objects, self.index = (Path.cwd() / x for x in lines[2:])
         # shell aliases run in the top-level dir and pass the original
         # subdirectory in GIT_PREFIX
         prefix = os.environ.get("GIT_PREFIX")
         self.base = Path.cwd() / prefix if prefix else Path.cwd()
         self.lf_as_is = set()     # see fix_eol(): files with LF that stay so here
+        self.trees = {}           # see tree_entries(): {tree: its entries}
+        self.known_trees = {}     # see has_tree(): {tree: whether it is here}
+        self.head_objects = {}    # see prefetch_dirs(): {path: head_object()}
+        self.diffs = None         # see prefetch_dirs(): (paths asked, files differing)
         self.now = {}
         self.pointers = {}
         self.missing = set()      # see lfs_pointers()
@@ -2353,9 +2410,6 @@ class Repo:
         if self.scratch_dir:
             yield
             return
-        if self.objects is None:
-            objects = Path(out(self.git(["rev-parse", "--git-path", "objects"])))
-            self.objects = objects if objects.is_absolute() else self.top / objects
         objects = self.objects
         saved = {k: os.environ.get(k) for k in OBJECT_VARS}
         td = tempfile.mkdtemp(prefix="assetsync-objects-")
@@ -2394,9 +2448,6 @@ class Repo:
             self.scratch_dir = td
 
     def index_path(self):
-        if self.index is None:
-            p = Path(out(self.git(["rev-parse", "--git-path", "index"])))
-            self.index = p if p.is_absolute() else self.top / p
         return self.index
 
     @contextmanager
@@ -2420,15 +2471,59 @@ class Repo:
             return out(self.git(["write-tree"], env=env))
 
     def tree_entries(self, tree):
-        """[(mode, type, id, path)] of all entries below a tree."""
-        p = self.git(["ls-tree", "-r", "-z", tree])
-        result = []
-        for item in p.stdout.decode("utf-8", "replace").split("\0"):
-            if item:
-                info, _, path = item.partition("\t")
-                mode, kind, oid = info.split(" ")
-                result.append((mode, kind, oid, path))
-        return result
+        """[(mode, type, id, path)] of all entries below a tree (each tree
+        listed once: objects don't change)."""
+        if tree not in self.trees:
+            p = self.git(["ls-tree", "-r", "-z", tree])
+            result = []
+            for item in p.stdout.decode("utf-8", "replace").split("\0"):
+                if item:
+                    info, _, path = item.partition("\t")
+                    mode, kind, oid = info.split(" ")
+                    result.append((mode, kind, oid, path))
+            self.trees[tree] = result
+        return self.trees[tree]
+
+    def prefetch_dirs(self, entries):
+        """For commands that look at many directory entries {path: base
+        tree}: whether their base trees are here, what HEAD has at their
+        paths, and which of their files differ from HEAD - with a few git
+        commands for all instead of some per entry (has_tree(),
+        head_object() and changed_files() then use them)."""
+        rels = [r for r in entries if "\n" not in r]
+        if not rels:
+            return
+        asked = [b for b in dict.fromkeys(entries[r] for r in rels) if b] + \
+            [f"HEAD:{r}" for r in rels]
+        p = self.git(["cat-file", "--batch-check=%(objecttype) %(objectname)"], check=False,
+                     data="".join(f"{a}\n" for a in asked).encode("utf-8"))
+        answers = p.stdout.decode("utf-8", "replace").splitlines()
+        if p.returncode or len(answers) != len(asked):
+            return
+        for a, line in zip(asked, answers):
+            kind, _, oid = line.partition(" ")
+            found = not line.endswith(" missing")
+            if a.startswith("HEAD:"):
+                self.head_objects[a[5:]] = (kind, oid) if found else None
+            else:
+                self.known_trees[a] = found and kind == "tree"
+        changed = set()
+        for i in range(0, len(rels), 100):
+            p = self.git(["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"]
+                         + [lit(r) for r in rels[i:i + 100]], check=False)
+            if p.returncode:
+                return
+            changed.update(p.stdout.decode("utf-8", "replace").split("\0"))
+        self.diffs = (set(rels), changed - {""})
+
+    def changed_files(self, rel):
+        """Paths below rel whose working tree file differs from HEAD (tracked
+        files)."""
+        if self.diffs and rel in self.diffs[0]:
+            return {c for c in self.diffs[1] if c.startswith(rel + "/")}
+        p = self.git(["diff", "--name-only", "--no-renames", "-z", "HEAD", "--", lit(rel)],
+                     check=False)
+        return set(p.stdout.decode("utf-8", "replace").split("\0")) - {""}
 
     def content_id(self, oid, rel):
         """Blob id of the actual content (differs from oid for an LFS pointer)."""
@@ -2481,8 +2576,7 @@ class Repo:
         """The mode git add would give the working tree file rel: its
         executable bit, or with core.filemode=false (Windows) the index's."""
         if self.filemode is None:
-            self.filemode = out(self.git(["config", "--type=bool", "core.filemode"],
-                                         check=False)) != "false"
+            self.filemode = config_bool("core.filemode", True)
         if self.filemode:
             return "100755" if os.stat(self.top / rel).st_mode & 0o100 else "100644"
         items = self.index_items(rel)
@@ -2516,6 +2610,8 @@ class Repo:
 
     def head_object(self, rel):
         """(type, id) of what HEAD has at rel: ('blob' | 'tree', id), or None."""
+        if rel in self.head_objects:
+            return self.head_objects[rel]
         p = self.git(["rev-parse", "--verify", "-q", f"HEAD:{rel}"], check=False)
         if p.returncode:
             return None
@@ -2523,12 +2619,16 @@ class Repo:
         return out(self.git(["cat-file", "-t", oid])), oid
 
     def has_tree(self, oid):
-        return self.git(["cat-file", "-e", f"{oid}^{{tree}}"], check=False).returncode == 0
+        if oid not in self.known_trees:
+            self.known_trees[oid] = self.git(["cat-file", "-e", f"{oid}^{{tree}}"],
+                                             check=False).returncode == 0
+        return self.known_trees[oid]
 
     def keep_tree(self, tree):
         """Keep the base tree of a directory entry in this clone, safe from
         `git gc`: refs/assetsync/base/<tree> (never pushed)."""
         self.git(["update-ref", f"refs/assetsync/base/{tree}", tree])
+        self.known_trees[tree] = True
 
     def tree_names(self, tree):
         """Paths of the files below a tree."""
@@ -2647,9 +2747,12 @@ def origin_text(entry):
 
 
 def prefetch_files(repo, entries):
-    """repo.prefetch() for the file entries among these."""
+    """repo.prefetch() for the file entries among these, prefetch_dirs() for
+    the directory entries."""
     repo.prefetch({e.rel: e.blob for e in entries
                    if e.kind == "file" and not path_problem(e.rel)})
+    repo.prefetch_dirs({e.rel: e.blob for e in entries
+                        if e.kind == "dir" and not path_problem(e.rel)})
 
 
 def path_problem(rel):
@@ -3147,20 +3250,19 @@ def matches_base(repo, st, oid):
         return base_unavailable(st, e)
 
 
-def tree_matches_base(repo, st, tree):
-    """matches_base() for the tree of a directory entry: the same files with
-    the same modes, and each file that differs from its base blob is that
-    blob re-stored with the current .gitattributes - checked only for the
-    files that differ (re-storing means reading the whole content, through
-    the LFS filters too), all at once (stored_now)."""
+def items_match_base(repo, st, items):
+    """matches_base() for the files of a directory entry [(mode, id, path in
+    the directory)]: the same files with the same modes as its base tree,
+    and each file that differs from its base blob is that blob re-stored
+    with the current .gitattributes - checked only for the files that differ
+    (re-storing means reading the whole content, through the LFS filters
+    too), all at once (stored_now)."""
     entry = st.entry
     if not entry.blob:
         return False
-    if tree == entry.blob:
-        return True
     try:
         base = {p: (m, o) for m, k, o, p in repo.tree_entries(entry.blob) if k == "blob"}
-        now = {p: (m, o) for m, k, o, p in repo.tree_entries(tree) if k == "blob"}
+        now = {p: (m, o) for m, o, p in items}
         if base.keys() != now.keys() or any(base[p][0] != now[p][0] for p in base):
             return False
         differ = [path for path, (_, oid) in now.items() if oid != base[path][1]]
@@ -3251,28 +3353,22 @@ def local_state_dir(repo, st):
         return
     known = bool(entry.blob)
     obj = repo.head_object(entry.rel)
-    head = None
+    head = []                 # the committed files of the release [(mode, id, path in it)]
     if obj and obj[0] == "tree":
-        items = [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(obj[1])
-                 if k == "blob"]
-        if any(p in paths for _, _, p in items):
-            head = release_tree(repo, entry.rel, items, paths)
-    st.head_blob = head
+        head = [(m, o, p) for m, k, o, p in repo.tree_entries(obj[1])
+                if k == "blob" and f"{entry.rel}/{p}" in paths]
+    st.head_blob = obj[1] if head else None
     if obj and obj[0] != "tree":
         st.committed = "adapted"             # committed as a file
     elif head and known:
-        st.committed = "unmodified" if tree_matches_base(repo, st, head) else "adapted"
+        st.committed = "unmodified" if items_match_base(repo, st, head) else "adapted"
     files = [p for p in paths if (repo.top / p).is_file()]
     if not files:
         st.worktree = "deleted" if head else "missing"
     elif not head:
         st.worktree = "added"
-    else:
-        p = repo.git(["diff", "--name-only", "--no-renames", "-z", "HEAD", "--",
-                      lit(entry.rel)], check=False)
-        changed = p.stdout.decode("utf-8", "replace").split("\0")
-        if any(c in paths for c in changed):
-            st.worktree = "modified"
+    elif repo.changed_files(entry.rel) & paths:
+        st.worktree = "modified"
     if not files:
         st.local = "missing"
     elif not known:
@@ -3280,8 +3376,8 @@ def local_state_dir(repo, st):
     elif st.worktree == "clean":
         st.local = "clean" if st.committed == "unmodified" else "modified"
     else:
-        now = release_tree(repo, entry.rel, repo.worktree_items(entry.rel, paths), paths)
-        st.local = "clean" if tree_matches_base(repo, st, now) else "modified"
+        now = [(m, o, p[len(entry.rel) + 1:]) for m, o, p in repo.worktree_items(entry.rel, paths)]
+        st.local = "clean" if items_match_base(repo, st, now) else "modified"
 
 
 def evaluate(ctx, repo, entry):
@@ -3440,7 +3536,7 @@ def print_short(repo, sts):
 
 def print_long(ctx, repo, sts, verbose):
     """Sections like `git status`."""
-    hints = out(repo.git(["config", "--type=bool", "advice.statusHints"], check=False)) != "false"
+    hints = config_bool("advice.statusHints", True)
 
     def section(title, hint_lines, rows, style):
         if not rows:
@@ -3584,7 +3680,7 @@ def cmd_map(args, repo):
     if args.sort and not args.dir:
         raise FsError("--sort goes with the folder: source map URL|SOURCE DIR --sort name")
     if not args.dir and not args.unset:      # listing: all scopes visible here
-        print_mappings(local_mappings(cwd=top), url)
+        print_mappings(local_mappings(), url)
         return EXIT_OK
     if not url:
         raise FsError("--unset needs the source (URL or name) of the mapping to remove")
@@ -3595,7 +3691,7 @@ def cmd_map(args, repo):
     else:
         raise FsError("not inside a Git repository; use --global for a global mapping")
     name = scope[2:]
-    matching = [m.key for m in mappings_for(url, scope, cwd=top)]
+    matching = [m.key for m in mappings_for(url, scope)]
 
     def remove():
         for k in matching:
@@ -3603,13 +3699,14 @@ def cmd_map(args, repo):
             for var in MAP_VARS[1:]:
                 git(["config", scope, "--unset-all", k[:-len("localpath")] + var], cwd=top,
                     check=False)
+        config_changed()
     if args.unset:
         if not matching:
             print(f"no {name} mapping for {url}")
             return EXIT_OK
         remove()
         print(f"removed {name} mapping for {url}")
-        rest = mappings_for(url, cwd=top)
+        rest = mappings_for(url)
         if rest:
             print(f"now using [{rest[-1].scope}] {mapping_text(rest[-1])}")
         return EXIT_OK
@@ -3625,6 +3722,7 @@ def cmd_map(args, repo):
         git(["config", scope, f"assetsync.{url}.pattern", args.pattern], cwd=top)
     if args.sort == "name":
         git(["config", scope, f"assetsync.{url}.sort", "name"], cwd=top)
+    config_changed()
     m = Mapping(name, "", url, d, args.flat, args.pattern, args.sort == "name")
     print(f"{paint(f'[{name}]', 'cyan')} {url} -> {mapping_text(m)}")
     folder = LocalFolder(d, url, args.flat, args.pattern)
@@ -3637,7 +3735,7 @@ def cmd_map(args, repo):
         warn(f"{d} has no release folders{only} yet (one subdirectory per release, named like its "
              "tag, with the assets; or use --flat)")
     if scope == "--global" and repo:
-        own = mappings_for(url, "--local", cwd=top)
+        own = mappings_for(url, "--local")
         if own:
             warn(f"this repository has its own mapping ({own[-1].folder}), which takes precedence")
     return EXIT_OK
@@ -3764,7 +3862,7 @@ def cmd_hook(ctx, repo, args):
     hook_reminders([evaluate(ctx, repo, e) for e in entries])
     if args.name != "pre-push":
         return EXIT_OK
-    mode = out(repo.git(["config", "assetsync.pushCheck"], check=False)).lower() or "warn"
+    mode = config_get("assetsync.pushCheck").lower() or "warn"
     if mode not in ("warn", "error", "off"):
         warn(f"assetsync.pushCheck: unknown value '{mode}', using 'warn'")
         mode = "warn"
@@ -3807,7 +3905,7 @@ def notes_limits(repo):
     if repo.notes_limits is None:     # once per run
         result = []
         for key, default in (("notesLines", NOTES_LINES), ("notesTotalLines", NOTES_TOTAL_LINES)):
-            v = out(repo.git(["config", f"assetsync.{key}"], check=False)).strip()
+            v = config_get(f"assetsync.{key}")
             if v and not v.isdigit():
                 raise FsError(f"assetsync.{key}: '{v}' is not a number of lines")
             result.append(int(v) if v else default)
@@ -4039,7 +4137,7 @@ def difftool_prompting(repo, args):
         return True
     if args.no_prompt or args.paths:
         return False
-    return out(repo.git(["config", "--type=bool", "difftool.prompt"], check=False)) != "false"
+    return config_bool("difftool.prompt", True)
 
 
 def difftool_name(repo, extra):
@@ -4049,7 +4147,7 @@ def difftool_name(repo, extra):
         if a in ("-t", "--tool") and i + 1 < len(extra):
             return extra[i + 1]
     for key in ("diff.tool", "merge.tool"):
-        name = out(repo.git(["config", key], check=False))
+        name = config_get(key)
         if name:
             return name
     return "difftool"
@@ -5006,7 +5104,7 @@ def verify_compare(repo, entry, release, items, keeps):
         return True, f"verified ({release.tag})"
     if keeps:
         return False, f"differs from what {release.tag} gives now"
-    if tree_matches_base(repo, st, new):
+    if items_match_base(repo, st, rel_items):
         return True, f"verified ({release.tag})"
     p = repo.git(["diff-tree", "-r", "--no-renames", "--name-status", entry.blob, new])
     changes = [f"\t{line}" for line in out(p).splitlines()]
@@ -5645,7 +5743,7 @@ def cmd_trust(ctx, repo, args):
 def hook_dir(repo, action=None):
     """(directory of the hooks, set by core.hooksPath); a warning for that
     with action (e.g. 'installing into')."""
-    hp = out(repo.git(["config", "core.hooksPath"], check=False))
+    hp = config_get("core.hooksPath")
     if hp:
         hookdir = Path(os.path.expanduser(hp))
         if not hookdir.is_absolute():
@@ -6245,12 +6343,12 @@ def run(argv):
             repo = Repo()
         except FsError:
             repo = None
-        setup_colors(args.color, repo.top if repo else None)
+        setup_colors(args.color)
         if args.cmd == "cache":               # also outside a repository
             return cmd_cache(args)
         if args.cmd == "source" and args.action == "map":   # --global: also outside one
             return cmd_map(args, repo)
-        MAPPINGS.update((norm_url(m.url), m) for m in local_mappings(cwd=repo.top if repo else None))
+        MAPPINGS.update((norm_url(m.url), m) for m in local_mappings())
         if args.cmd == "source" and args.action == "releases":   # also outside a repository
             return cmd_releases(Context(args), repo, args)
         if repo is None:
