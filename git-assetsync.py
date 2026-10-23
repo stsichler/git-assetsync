@@ -378,7 +378,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlparse
 from urllib.request import urlopen
 
-__version__ = "0.19.3"
+__version__ = "0.19.4"
 REGISTRY = ".git-assetsync"
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
 EXIT_PIPE = 141           # output into a closed pipe: like a program ended by SIGPIPE, as git
