@@ -2901,26 +2901,26 @@ git commit -qam comments
 changed() { git diff -U0 HEAD -- .git-assetsync | grep -E '^[-+][^-+]' | sed 's/^\([-+]\)[[:space:]]*/\1/' | oneline; }
 comments() { grep -cE '^# --- group A ---$|; the a file$|; pinned for X$|^# b: keep this comment$|^	# then strip$|^# f2: headers only$|# f2 header note$|^# trailing note$' .git-assetsync; }
 quiet asd set a.txt --release 'v*'
-check "registry: set changes only that line (written anew, as git config does)" \
-  "$(changed)" "-release   = v1   ; pinned for X +release = v* "
+check "registry: set changes only the value - indent, spacing, comment stay" \
+  "$(changed)" "-release   = v1   ; pinned for X +release   = v*   ; pinned for X "
 git commit -qm set
 printf 'c1 v2\n' > "$F/cm1.txt"; release acme/cm v2 17 "$F/cm1.txt" "$F/cm2.txt"
 quiet asd pull a.txt
 check "registry: pull changes only its keys' lines" "$(changed | tr ' ' '\n' | grep -E '^[-+]' | oneline)$(comments)" \
-  "-synced -digest -blob +synced +digest +blob 7"
+  "-synced -digest -blob +synced +digest +blob 8"
 git commit -qm pull
 line=$(grep -n '^\[filter "f1"\]' .git-assetsync | cut -d: -f1)
 quiet asd filter set f1 --extract --strip 2 --exclude '*.md'
 check "registry: filter set replaces the steps where they are" \
   "$(grep -n '^\[filter "f1"\]' .git-assetsync | cut -d: -f1) $(git config -f .git-assetsync --get-all filter.f1.step | oneline)$(comments)" \
-  "$line extract strip 2 exclude '*.md' 7"
+  "$line extract strip 2 exclude '*.md' 8"
 check "... the steps after its first, its comments after them" \
   "$(sed -n "$((line + 1)),$((line + 4))p" .git-assetsync | sed 's/^[[:space:]]*//' | oneline)" \
   "step = extract step = strip 2 step = exclude '*.md' # then strip "
 git commit -qm "filter set"
 quiet asd filter rename f2 g2
-check "registry: a renamed section's header: its comment in a line of its own" "$(changed)" \
-  '-[filter "f2"]  # f2 header note +[filter "g2"] +# f2 header note '
+check "registry: a renamed section keeps its header's comment" "$(changed)" \
+  '-[filter "f2"]  # f2 header note +[filter "g2"]  # f2 header note '
 git commit -qm rename
 quiet asd mv b.txt c.txt
 check "registry: mv - the comment above stays above" \

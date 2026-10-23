@@ -2879,6 +2879,27 @@ def config_value(value):
     return value
 
 
+def with_value(line, value):
+    """A key line 'KEY = VALUE' with another value: its indentation, spacing
+    and comment at the end stay. None if it has no '='."""
+    m = re.match(r"\s*[A-Za-z][A-Za-z0-9-]*\s*=[ \t]*", line)
+    if not m:
+        return None
+    rest, i, quoted = line[m.end():], 0, False
+    while i < len(rest):          # the old value ends where a comment starts
+        if rest[i] == "\\":
+            i += 2
+            continue
+        if rest[i] == '"':
+            quoted = not quoted
+        elif rest[i] in ";#" and not quoted:
+            break
+        i += 1
+    comment = rest[i:]
+    gap = re.search(r"[ \t]*$", rest[:i]).group(0) if comment else ""
+    return m.group(0) + config_value(value) + gap + comment
+
+
 def edit_config(text, items, ops):
     """(new text, {key: [values]} expected) of applying ops - the arguments
     of `git config -f FILE ...`: KEY VALUE, --unset-all KEY, --add KEY VALUE,
@@ -2888,8 +2909,8 @@ def edit_config(text, items, ops):
     for what it isn't sure to do as git would (the caller then does).
     Only the lines that change are touched: comments, blank lines and the
     layout of the user's stay - a section ends with its last key, what
-    follows (e.g. a comment heading the next one) isn't part of it. A
-    changed key line is written anew (as git config does)."""
+    follows (e.g. a comment heading the next one) isn't part of it; a
+    changed line keeps its indentation, spacing and comment."""
     lines = [ln.rstrip("\r") for ln in text.split("\n")]
     items = {k: list(v) for k, v in items.items()}
 
@@ -2949,9 +2970,9 @@ def edit_config(text, items, ops):
             found = blocks(op[1])
             if not found or blocks(op[2]):
                 raise ValueError("rename")
-            at = found[0][0]       # a comment after it: a line of its own, below
-            comment = CONFIG_HEADER.fullmatch(lines[at]).group(3)
-            lines[at:at + 1] = [header(op[2])] + ([f"\t{comment}"] if comment else [])
+            at = found[0][0]       # indentation and a comment after it stay
+            m = re.fullmatch(r'(\s*)\[[^"]*"(?:[^"\\]|\\.)*"\s*\](.*)', lines[at])
+            lines[at] = (m.group(1) + header(op[2]) + m.group(2)) if m else header(op[2])
             old, new = op[1] + ".", op[2] + "."
             items = {(new + k[len(old):] if k.startswith(old) else k): v for k, v in items.items()}
             continue
@@ -2989,7 +3010,7 @@ def edit_config(text, items, ops):
             if len(idx) > 1:
                 raise ValueError(f"{key} more than once")
             if idx:
-                lines[idx[0]] = f"\t{k} = {config_value(value)}"
+                lines[idx[0]] = with_value(lines[idx[0]], value) or f"\t{k} = {config_value(value)}"
             else:
                 append(name, k, value)
             items[norm] = [value]
