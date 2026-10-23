@@ -893,18 +893,52 @@ def http_download(url, dest, what):
 
 
 class LocalAsset(Asset):
-    """An asset in a local folder: its digest is computed when needed."""
+    """An asset in a local folder: its digest is computed when needed - or
+    taken from local_digest(), as long as the file is unchanged."""
 
     # a property where Asset has a field: fine at runtime, not for type checkers
     @property
     def digest(self):  # pyright: ignore[reportIncompatibleVariableOverride]
         if self._digest is None:
-            self._digest = sha256_file(self.url)[0]
+            self._digest = local_digest(self.url)
         return self._digest
 
     @digest.setter
     def digest(self, value):  # pyright: ignore[reportIncompatibleVariableOverride]
         self._digest = value
+
+
+# a file changed this recently may still change within the same modification
+# time: its digest isn't remembered (like git's "racily clean" entries)
+LOCAL_DIGEST_SETTLED = 3
+
+
+def local_digest(path, fresh=False):
+    """sha256 of a file in a local folder (see map) - remembered in the
+    download cache with its size and modification time, so that status
+    doesn't read big assets again on every call (a network share!); read
+    again when they change, and always with fresh (pull, verify: what is
+    installed is what was read). Never fails for the cache."""
+    st = os.stat(path)
+    stamp = f"{st.st_size} {st.st_mtime_ns} {st.st_ino}"
+    memo = cache_root() / "local" / hashlib.sha256(str(path).encode("utf-8")).hexdigest()
+    if not fresh:
+        try:
+            lines = memo.read_text(encoding="utf-8").split("\n")
+            if lines[0] == stamp and lines[1].startswith("sha256:"):
+                return lines[1]
+        except (OSError, IndexError):
+            pass
+    digest = sha256_file(path)[0]
+    if time.time() - st.st_mtime > LOCAL_DIGEST_SETTLED:
+        try:
+            memo.parent.mkdir(parents=True, exist_ok=True)
+            part = memo.with_name(f"{memo.name}.tmp{os.getpid()}")
+            part.write_text(f"{stamp}\n{digest}\n{path}\n", encoding="utf-8")
+            os.replace(part, memo)
+        except OSError:
+            pass
+    return digest
 
 
 def flat_tag(name):
@@ -926,7 +960,8 @@ class LocalFolder:
     only the matching subdirectories (flat: files) count, so several sources
     can share a folder. A release is dated by its newest file, which makes
     it newer than others - or by_name (--sort name): its name. No notes, prereleases or
-    drafts; nothing is cached."""
+    drafts; nothing is downloaded (only their digests are remembered, see
+    local_digest())."""
 
     def __init__(self, folder, url, flat=False, pattern=None, by_name=False):
         self.dir, self.flat, self.pattern, self.by_name = Path(folder), flat, pattern, by_name
@@ -1197,8 +1232,10 @@ def get_asset(origin, release, asset):
     """(file, digest) of an asset in the download cache, downloaded and
     checked first if it isn't there. Contents are kept by their SHA-256; an
     index maps platform, project, tag and asset to it, for platforms that
-    report no digests (GitLab). Assets in a local folder are not cached."""
-    if isinstance(origin, LocalFolder):
+    report no digests (GitLab). Assets in a local folder are not copied:
+    they are read where they are."""
+    if isinstance(origin, LocalFolder):    # read now: the digest of what is taken
+        asset.digest = local_digest(asset.url, fresh=True)
         return Path(asset.url), asset.digest
     root = cache_root()
     store, index = root / "sha256", root / "index"
@@ -1331,6 +1368,16 @@ def prune_cache(max_age, max_size, dry_run=False, grace=True):
         for f in (root / "sha256").glob(".tmp-*") if (root / "sha256").is_dir() else []:
             try:
                 if now - f.stat().st_mtime > 86400:
+                    f.unlink()
+            except OSError:
+                pass
+        # digests of files in local folders (local_digest()): all with clear,
+        # else those of files no longer there
+        for f in (root / "local").glob("*") if (root / "local").is_dir() else []:
+            try:
+                lines = f.read_text(encoding="utf-8", errors="replace").split("\n")
+                if max_size == 0 or len(lines) < 3 or not Path(lines[2]).is_file() or \
+                        ".tmp" in f.name and now - f.stat().st_mtime > 86400:
                     f.unlink()
             except OSError:
                 pass
@@ -1790,7 +1837,7 @@ def referenced_files(command, repo):
         prefix = next((p for p in ROOT_PREFIXES if w.startswith(p)), None)
         rel = w[len(prefix):] if prefix else ""
         if rel and "{" not in rel and not path_problem(rel) and (repo.top / rel).is_file():
-            found[rel] = repo.worktree_blob(repo.top / rel)
+            found[rel] = repo.script_blob(rel)
     return sorted(found.items())
 
 
@@ -2212,6 +2259,7 @@ class Repo:
         self.base = Path.cwd() / prefix if prefix else Path.cwd()
         self.lf_as_is = set()     # see fix_eol(): files with LF that stay so here
         self.trees = {}           # see tree_entries(): {tree: its entries}
+        self.scripts = {}         # see script_blob()
         self.known_trees = {}     # see has_tree(): {tree: whether it is here}
         self.head_objects = {}    # see prefetch_dirs(): {path: head_object()}
         self.diffs = None         # see prefetch_dirs(): (paths asked, files differing)
@@ -2281,6 +2329,13 @@ class Repo:
         if not path.is_file():
             return None
         return out(self.git(["hash-object", f"--path={rel}", str(path)]))
+
+    def script_blob(self, rel):
+        """worktree_blob() of a script a filter runs - once per run, for all
+        entries using it."""
+        if rel not in self.scripts:
+            self.scripts[rel] = self.worktree_blob(self.top / rel)
+        return self.scripts[rel]
 
     def add_file(self, path, rel):
         """Store a file as `git add` would store it at rel (eol normalization,
@@ -3826,19 +3881,21 @@ def push_check(repo, args):
     pulled from a local folder (map). Entries the remote already has are
     not checked again. Warns on stderr; True if such an entry was found."""
     sent, have = pushed_revs(repo, args)
-    known = set()
     have_blobs = registry_blobs(repo, have)
-    for oid in have_blobs:
-        parsed = registry_blob(repo, oid)
-        if parsed:
-            known |= set(synced_entries(parsed))
     found = {}
     for oid in registry_blobs(repo, sent):
         parsed = None if oid in have_blobs else registry_blob(repo, oid)
         for key, items in (synced_entries(parsed) if parsed else {}).items():
-            if key not in known:
-                lst = found.setdefault(key, [])
-                lst += [i for i in items if i not in lst]
+            lst = found.setdefault(key, [])
+            lst += [i for i in items if i not in lst]
+    # those the remote has: read only as far as needed - usually not at all,
+    # the pushed commits have one of its versions of the file
+    for oid in have_blobs:
+        if not found:
+            break
+        parsed = registry_blob(repo, oid)
+        for key in synced_entries(parsed) if parsed else {}:
+            found.pop(key, None)
     bad = False
     for (url, tag, digest), items in sorted(found.items()):
         what = paint(", ".join(dict.fromkeys(rel for rel, _, _ in items)), "yellow", "err")

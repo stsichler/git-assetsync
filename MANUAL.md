@@ -813,10 +813,14 @@ git assetsync source map acme/tool --unset                # remove it again
   drafts don't exist here, and there are no release notes.
 - The commit message says where it came from: `Release: v1.3-rc1 (from a
   local folder, not published)`.
-- Everything works offline; nothing goes into the [download
-  cache](#download-cache). `status` names the folder, `source releases` lists the
-  folders; `source map … --unset` takes the releases from the platform
-  again.
+- Everything works offline; the assets are read from the folder, not
+  copied into the [download cache](#download-cache). Only their SHA-256
+  is remembered there, with each file's size and modification time, so
+  that `status` doesn't read big assets again on every call (e.g. from a
+  network share); a file that changes is read again, and `pull` and
+  `verify` always read what they take. `status` names the folder, `source
+  releases` lists the folders; `source map … --unset` takes the releases
+  from the platform again.
 - Before pushing, the [push check](#hooks) warns
   about entries whose release isn't published yet.
 
@@ -1559,7 +1563,9 @@ or a second repository with the same asset need no new download:
 `%LOCALAPPDATA%\git-assetsync`; `ASSETSYNC_CACHE` sets another directory.
 Contents are kept by their SHA-256 (`sha256/`), with an index for
 platforms that report no digests (`index/`, GitLab), which also says
-where each file came from. Files unused for 90 days are removed
+where each file came from; `local/` remembers the SHA-256 of assets in
+[local folders](#source-map) (`clear` removes them, `prune` those of
+files no longer there). Files unused for 90 days are removed
 automatically; [`cache`](#cache) shows, lists and cleans it up, and sets
 other limits. Deleting it (or parts of it) by hand does no harm either.
 
@@ -1579,10 +1585,9 @@ unmodified. Requires `git-lfs` for files stored in LFS.
 Files – also those of a directory – are stored as `git add` stores them, so
 `text=auto`, `eol` attributes and `core.autocrlf` apply as for any other
 file: an asset with CRLF line ends is committed normalized in a
-`text=auto` repository. A file entry is written to the working tree as
-`git checkout` would write it (with `core.autocrlf=true`, a text asset gets
-CRLF); the files of a directory are written as the release has them, which
-`git status` sees as unchanged – the next checkout converts them. Changing
+`text=auto` repository. Files are written to the working tree as `git
+checkout` would write them (with `core.autocrlf=true`, a text asset gets
+CRLF) – those of a directory too. Changing
 these settings afterwards doesn't make entries count as modified. To keep
 an asset byte for byte, mark it `-text` (or `binary`) in `.gitattributes`.
 

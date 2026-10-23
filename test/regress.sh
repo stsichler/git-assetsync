@@ -2453,6 +2453,25 @@ OUT=$(ASSETSYNC_GH=false git -c assetsync.pushCheck=error push -q origin main 2>
 check "push check: server not reachable" "$RC $(echo "$OUT" | grep -c 'cannot check whether release v5 is on the server')" "0 1"
 check "map: the local folders untouched" "$(untouched "$L" "$FL" "$SH" "$SN")" ""
 writable "$L" "$FL" "$SH" "$SN"
+# the digest of a local asset is remembered (in the download cache) with
+# its size and modification time: status doesn't read it again until it
+# changes; pull reads what it takes
+cd "$T"
+LD=$T/localdig; mkdir -p "$LD/v1"; printf 'dig\n' > "$LD/v1/d.bin"; touch -t 202610121200 "$LD/v1/d.bin"
+SAVED_CACHE=$ASSETSYNC_CACHE; export ASSETSYNC_CACHE=$T/cache26
+new_repo r26d
+quiet git assetsync source map https://github.com/acme/dig "$LD"
+addc d.bin https://github.com/acme/dig
+check "local digest: remembered" "$(ls "$ASSETSYNC_CACHE/local" | lines) $(ls "$ASSETSYNC_CACHE" | oneline)" "1 local "
+chmod a-r "$LD/v1/d.bin"
+check "local digest: status doesn't read the file again" "$(git assetsync status -s 2>&1)" ""
+chmod a+r "$LD/v1/d.bin"
+printf 'dig, rebuilt\n' > "$LD/v1/d.bin"; touch -t 202610121300 "$LD/v1/d.bin"
+check "local digest: a changed file is read again" "$(st)" "P"
+quiet git assetsync pull d.bin
+check "... pull takes it" "$(cat d.bin) $(reg file.d.bin.digest)" "dig, rebuilt sha256:$(sha "$LD/v1/d.bin")"
+check "local digest: cache clear removes them" "$(git assetsync cache clear >/dev/null; ls "$ASSETSYNC_CACHE/local" | lines)" "0"
+export ASSETSYNC_CACHE=$SAVED_CACHE
 
 
 # =============================================================================
