@@ -2257,7 +2257,6 @@ class Repo:
     now = {}                # see items_match_base(): {(blob, path): stored_now()}
     pointers = {}           # see lfs_pointers()
     modes = None            # see head_modes()
-    filemode = None         # see worktree_mode()
     index_all: Any = False  # see index_items()
     notes_limits = None     # see notes_limits()
 
@@ -2664,16 +2663,6 @@ class Repo:
                 mode, oid, _ = info.split(" ")
                 items.append((mode, oid, path))
         return items
-
-    def worktree_mode(self, rel):
-        """The mode git add would give the working tree file rel: its
-        executable bit, or with core.filemode=false (Windows) the index's."""
-        if self.filemode is None:
-            self.filemode = config_bool("core.filemode", True)
-        if self.filemode:
-            return "100755" if os.stat(self.top / rel).st_mode & 0o100 else "100644"
-        items = self.index_items(rel)
-        return items[0][0] if items else "100644"
 
     def worktree_items(self, paths):
         """{path: (mode, id)} of these working tree files as `git add` would
@@ -4108,13 +4097,9 @@ def entry_paths(repo, items):
 
 
 def base_items(repo, entry):
-    """[(mode, id, path)] of the base: what the entry was synced with."""
-    if not entry.blob:
-        return []
-    if entry.is_dir:
-        return [(m, o, f"{entry.rel}/{path}") for m, k, o, path in repo.tree_entries(entry.blob)
-                if k == "blob"]
-    return [(repo.head_mode(entry.rel) or "100644", entry.blob, entry.rel)]
+    """[(mode, id, path)] of the base, to show or write it: base_files(),
+    where no mode is recorded (a [file]) the committed one, else 100644."""
+    return [(m or repo.head_mode(p) or "100644", o, p) for m, o, p in base_files(repo, entry) or []]
 
 
 def diff_items(ctx, repo, reg, args):
@@ -4148,12 +4133,9 @@ def diff_items(ctx, repo, reg, args):
                                           keep)
                 upstream.append((entry, st, files))
                 continue
-            elif entry.is_dir:      # its files, not others'
-                other = [(m, o, p) for p, (m, o)
-                         in repo.worktree_items(base_paths(repo, entry) or set()).items()]
-            else:                   # prefetched; the mode as git add would take it
-                blob = repo.worktree_blob(entry.target)
-                other = [(repo.worktree_mode(entry.rel), blob, entry.rel)] if blob else []
+            # its files (in a directory, not others'), as git add would store them
+            other = [(m, o, p) for p, (m, o)
+                     in repo.worktree_items(base_paths(repo, entry) or set()).items()]
             # files the same on both sides aren't shown: not read (LFS) at all
             base = base_items(repo, entry)
             same = set(base) & set(other)
@@ -4168,13 +4150,6 @@ def diff_items(ctx, repo, reg, args):
             same = set(base) & set(other)
             raw.append((entry, st, [i for i in base if i not in same],
                         [i for i in other if i not in same]))
-    # working files that differ: stored (in scratch()) with one git command for all
-    files = [p for e, _, _, other in raw if not e.is_dir and not args.upstream
-             for _, _, p in other]
-    if files:
-        repo.git(["hash-object", "-w", "--stdin-paths"],
-                 data="".join(f"{p}\n" for p in files).encode("utf-8"))
-        repo.missing.clear()      # stored now
     repo.lfs_pointers(o for _, _, b, other in raw for _, o, _ in b + other)   # all at once
     groups = []
     for entry, st, base, other in raw:
@@ -5146,27 +5121,26 @@ def verify_compare(repo, entry, release, items, keeps):
     recorded base. keeps: a directory's base that isn't here, kept if it
     is what they give."""
     st = State(entry=entry, rel=entry.rel)
-    if not entry.is_dir:
-        if items_match_base(repo, st, items):
-            return True, f"verified ({release.tag})"
-        return False, f"differs from what {release.tag} gives now"
-    rel_items = [(m, o, path[len(entry.rel) + 1:]) for m, o, path in items]
-    new = repo.make_tree(rel_items)
-    if new == entry.blob:
-        if keeps:             # now it is here: kept in the repository
-            try:
-                with repo.real():
-                    repo.keep_tree(repo.make_tree(rel_items))
-            except FsError:
-                pass
-        return True, f"verified ({release.tag})"
-    if keeps:
-        return False, f"differs from what {release.tag} gives now"
+    verified, differs = (True, f"verified ({release.tag})"), f"differs from what {release.tag} gives now"
+    if keeps:                 # exactly the recorded tree: now it is here, kept
+        rel_items = [(m, o, path[len(entry.rel) + 1:]) for m, o, path in items]
+        if repo.make_tree(rel_items) != entry.blob:
+            return False, differs
+        try:
+            with repo.real():
+                repo.keep_tree(repo.make_tree(rel_items))
+        except FsError:
+            pass
+        return verified
     if items_match_base(repo, st, items):
-        return True, f"verified ({release.tag})"
-    p = repo.git(["diff-tree", "-r", "--no-renames", "--name-status", entry.blob, new])
-    changes = [f"\t{line}" for line in out(p).splitlines()]
-    return False, f"differs from what {release.tag} gives now:\n" + "\n".join(changes)
+        return verified
+    if not entry.is_dir:
+        return False, differs
+    base = {p: (m, o) for m, o, p in base_files(repo, entry) or []}
+    new = {p: (m, o) for m, o, p in items}
+    changes = [f"\t{'A' if p not in base else 'D' if p not in new else 'M'}\t{p[len(entry.rel) + 1:]}"
+               for p in sorted(set(base) | set(new)) if base.get(p) != new.get(p)]
+    return False, f"{differs}:\n" + "\n".join(changes)
 
 
 def cmd_verify(ctx, repo, args):
@@ -5341,38 +5315,36 @@ def write_files(repo, items):
 def restore_plan(repo, entry, staged, worktree):
     """What restore would do for an entry: (base items, {side: what it has
     now}, the blobs to look at more closely - those differing)."""
-    base = base_items(repo, entry)
+    base = base_files(repo, entry) or []
     paths = {path for _, _, path in base}
     sides = {}
     if staged:
         sides["index"] = [i for i in repo.index_items(entry.rel) if i[2] in paths]
-    if worktree:
-        if entry.is_dir:          # its files, not those of others there
-            sides["worktree"] = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
-        else:
-            blob = repo.worktree_blob(entry.target)
-            sides["worktree"] = [("", blob, entry.rel)] if blob else []
+    if worktree:              # its files - in a directory not those of others there
+        sides["worktree"] = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
     have = {side: {p: (m, o) for m, o, p in items} for side, items in sides.items()}
     check = {(oid, path) for mode, oid, path in base for side in sides
-             if not restore_same(entry, (mode, oid), have[side].get(path, (None, None)))}
+             if not restore_same((mode, oid), have[side].get(path, (None, None)))}
     return base, have, check
 
 
-def restore_same(entry, item, current):
-    return item[1] == current[1] and (item[0] == current[0] or not entry.is_dir)
+def restore_same(item, current):
+    """Is current (mode, id) the item (mode, id) - its mode only if known?"""
+    return item[1] == current[1] and item[0] in (None, current[0])
 
 
-def restore_fixes(entry, plan, now):
+def restore_fixes(repo, plan, now):
     """{side: [(mode, id, path)]} to restore: the files that are neither their
-    base blob nor that stored as it would be now (now: stored_now())."""
+    base blob nor that stored as it would be now (now: stored_now()); a
+    mode not recorded (a [file]): the committed one, else 100644."""
     base, have, _ = plan
     fixes = {}
     for side in have:
-        fix = [(mode, now[(oid, path)], path) for mode, oid, path in base
+        fix = [(mode or repo.head_mode(path) or "100644", now[(oid, path)], path)
+               for mode, oid, path in base
                if (oid, path) in now
-               and not restore_same(entry, (mode, oid), have[side].get(path, (None, None)))
-               and not restore_same(entry, (mode, now[(oid, path)]),
-                                    have[side].get(path, (None, None)))]
+               and not restore_same((mode, oid), have[side].get(path, (None, None)))
+               and not restore_same((mode, now[(oid, path)]), have[side].get(path, (None, None)))]
         if fix:
             fixes[side] = fix
     return fixes
@@ -5419,7 +5391,7 @@ def cmd_restore(ctx, repo, args):
                       f"again with 'git assetsync pull --overwrite {path_arg(repo, entry.shown)}'")
                 plans.remove((entry, plan))
                 rc = EXIT_ERROR
-    fixes = [(entry, restore_fixes(entry, plan, now)) for entry, plan in plans]
+    fixes = [(entry, restore_fixes(repo, plan, now)) for entry, plan in plans]
     index = [i for _, f in fixes for i in f.get("index", [])]
     written = [i for _, f in fixes for i in f.get("worktree", [])]
     save_discarded(repo, [path for _, _, path in written], [path for _, _, path in index])
