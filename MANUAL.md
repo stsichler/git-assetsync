@@ -1150,7 +1150,7 @@ has the name of its step:
 | `--strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive); files with no more than `N` directories are left out, as `tar` does |
 | `--include PATTERN…` | only the files matching any of the patterns |
 | `--exclude PATTERN…` | not the files matching any of the patterns |
-| `--move PATTERN TARGET` | move the matching files to `TARGET`, see below |
+| `--move PATTERN TARGET` | move what matches – files, or directories with all below them – to `TARGET`, see below |
 | `--copy PATTERN TARGET` | the same, but the files also stay where they are |
 | `--apply PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
 | `--changelog PATTERN…` | reads only: the text of the matching files goes with the release notes into the commit message of `pull`, see [Changelogs from the assets](#changelogs-from-the-assets) |
@@ -1338,11 +1338,14 @@ Changelog (CHANGELOG.txt):
 Two steps run commands, to convert files with tools of your own:
 
 - **`convert PATTERN TARGET COMMAND`** runs `COMMAND` once for each file
-  matching `PATTERN`: `{in}` is the file, `{out}` where the command writes
-  the result. The result replaces the file, under
+  matching `PATTERN` (also each one below a matching directory): `{in}` is
+  the file, `{out}` where the command writes the result. The result
+  replaces the file, under
   the path `TARGET` – with the placeholders of `move` (`{path}`, `{dir}`,
-  `{parent}`, `{name}`, `{stem}`, `{ext}`), e.g. `'gen/{stem}.c'`. With a
-  trailing `/`, `TARGET` is a directory and `{out}` an empty directory: all
+  `{parent}`, `{name}`, `{stem}`, `{ext}`) of that file, e.g.
+  `'gen/{stem}.c'`. Unlike for `move`, a trailing `/` doesn't mean "into,
+  under its name" here (a converted file named like its input would be of
+  little use): `TARGET` is a directory and `{out}` an empty directory: all
   files the command writes there go into it (e.g. a `.c` and a `.h`). To
   keep the original as well, `--copy` it first.
 - **`run PATTERN COMMAND`** runs `COMMAND` once for all files matching
