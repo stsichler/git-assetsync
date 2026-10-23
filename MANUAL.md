@@ -1659,7 +1659,7 @@ jobs:
 ```
 
 This uses the latest release. To pin a version, download
-`https://github.com/stsichler/git-assetsync/releases/download/v0.20.0/git-assetsync.py`
+`https://github.com/stsichler/git-assetsync/releases/download/v0.20.1/git-assetsync.py`
 instead. `gh` is preinstalled on GitHub's runners; `GH_TOKEN` logs it in. For
 sources in other private repositories, use a token with read access to
 them. For GitLab sources, install `glab` in the job (and give
