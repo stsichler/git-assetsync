@@ -191,7 +191,10 @@ A new release with a file where one of yours is – the same name, also in
 another case (`README.md` and `README.MD` are one file on Windows and
 macOS), or a file of yours where the release has a directory – is
 refused, by `add` and by `pull`, naming the files in the way. With
-`--overwrite` the release's files replace them and become the entry's.
+`--overwrite` the release's files replace them and become the entry's. A
+file of yours that is just what the release gives (the same path and
+content) is not in the way: it becomes the entry's without `--overwrite`,
+as for a file entry (`add` onto an existing file of the same content).
 
 Which files are the release's comes from the recorded `tree`: what the
 release gave, after the filter. When files of yours are committed in the
@@ -565,7 +568,7 @@ commit --no-edit` takes it as it is).
 | `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
 | `--filter NAME` | the named [filter](#filters) to apply to the assets |
 | `--force` | replace an existing entry for `PATH` (its file or directory too, unless it has local modifications) |
-| `--overwrite` | replace an existing file that differs, or – in a directory – files in the way of the release's; with `--force` also local modifications of the entry replaced |
+| `--overwrite` | replace files in the way of the release's that differ from them (an existing file; in a directory, files of yours); with `--force` also local modifications of the entry replaced |
 | `-n`, `--dry-run` | only show which release, assets and filter would be taken; nothing is downloaded |
 
 An existing file at `PATH` is only replaced with `--overwrite`, unless it

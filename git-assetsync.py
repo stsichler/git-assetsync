@@ -49,7 +49,7 @@ platform. It must stay exactly what its release gives: pull refuses local
 modifications; restore brings back what the release gave, pull --overwrite
 updates anyway. In a directory only the files the release gave count:
 files of others there are left alone (one in the way of a new file of the
-release only goes with --overwrite).
+release only goes with --overwrite - unless it is that file).
 
 Filter steps (no code is run): extract [PATTERN...] (unpack the matching
 files, default all, which must be archives: zip, tar, tar.gz/bz2/xz,
@@ -4345,28 +4345,6 @@ def save_discarded(repo, worktree, index=(), known=None):
         print(f"{paint('discarded:', 'yellow')} {path}{how} (git show {oid[:12]} to get it back)")
 
 
-def install_file(repo, rel, target, files, overwrite=False):
-    """Store the one file of files as `git add` would at rel, write it to
-    the working tree as `git checkout` would and stage it. A file already
-    there that differs is only replaced with overwrite. Returns its blob."""
-    (name, (src, executable)), = files.items()
-    blob = repo.add_file(src, rel)
-    cur = repo.worktree_blob(target)
-    if cur and cur != blob and not overwrite:
-        raise FsError(f"'{rel}' exists and differs from {name} - use --overwrite to replace it")
-    if target.is_dir():
-        raise FsError(f"'{rel}' is a directory")
-    save_discarded(repo, [rel] if cur and cur != blob else [], [rel], {rel: cur} if cur else None)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    repo.forget(rel)                        # changes now
-    target.write_bytes(repo.checkout_form(blob, rel))
-    set_executable(target, executable)
-    repo.git(["add", "-f", "--", lit(rel)])     # -f: also where ignored, like [dir]
-    # also -x: with core.filemode=false (Windows) `git add` keeps the old mode
-    repo.git(["update-index", f"--chmod={'+' if executable else '-'}x", "--", rel])
-    return blob
-
-
 def set_executable(path, executable):
     mode = path.stat().st_mode
     os.chmod(path, mode | 0o111 if executable else mode & ~0o111)
@@ -4407,55 +4385,89 @@ def in_the_way(repo, rel, new, base):
     return sorted(found)
 
 
-def install_dir(repo, rel, target, files, base, overwrite=False):
-    """Make the files of the directory entry rel exactly files, next to the
-    files of others there: of the files it had (base: their paths in the
-    repository), those the release no longer gives are deleted, the others
-    replaced; files of others are left alone - one in the way of a new file
-    only goes with overwrite. Stages only the entry's files and returns
-    their tree."""
-    if target.exists() and not target.is_dir():
-        raise FsError(f"'{rel}' is a file")
-    new = {f"{rel}/{name}": v for name, v in files.items()}
-    others = in_the_way(repo, rel, new, base)
-    if others and not overwrite:
-        shown = ", ".join(others[:3]) + (f" and {len(others) - 3} more" if len(others) > 3 else "")
-        raise FsError(f"'{rel}/': files of others in the way of the release: {shown} - use "
-                      "--overwrite to replace them")
-    gone = sorted(set(base) - set(new))
-    theirs = [p for o in others for p in ([o] if (repo.top / o).is_file() else repo.dir_files(o))]
-    save_discarded(repo, theirs + gone + [p for p in new if p in base], theirs + gone + list(new))
-    for path in others:
+def install_entries(repo, jobs):
+    """Install what entries get, all at once - jobs [(entry, its files {path
+    in the repository: (file, executable)}, base: the paths of the files it
+    has from its release now, overwrite)]: of the files it had, those the
+    release no longer gives are deleted, the others replaced. Files of
+    others in the way of a new one (also where a directory is needed) only
+    go with overwrite - unless one is what the release gives: then it is
+    the entry's. Stored as git add would (one add_files()), staged (one
+    update-index) and written as git checkout writes them (one
+    checkout-index): also files the repository ignores (e.g. *.lib) - the
+    entry has them. Returns {entry path: its blob (a [file]) or tree, or
+    the FsError for it}; files of others there are left alone."""
+    result, ready = {}, []
+    for entry, files, base, overwrite in jobs:
+        dirs = [p for p in files if (repo.top / p).is_dir()]
+        if entry.is_dir and entry.target.exists() and not entry.target.is_dir():
+            result[entry.rel] = FsError(f"'{entry.rel}' is a file")
+        elif dirs:
+            result[entry.rel] = FsError(f"'{dirs[0]}' is a directory in the working tree")
+        else:
+            ready.append((entry, files, set(base), overwrite, in_the_way(repo, entry.rel, files, base)))
+    ids = repo.add_files({p: src for _, files, _, _, _ in ready for p, (src, _) in files.items()})
+    # what is there now where new files go (in the way, or the entry's own)
+    there = repo.worktree_items([p for _, files, base, _, others in ready
+                                 for p in files if p in base or p in others])
+    jobs, worktree, index, gone_all, theirs_all = [], [], [], [], []
+    for entry, files, base, overwrite, others in ready:
+        # a file in the way that is what the release gives: the entry's now
+        others = [o for o in others if not (o in files and there.get(o, (0, 0))[1] == ids[o])]
+        if len(others) == 1 and not overwrite:
+            result[entry.rel] = FsError(f"'{others[0]}' is in the way of the release - use "
+                                        "--overwrite to replace it")
+            continue
+        if others and not overwrite:
+            shown = ", ".join(others[:3]) + (f" and {len(others) - 3} more" if len(others) > 3 else "")
+            result[entry.rel] = FsError(f"'{entry.shown}': files of others in the way of the "
+                                        f"release: {shown} - use --overwrite to replace them")
+            continue
+        gone = sorted(base - set(files))
+        theirs = [p for o in others for p in ([o] if (repo.top / o).is_file() else repo.dir_files(o))]
+        worktree += theirs + gone + [p for p in files if p in there and there[p][1] != ids[p]]
+        index += theirs + gone + list(files)
+        gone_all += gone
+        theirs_all += others
+        jobs.append((entry, files))
+    save_discarded(repo, worktree, index, {p: o for p, (_, o) in there.items()})
+    for path in theirs_all:
         full = repo.top / path
         if full.is_dir() and not full.is_symlink():
             shutil.rmtree(full)
         else:
             full.unlink()
-    if others:
+    if theirs_all:
         repo.git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--pathspec-from-file=-",
-                  "--pathspec-file-nul"], data="\0".join(lit(p) for p in others).encode("utf-8"))
-    for path in gone:
+                  "--pathspec-file-nul"], data="\0".join(lit(p) for p in theirs_all).encode("utf-8"))
+    for path in gone_all:
         if (repo.top / path).is_file():
             (repo.top / path).unlink()
-    remove_empty_dirs(target, [repo.top / path for path in gone])
-    if gone:
+    for entry, _ in jobs:
+        if entry.is_dir:
+            remove_empty_dirs(entry.target, [repo.top / p for p in gone_all
+                                             if p.startswith(entry.rel + "/")])
+    if gone_all:
         repo.git(["update-index", "-z", "--force-remove", "--stdin"],
-                 data="\0".join(gone).encode("utf-8"))
-    paths = sorted(new)
-    for path in paths:
-        if (repo.top / path).is_dir():
-            raise FsError(f"'{path}' is a directory in the working tree")
-    # stored as git add would, staged, and written as git checkout writes them
-    # (line endings, filters) - like the file of a [file]; also where the
-    # repository ignores them (e.g. *.lib): the entry has them
-    ids = repo.add_files({path: src for path, (src, _) in new.items()})
-    items = [("100755" if new[p][1] else "100644", ids[p], p) for p in paths]
-    repo.git(["update-index", "-z", "--add", "--index-info"],
-             data="".join(f"{m} {o}\t{p}\0" for m, o, p in items).encode("utf-8"))
-    repo.git(["checkout-index", "-f", "-z", "--stdin"], data="\0".join(paths).encode("utf-8"))
-    tree = release_tree(repo, rel, items, new)
-    repo.keep_tree(tree)
-    return tree
+                 data="\0".join(gone_all).encode("utf-8"))
+    items = sorted((("100755" if v[1] else "100644"), ids[p], p)
+                   for _, files in jobs for p, v in files.items())
+    for _, _, p in items:
+        (repo.top / p).parent.mkdir(parents=True, exist_ok=True)
+        repo.forget(p)                      # changes now
+    if items:
+        repo.git(["update-index", "-z", "--add", "--index-info"],
+                 data="".join(f"{m} {o}\t{p}\0" for m, o, p in items).encode("utf-8"))
+        repo.git(["checkout-index", "-f", "-z", "--stdin"],
+                 data="\0".join(p for _, _, p in items).encode("utf-8"))
+    for entry, files in jobs:
+        if entry.is_dir:
+            tree = release_tree(repo, entry.rel, items, files)
+            repo.keep_tree(tree)
+            result[entry.rel] = tree
+        else:
+            result[entry.rel] = ids[entry.rel]
+    return result
 
 
 def tree_stats(repo, old, new):
@@ -4477,93 +4489,27 @@ def one_file(files, entry_shown, rel):
     return files
 
 
-def install(repo, st, origin, release, assets, steps, filters, overwrite, base=()):
-    """Fetch, filter and install what an entry gets; staged. base: for a
-    directory, the paths of the files it has from its release now. Returns
-    (digest, base, stats)."""
-    entry = st.entry
-    trusted = ensure_trusted(repo, steps, filters)
-    env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
-           "ASSETSYNC_ENTRY": entry.shown}
-    with Work(entry.shown, repo.top, env, trusted) as work:
-        files, digest = entry_files(origin, release, assets, steps, filters, work)
-        st.changelog = work.changelog
-        if entry.is_dir:
-            old = entry.blob if base and repo.has_tree(entry.blob or "") else None
-            tree = install_dir(repo, entry.rel, entry.target, files, base, overwrite)
-            return digest, tree, tree_stats(repo, old, tree)
-        one_file(files, entry.shown, entry.rel)
-        return digest, install_file(repo, entry.rel, entry.target, files, overwrite), None
-
-
-def fetch_file(repo, st, steps, filters, keep):
-    """For a file entry: fetch and filter what it gets - kept (keep: an
-    ExitStack) until install_files() stores and writes it with others.
-    Returns (digest, its name after the filter, (file, executable))."""
-    entry, origin, release = st.entry, st.origin, st.release
-    trusted = ensure_trusted(repo, steps, filters)
-    env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
-           "ASSETSYNC_ENTRY": entry.shown}
-    work = keep.enter_context(Work(entry.shown, repo.top, env, trusted))
-    files, digest = entry_files(origin, release, st.assets, steps, filters, work)
-    st.changelog = work.changelog
-    (name, value), = one_file(files, entry.shown, entry.rel).items()
-    return digest, name, value
-
-
-def install_files(repo, jobs):
-    """install_file() for many file entries at once - jobs: (path, target,
-    name, (file, executable), overwrite). Stored with one git add
-    (add_files()), staged with one update-index and written to the working
-    tree as git checkout would with one checkout-index (which also notes
-    their stat data in the index). Returns {path: its blob, or the FsError
-    for it}."""
-    ids = repo.add_files({rel: src for rel, _, _, (src, _), _ in jobs})
-    result, ok, replaced = {}, [], {}
-    for rel, target, name, (_, executable), overwrite in jobs:
-        cur = repo.worktree_blob(target)
-        if cur and cur != ids[rel] and not overwrite:
-            result[rel] = FsError(f"'{rel}' exists and differs from {name} - use --overwrite "
-                                  "to replace it")
-        elif target.is_dir():
-            result[rel] = FsError(f"'{rel}' is a directory")
-        else:
-            result[rel] = ids[rel]
-            ok.append(("100755" if executable else "100644", ids[rel], rel))
-            if cur and cur != ids[rel]:
-                replaced[rel] = cur
-            target.parent.mkdir(parents=True, exist_ok=True)
-            repo.forget(rel)                        # changes now
-    save_discarded(repo, replaced, [r for _, _, r in ok], replaced)
-    if ok:
-        repo.git(["update-index", "-z", "--add", "--index-info"],
-                 data="".join(f"{m} {o}\t{r}\0" for m, o, r in ok).encode("utf-8"))
-        repo.git(["checkout-index", "-f", "-z", "--stdin"],
-                 data="\0".join(r for _, _, r in ok).encode("utf-8"))
-    return result
-
-
-def pull_done(repo, reg, job, base, stats=None):
-    """The rest of pulling an entry, once its files are installed: its keys,
-    its part of the commit message. Returns (that part, the paths to commit)."""
-    entry, st, discard, between, limits, digest, old = job
-    msg = build_message(st, discard, unchanged=base == entry.blob, stats=stats,
-                        between=between, limits=limits)
+def pull_done(repo, reg, job, base):
+    """The rest of pulling an entry, once its files are installed (base: its
+    new blob or tree): its keys, its part of the commit message. Returns
+    (that part, the paths to commit)."""
+    entry, st = job.entry, job.st
+    stats = tree_stats(repo, job.old, base) if entry.is_dir else None
+    msg = build_message(st, job.discard, unchanged=base == entry.blob, stats=stats,
+                        between=job.between, limits=job.limits)
     entry.set("synced", st.release.tag)
-    entry.set("digest", digest)
+    entry.set("digest", job.digest)
     entry.set("assetid", assets_id(st.assets))
     entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
     entry.set(BASE_KEY[entry.kind], base)
     print(f"{entry.shown}: {paint('updated', 'green')}")
-    if not entry.is_dir:
-        return msg, {entry.rel}
-    # a directory: its files only, not others' staged there
-    return msg, set(old) | {f"{entry.rel}/{n}" for n in repo.tree_names(base)}
+    return msg, set(job.base) | set(job.files)
 
 
-def pull_one(ctx, repo, reg, st, args, keep=None, later=None):
-    """Update one entry (staged, not committed). Returns (its part of the commit
-    message, the paths to commit) - None if there was nothing to do."""
+def pull_one(ctx, repo, reg, st, args, keep):
+    """Prepare updating one entry: fetched and filtered (the files kept until
+    installed with the others: keep, an ExitStack). Returns the job for
+    install_entries() and pull_done() - None if there is nothing to do."""
     entry, rel = st.entry, st.entry.shown
     # a directory: which files are those of its release (its base) - to be
     # replaced or deleted - and are they unmodified? Built again if not here
@@ -4581,6 +4527,8 @@ def pull_one(ctx, repo, reg, st, args, keep=None, later=None):
                 st = evaluate(ctx, repo, entry)
                 if st.error:
                     raise FsError(f"{rel}: {st.error}")
+    elif not entry.is_dir and entry.blob:
+        base = {entry.rel}    # its file: what its release gave
     if not st.pending and not st.modified:
         print(f"{rel}: {paint('up to date', 'green')}")
         return None
@@ -4593,27 +4541,20 @@ def pull_one(ctx, repo, reg, st, args, keep=None, later=None):
                       f"--overwrite {path_arg(repo, rel)}'")
     for w in st.warnings:
         warn(f"{rel}: {w}")
-    discard = st.modified
     if args.dry_run:
-        msg = build_message(st, discard).splitlines()[0][len(COMMIT_PREFIX):]
-        print(f"would: {msg}" + (" - discarding local modifications" if discard else ""))
+        msg = build_message(st, st.modified).splitlines()[0][len(COMMIT_PREFIX):]
+        print(f"would: {msg}" + (" - discarding local modifications" if st.modified else ""))
         return None
-    # before anything changes: the releases in between, and the limits of the notes
-    limits = notes_limits(repo)
-    between = releases_between(st) if entry.synced and st.release.tag != entry.synced \
-        else None
-    if discard:
+    if st.modified:
         warn(f"{rel}: discarding local modifications")
-    # a file: replaces the one it had; a directory: files of others only with --overwrite
-    overwrite = args.overwrite or (bool(entry.blob) and not entry.is_dir)
-    if not entry.is_dir and later is not None:      # installed with the others
-        digest, name, value = fetch_file(repo, st, entry.steps, reg.filters, keep)
-        later.append(((entry, st, discard, between, limits, digest, base),
-                      (entry.rel, entry.target, name, value, overwrite)))
-        return None
-    digest, tree, stats = install(repo, st, st.origin, st.release, st.assets, entry.steps,
-                                  reg.filters, overwrite, base)
-    return pull_done(repo, reg, (entry, st, discard, between, limits, digest, base), tree, stats)
+    # before anything changes: the releases in between, the limits of the
+    # notes, the tree it had (for the statistics)
+    digest, files = filtered_files(repo, reg, entry, st.origin, st.release, st.assets, keep, st)
+    return SimpleNamespace(
+        entry=entry, st=st, discard=st.modified, digest=digest, files=files, base=base,
+        overwrite=args.overwrite, limits=notes_limits(repo),
+        between=releases_between(st) if entry.synced and st.release.tag != entry.synced else None,
+        old=entry.blob if entry.is_dir and base and repo.has_tree(entry.blob or "") else None)
 
 
 def entries_text(entries):
@@ -4664,8 +4605,8 @@ def cmd_pull(ctx, repo, args):
     prefetch_files(repo, entries)     # each pull changes only its own files
     ctx.override = args.release
     rc, done = EXIT_OK, 0
-    pulled, msgs, paths, later, hints = [], [], set(), [], []
-    keep = ExitStack()        # the fetched files of file entries, until installed
+    pulled, msgs, paths, jobs, hints = [], [], set(), [], []
+    keep = ExitStack()        # the fetched files, until installed
     for entry in entries:
         st = evaluate(ctx, repo, entry)
         if st.error:
@@ -4678,26 +4619,25 @@ def cmd_pull(ctx, repo, args):
         if args.verbose:
             print(f"{entry.shown}: {paint(origin_text(entry), 'dim')}", flush=True)
         try:
-            result = pull_one(ctx, repo, reg, st, args, keep, later)
+            job = pull_one(ctx, repo, reg, st, args, keep)
             if args.release and (st.pending or st.modified):
                 hints.append(st)
         except FsError as e:   # report and carry on with the other files
             error(str(e))
             rc = EXIT_ERROR
             continue
-        if result:
-            pulled.append(entry)
-            msgs.append(result[0])
-            paths |= result[1]
-    with keep:                # the file entries, all at once
-        installed = install_files(repo, [job for _, job in later]) if later else {}
-    for job, (rel, *_) in later:
-        if isinstance(installed[rel], FsError):
-            error(str(installed[rel]))
+        if job:
+            jobs.append(job)
+    with keep:                # all at once
+        installed = install_entries(repo, [(j.entry, j.files, j.base, j.overwrite)
+                                           for j in jobs]) if jobs else {}
+    for job in jobs:
+        if isinstance(installed[job.entry.rel], FsError):
+            error(str(installed[job.entry.rel]))
             rc = EXIT_ERROR
             continue
-        msg, done_paths = pull_done(repo, reg, job, installed[rel])
-        pulled.append(job[0])
+        msg, done_paths = pull_done(repo, reg, job, installed[job.entry.rel])
+        pulled.append(job.entry)
         msgs.append(msg)
         paths |= done_paths
     if args.all and not done and rc == EXIT_OK:
@@ -4843,11 +4783,13 @@ def cmd_add(ctx, repo, args):
                           for a in assets), flush=True)
     # what an entry being replaced has from its release may go; anything else (files
     # of others in the way, local modifications) only with --overwrite
-    overwrite, base, old_blob = args.overwrite, (), None
+    base, old_blob = (), None
     if rel in reg.files and Entry(reg, rel).blob:
         old_entry = Entry(reg, rel)
         old_blob = old_entry.blob
-        if is_dir:            # the files it has from its release: replaced or deleted
+        if not is_dir:
+            base = {rel}      # its file: what its release gave
+        else:                 # the files it has from its release: replaced or deleted
             base = base_paths(repo, old_entry)
             if base is None and not args.dry_run:
                 try:
@@ -4864,16 +4806,20 @@ def cmd_add(ctx, repo, args):
             if old.local == "modified":
                 raise FsError(f"'{shown_rel}' has local modifications - use --overwrite to "
                               "discard them")
-            overwrite = not is_dir      # its file: what its release gave
     if args.dry_run:
         print(f"would add {shown_rel} from {name} {release.tag} "
               f"({', '.join(a.name for a in assets)}, {spec_text(spec)}"
               + (f", filter {args.filter}" if args.filter else "") + ")")
         return EXIT_OK
-    st = State(entry=SimpleNamespace(shown=shown_rel, rel=rel, target=target, is_dir=is_dir,
-                                     blob=old_blob), rel=rel)
-    digest, base, stats = install(repo, st, origin, release, assets, steps, reg.filters,
-                                  overwrite, base)
+    new = SimpleNamespace(shown=shown_rel, rel=rel, target=target, is_dir=is_dir,
+                          blob=old_blob, steps=steps)
+    old_tree = old_blob if is_dir and base and repo.has_tree(old_blob or "") else None
+    with ExitStack() as keep:
+        digest, files = filtered_files(repo, reg, new, origin, release, assets, keep)
+        base = install_entries(repo, [(new, files, base, args.overwrite)])[rel]
+    if isinstance(base, FsError):
+        raise base
+    stats = tree_stats(repo, old_tree, base) if is_dir else None
     if rel in reg.files:
         reg.remove_file(rel, keep_source=named)
     name = named or reg.add_source(url, spec.get("type"))
@@ -5065,15 +5011,18 @@ def human_size(n):
     return f"{n:.1f} GiB"
 
 
-def filtered_files(repo, reg, entry, origin, release, assets, keep):
+def filtered_files(repo, reg, entry, origin, release, assets, keep, st=None):
     """Filter the assets of release for an entry: (digest, {path in the
     repository: (file, executable)}), the files kept (keep: an ExitStack)
-    until stored - with stored_items(), for many entries at once."""
+    until stored or installed, for many entries at once. st: gets what a
+    changelog step read (pull's commit message)."""
     trusted = ensure_trusted(repo, entry.steps, reg.filters)
     env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
            "ASSETSYNC_ENTRY": entry.shown}
     work = keep.enter_context(Work(entry.shown, repo.top, env, trusted))
     files, digest = entry_files(origin, release, assets, entry.steps, reg.filters, work)
+    if st:
+        st.changelog = work.changelog
     if not entry.is_dir:
         return digest, {entry.rel: f for f in one_file(files, entry.shown, entry.rel).values()}
     return digest, {f"{entry.rel}/{name}": f for name, f in files.items()}

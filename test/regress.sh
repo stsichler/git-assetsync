@@ -714,7 +714,7 @@ check "hand-written entry: -v" "$(git assetsync status -v | grep -cE "^${TAB}not
 check "hand-written entry: note" "$(git assetsync status | grep -cE "^${TAB}new:[[:space:]]+hand\.txt  \(release v1\)")" "1"
 echo mine > hand.txt
 check "existing other file: refused" "$(git assetsync pull hand.txt 2>&1 | tail -1)" \
-  "error: 'hand.txt' exists and differs from hand.txt - use --overwrite to replace it"
+  "error: 'hand.txt' is in the way of the release - use --overwrite to replace it"
 rm hand.txt
 pullc hand.txt
 check "hand-written entry: pulled" "$(cat hand.txt) $(git log -1 --format=%s)" "hand [assetsync] Add hand.txt from h v1"
@@ -750,10 +750,10 @@ check "... discarded with --overwrite" "$(cat one.bin) $(reg file.one.bin.asset)
 git reset -q --hard
 echo mine > mine.bin
 check "existing different file: refused" "$(asd add acme/pair mine.bin --asset one.bin 2>&1 | tail -1)" \
-  "error: 'mine.bin' exists and differs from one.bin - use --overwrite to replace it"
+  "error: 'mine.bin' is in the way of the release - use --overwrite to replace it"
 check "... file kept" "$(cat mine.bin)" "mine"
 check "--force doesn't overwrite it" "$(asd add --force acme/pair mine.bin --asset one.bin 2>&1 | tail -1 | oneline; cat mine.bin)" \
-  "error: 'mine.bin' exists and differs from one.bin - use --overwrite to replace it mine"
+  "error: 'mine.bin' is in the way of the release - use --overwrite to replace it mine"
 out=$(asd add --overwrite acme/pair mine.bin --asset one.bin 2>/dev/null)
 check "add --overwrite: replaced" "$(cat mine.bin) $(git status --porcelain mine.bin)" "one A  mine.bin"
 id=$(printf '%s\n' "$out" | sed -n 's/^discarded: mine.bin (git show \([0-9a-f]*\) to get it back)$/\1/p')
@@ -1557,9 +1557,9 @@ check "dir with files of others: added next to them" "$(asd add acme/many-assets
 git reset -q --hard; rm -rf own
 mkdir -p own && echo mine > own/mine.txt && echo old > own/a1.txt
 check "a file of others in the way: refused" "$(asd add acme/many-assets own/ 2>&1 >/dev/null)" \
-  "error: 'own/': files of others in the way of the release: own/a1.txt - use --overwrite to replace them"
+  "error: 'own/a1.txt' is in the way of the release - use --overwrite to replace it"
 check "... also with --force" "$(asd add --force acme/many-assets own/ 2>&1 >/dev/null | tail -1)" \
-  "error: 'own/': files of others in the way of the release: own/a1.txt - use --overwrite to replace them"
+  "error: 'own/a1.txt' is in the way of the release - use --overwrite to replace it"
 quiet asd add --overwrite acme/many-assets own/
 check "with --overwrite: replaced, the others kept" "$(ls own | oneline)$(cat own/a1.txt)" "a1.txt a2.txt mine.txt a1"
 check "... only the release's files staged" "$(git status --porcelain own | oneline)" "A  own/a1.txt A  own/a2.txt ?? own/mine.txt "
@@ -2788,7 +2788,7 @@ git commit -q --no-edit
 # a file of others in the way of a new release file: refused; --overwrite replaces it
 release acme/ov v3 12 "$F/ov-3.tar.gz"
 check "pull: a file of others in the way" "$(pullcm third 2>&1 | grep '^error')" \
-  "error: 'third/': files of others in the way of the release: third/include/mine.h - use --overwrite to replace them"
+  "error: 'third/include/mine.h' is in the way of the release - use --overwrite to replace it"
 check "... nothing changed" "$(cat third/include/mine.h) $(git status --porcelain)" "mine "
 pullc --overwrite third
 check "pull --overwrite: replaced, now the release's" "$(cat third/include/mine.h) $(st third) $(reg dir.third.synced)" "theirs  v3"
@@ -2999,6 +2999,16 @@ check "restore: makes the directories" "$(quiet asd restore s/a.txt z/d; cat s/a
 cm1.txt cm2.txt "
 rm -r s
 check "pull: makes the directories" "$(quiet asd pull --overwrite s/a.txt; cat s/a.txt)" "c1 v2"
+# files of others in the way: only those that differ from what the release
+# gives need --overwrite; the same ones become the entry's (as for a file)
+git add -A && git commit -qm restored
+mkdir same && printf 'c2\n' > same/cm2.txt && printf 'other\n' > same/cm1.txt && git add same && git commit -qm same
+check "add: a file in the way that differs: refused" "$(asd add acme/cm same/ 2>&1 | grep '^error')" \
+  "error: 'same/cm1.txt' is in the way of the release - use --overwrite to replace it"
+printf 'c1 v2\n' > same/cm1.txt && git commit -qam same2
+check "add: files in the way that are what the release gives: the entry's" \
+  "$(rc asd add acme/cm same/) $(git status --porcelain | oneline)$(git ls-tree --name-only $(reg dir.same.tree) | oneline)" \
+  "0 M  .git-assetsync cm1.txt cm2.txt "
 
 # =============================================================================
 echo
