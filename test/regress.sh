@@ -2956,14 +2956,25 @@ check "registry: unlink removes the section, not the comments of others" \
   "$(grep -c 'a.txt' .git-assetsync) $(comments) $(tail -1 .git-assetsync)" "0 6 # trailing note"
 check "... the group heading above it is its own line" "$(grep -c '^# --- group A ---$' .git-assetsync)" "1"
 git commit -qm unlink
-# its own line endings stay: CRLF (e.g. written by a Windows editor, without
-# autocrlf) - only the changed line differs
+# line endings as git checkout writes it: with eol=crlf a CRLF registry stays
+# so - only the changed line differs
+echo '.git-assetsync eol=crlf' > .gitattributes && git add .gitattributes
 "$PYTHON" -c 'd = open(".git-assetsync", "rb").read(); open(".git-assetsync", "wb").write(d.replace(b"\n", b"\r\n"))'
 git commit -qam crlf
 quiet asd set c.txt --release v1
 n=$(wc -l < .git-assetsync | tr -d ' ')
-check "registry with CRLF: stays so, only the changed line differs" \
+check "registry with eol=crlf: stays CRLF, only the changed line differs" \
   "$(git diff --numstat HEAD -- .git-assetsync | cut -f1,2 | tr '\t' ' ') $(tr -cd '\r' < .git-assetsync | wc -c | tr -d ' ')" "1 0 $n"
+git commit -qam set
+# with core.autocrlf an LF registry gets CRLF, so git add doesn't warn
+git rm -q .gitattributes && git commit -qm "no attributes"
+"$PYTHON" -c 'd = open(".git-assetsync", "rb").read(); open(".git-assetsync", "wb").write(d.replace(b"\r\n", b"\n"))'
+git commit -qam lf
+git config core.autocrlf true
+quiet asd set c.txt --release v2
+check "registry with core.autocrlf: in working tree form, no warning from git add" \
+  "$(tr -cd '\r' < .git-assetsync | wc -c | tr -d ' ') $(git add .git-assetsync 2>&1 | grep -c warning)" "$(wc -l < .git-assetsync | tr -d ' ') 0"
+git config --unset core.autocrlf
 
 # =============================================================================
 section "34. add and mv make no directories (as cp and git mv); pull and restore do"

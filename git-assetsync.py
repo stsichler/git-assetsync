@@ -2277,7 +2277,6 @@ class Repo:
         # subdirectory in GIT_PREFIX
         prefix = os.environ.get("GIT_PREFIX")
         self.base = Path.cwd() / prefix if prefix else Path.cwd()
-        self.lf_as_is = set()     # see fix_eol(): files with LF that stay so here
         self.trees = {}           # see tree_entries(): {tree: its entries}
         self.scripts = {}         # see script_blob()
         self.known_trees = {}     # see has_tree(): {tree: whether it is here}
@@ -2759,17 +2758,12 @@ class Repo:
         return self.gitdir / (prefix + re.sub(r"[^A-Za-z0-9._-]", "_", name))
 
     def fix_eol(self, path):
-        """Rewrite a file written by `git config -f` (LF) in working tree form,
-        so core.autocrlf repositories don't warn about it."""
-        data = path.read_bytes().replace(b"\r\n", b"\n")
-        if self.rel(path) in self.lf_as_is:     # known: no conversion here
-            if data != path.read_bytes():
-                path.write_bytes(data)
-            return
-        conv = self.to_worktree(data, self.rel(path))
-        if conv == data:
-            self.lf_as_is.add(self.rel(path))
-        if conv != path.read_bytes():
+        """Rewrite a file we wrote (LF; git config -f too) in working tree
+        form - all of it, as git checkout writes it (.gitattributes,
+        core.autocrlf) - so git add doesn't warn about it."""
+        data = path.read_bytes()
+        conv = self.to_worktree(data.replace(b"\r\n", b"\n"), self.rel(path))
+        if conv != data:
             path.write_bytes(conv)
 
 
@@ -3046,8 +3040,6 @@ class Registry:
         self.sources, self.files, self.kinds, self.filters = {}, {}, {}, {}
         self.dry_run = False      # only change the in-memory state
         self.items, self.pending = {}, []     # see flush()
-        # the file's own line endings (CRLF?) stay; None: no file yet
-        self.crlf = b"\r\n" in self.path.read_bytes() if self.path.exists() else None
         if self.path.exists():
             p = git(["config", "-f", self.path, "--list", "-z"], check=False)
             if p.returncode:
@@ -3092,8 +3084,6 @@ class Registry:
         original = self.path.read_bytes()
         try:
             text, expected = edit_config(original.decode("utf-8"), self.items, ops)
-            if self.crlf:
-                text = text.replace("\n", "\r\n")
             self.path.write_bytes(text.encode("utf-8"))
             p = git(["config", "-f", self.path, "--list", "-z"], check=False)
             if p.returncode or config_items(p.stdout) != expected:
@@ -3240,24 +3230,16 @@ class Registry:
         self.kinds[new] = self.kinds.pop(old)
 
     def finish(self):
-        """Stage the registry (or its removal when empty) - with the line
-        endings it had (git config writes LF), a new one in working tree
-        form."""
+        """Stage the registry (or its removal when empty), written in working
+        tree form - line endings as .gitattributes / core.autocrlf say."""
         if self.dry_run:
             return
         self.flush()
         if self.path.exists():
             if not self.sources and not self.files and not self.filters:
                 self.path.unlink()
-            elif self.crlf is None:
-                self.repo.fix_eol(self.path)
             else:
-                data = self.path.read_bytes()
-                same = data.replace(b"\r\n", b"\n")
-                if self.crlf:
-                    same = same.replace(b"\n", b"\r\n")
-                if same != data:
-                    self.path.write_bytes(same)
+                self.repo.fix_eol(self.path)
         self.repo.git(["add", "-A", "--", REGISTRY])
 
     def uncommitted(self):
