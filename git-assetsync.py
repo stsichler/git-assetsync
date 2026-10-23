@@ -67,8 +67,9 @@ shortened like them), convert PATTERN TARGET COMMAND (each matching file:
 {in} -> {out}, which replaces it at TARGET; TARGET/: {out} a directory),
 run PATTERN COMMAND ({in} a directory with the matching files, '*' for
 all; {out} one for the result, which replaces them).
-A step that matches no files does nothing; a filter that leaves no files
-at all is an error, and so are results that would replace each other.
+A step whose pattern matches no files changes no file (include and
+subdir then leave none); a filter that leaves no files at all is an
+error, and so are results that would replace each other.
 Commands run with sh -c (ASSETSYNC_SH; on Windows Git's sh) in a working
 directory where {in} and {out} are short relative names (fw.bin, fw.c),
 so results are the same everywhere; {root} is the repository's root (for
@@ -322,7 +323,9 @@ finishes its work first).
 
 Content that restore, rm -f or --overwrite discard - not committed, nor
 staged where the index stays - is kept as a Git object first: "discarded:
-PATH (git show ID to get it back)"; git gc removes it after a while.
+PATH (git show ID to get it back)"; git gc removes it after a while. Where
+the index goes too, a staged version neither committed nor in the working
+tree is named as well ("PATH, as staged").
 
 Files stored in Git LFS and line-ending conversions are handled: a file
 is recorded as `git add` stores it. Output is colored like git's
@@ -1575,7 +1578,7 @@ def parse_step(step):
     ok = {"extract": all(args),
           "subdir": len(args) == 1 and bool(args[0].strip("/")),
           "strip": len(args) == 1 and args[0].isdigit() and int(args[0]) > 0,
-          "include": bool(args), "exclude": bool(args),
+          "include": bool(args) and all(args), "exclude": bool(args) and all(args),
           "move": len(args) == 2 and all(args), "copy": len(args) == 2 and all(args),
           "apply": len(args) == 2 and all(args), "changelog": bool(args) and all(args),
           "convert": len(args) == 3 and all(args), "run": len(args) == 2 and all(args)}.get(name)
@@ -4174,39 +4177,44 @@ def report_staged(repo, name, msg, done, rels=None, how="Commit with"):
     print(f"{name}: {done}. {how}:\n    {cmd}\n({note})")
 
 
-def save_discarded(repo, paths, known=None, index_stays=False):
-    """Before these files of the working tree are replaced or deleted: those
-    whose content isn't committed - nor staged, if the index stays as it is
-    (index_stays) - are kept as objects, and how to get them back is printed
-    (restore, rm -f, --overwrite). known: {path: blob} of the working tree
-    files already hashed."""
-    files = sorted(p for p in set(paths) if (repo.top / p).is_file()
-                   and not (repo.top / p).is_symlink())
-    if not files:
+def save_discarded(repo, worktree, index=(), known=None):
+    """Before files are replaced or deleted - in the working tree (paths
+    worktree) and in the index (paths index): content that would be lost -
+    not committed, not staged where the index stays, not in the working
+    tree where that stays - is kept as an object (a staged version already
+    is one), and how to get it back is printed (restore, rm -f,
+    --overwrite). known: {path: blob} of working tree files already hashed."""
+    worktree, index = set(worktree), set(index)
+    paths = sorted(worktree | index)
+    if not paths:
         return
+    files = [p for p in paths if (repo.top / p).is_file() and not (repo.top / p).is_symlink()]
     known = dict(known or {})
     rest = [p for p in files if p not in known]
     if rest:
         known.update(zip(rest, repo.git(["hash-object", "--stdin-paths"],
                                         data="\n".join(rest).encode("utf-8")).stdout.decode().split()))
-    kept = set()              # committed (or staged, if that stays): there to get back
-    for i in range(0, len(files), 100):
-        part = files[i:i + 100]
-        for args in ([["ls-files", "-s", "-z", "--"] + [lit(p) for p in part]] if index_stays
-                     else []) + [["ls-tree", "-z", "HEAD", "--"] + part]:
+    staged, head = {}, {}     # {path: blob}
+    for i in range(0, len(paths), 100):
+        part = paths[i:i + 100]
+        for found, at, args in ((staged, 1, ["ls-files", "-s", "-z", "--"] + [lit(p) for p in part]),
+                                (head, 2, ["ls-tree", "-z", "HEAD", "--"] + part)):
             p = repo.git(args, check=False)
             for item in p.stdout.decode("utf-8", "replace").split("\0"):
                 info, _, path = item.partition("\t")
-                if path and known.get(path) in info.split():
-                    kept.add(path)
-    lost = [p for p in files if p not in kept]
-    if not lost:
-        return
+                if path:
+                    found[path] = info.split(" ")[at]
+    lost = [p for p in files if p in worktree and known[p] != head.get(p)
+            and not (p not in index and known[p] == staged.get(p))]
+    # a staged version that is in the working tree stays there or is kept with it
+    gone = [p for p in index if staged.get(p) and staged[p] not in (head.get(p), known.get(p))]
     # as they are (no filters): `git show` gives the file back exactly
     ids = repo.git(["hash-object", "-w", "--no-filters", "--stdin-paths"],
-                   data="\n".join(lost).encode("utf-8")).stdout.decode().split()
-    for path, oid in zip(lost, ids):
-        print(f"{paint('discarded:', 'yellow')} {path} (git show {oid[:12]} to get it back)")
+                   data="\n".join(lost).encode("utf-8")).stdout.decode().split() if lost else []
+    named = sorted([(p, "", oid) for p, oid in zip(lost, ids)]
+                   + [(p, ", as staged", staged[p]) for p in gone])
+    for path, how, oid in named:
+        print(f"{paint('discarded:', 'yellow')} {path}{how} (git show {oid[:12]} to get it back)")
 
 
 def install_file(repo, rel, target, files, overwrite=False):
@@ -4220,14 +4228,13 @@ def install_file(repo, rel, target, files, overwrite=False):
         raise FsError(f"'{rel}' exists and differs from {name} - use --overwrite to replace it")
     if target.is_dir():
         raise FsError(f"'{rel}' is a directory")
-    if cur and cur != blob:
-        save_discarded(repo, [rel], {rel: cur})
+    save_discarded(repo, [rel] if cur and cur != blob else [], [rel], {rel: cur} if cur else None)
     target.parent.mkdir(parents=True, exist_ok=True)
     if repo.fetched:
         repo.fetched.pop(rel, None)         # changes now
     target.write_bytes(repo.checkout_form(blob, rel))
     set_executable(target, executable)
-    repo.git(["add", "--", lit(rel)])
+    repo.git(["add", "-f", "--", lit(rel)])     # -f: also where ignored, like [dir]
     # also -x: with core.filemode=false (Windows) `git add` keeps the old mode
     repo.git(["update-index", f"--chmod={'+' if executable else '-'}x", "--", rel])
     return blob
@@ -4289,9 +4296,8 @@ def install_dir(repo, rel, target, files, base, overwrite=False):
         raise FsError(f"'{rel}/': files of others in the way of the release: {shown} - use "
                       "--overwrite to replace them")
     gone = sorted(set(base) - set(new))
-    save_discarded(repo, [p for o in others for p in ([o] if (repo.top / o).is_file()
-                                                      else repo.dir_files(o))]
-                   + gone + [p for p in new if p in base])
+    theirs = [p for o in others for p in ([o] if (repo.top / o).is_file() else repo.dir_files(o))]
+    save_discarded(repo, theirs + gone + [p for p in new if p in base], theirs + gone + list(new))
     for path in others:
         full = repo.top / path
         if full.is_dir() and not full.is_symlink():
@@ -4308,25 +4314,19 @@ def install_dir(repo, rel, target, files, base, overwrite=False):
     if gone:
         repo.git(["update-index", "-z", "--force-remove", "--stdin"],
                  data="\0".join(gone).encode("utf-8"))
-    for path, (src, executable) in sorted(new.items()):
-        dest = repo.top / path
-        try:
-            if dest.is_dir():
-                raise FsError(f"'{path}' is a directory in the working tree")
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, dest)
-            set_executable(dest, executable)
-        except OSError as e:
-            raise FsError(f"cannot write '{path}': {e.strerror}")
     paths = sorted(new)
-    # -f: also files the repository ignores (e.g. *.lib) - the entry has them
-    repo.git(["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"],
-             data="\0".join(lit(p) for p in paths).encode("utf-8"))
-    executables = [p for p in paths if new[p][1]]
-    if executables:
-        repo.git(["update-index", "--chmod=+x", "-z", "--stdin"],
-                 data="\0".join(executables).encode("utf-8"))
-    tree = release_tree(repo, rel, repo.index_items(rel), new)
+    for path in paths:
+        if (repo.top / path).is_dir():
+            raise FsError(f"'{path}' is a directory in the working tree")
+    # stored as git add would, staged, and written as git checkout writes them
+    # (line endings, filters) - like the file of a [file]; also where the
+    # repository ignores them (e.g. *.lib): the entry has them
+    ids = repo.add_files({path: src for path, (src, _) in new.items()})
+    items = [("100755" if new[p][1] else "100644", ids[p], p) for p in paths]
+    repo.git(["update-index", "-z", "--add", "--index-info"],
+             data="".join(f"{m} {o}\t{p}\0" for m, o, p in items).encode("utf-8"))
+    repo.git(["checkout-index", "-f", "-z", "--stdin"], data="\0".join(paths).encode("utf-8"))
+    tree = release_tree(repo, rel, items, new)
     repo.keep_tree(tree)
     return tree
 
@@ -4408,7 +4408,7 @@ def install_files(repo, jobs):
             target.parent.mkdir(parents=True, exist_ok=True)
             if repo.fetched:
                 repo.fetched.pop(rel, None)         # changes now
-    save_discarded(repo, replaced, replaced)
+    save_discarded(repo, replaced, [r for _, _, r in ok], replaced)
     if ok:
         repo.git(["update-index", "-z", "--add", "--index-info"],
                  data="".join(f"{m} {o}\t{r}\0" for m, o, r in ok).encode("utf-8"))
@@ -4860,8 +4860,6 @@ def cmd_set(ctx, repo, args):
     if args.filter and args.filter not in reg.filters:
         raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
                       f"'git assetsync filter add {args.filter} ...'")
-    if args.release is not None and args.latest:
-        raise FsError("--release and --latest exclude each other")
     reg.dry_run = args.dry_run
     entries = select_entries(repo, reg, args.paths)
     would = "would: " if args.dry_run else ""
@@ -5267,11 +5265,11 @@ def cmd_restore(ctx, repo, args):
                 rc = EXIT_ERROR
     fixes = [(entry, restore_fixes(entry, plan, now)) for entry, plan in plans]
     index = [i for _, f in fixes for i in f.get("index", [])]
+    written = [i for _, f in fixes for i in f.get("worktree", [])]
+    save_discarded(repo, [path for _, _, path in written], [path for _, _, path in index])
     if index:
         repo.git(["update-index", "-z", "--add", "--index-info"],
                  data="".join(f"{m} {o}\t{p}\0" for m, o, p in index).encode("utf-8"))
-    written = [i for _, f in fixes for i in f.get("worktree", [])]
-    save_discarded(repo, [path for _, _, path in written], index_stays=not args.staged)
     try:
         write_files(repo, written)
     except FsError as e:
@@ -5333,7 +5331,12 @@ def cmd_rm(ctx, repo, args):
             raise FsError(f"{entry.shown}: {problem} - remove its entry with 'git assetsync "
                           f"unlink {shlex.quote(entry.rel)}'")
         try:
-            own[entry.rel] = ensure_base(repo, reg, entry) if entry.is_dir else {entry.rel}
+            if not entry.is_dir:
+                own[entry.rel] = {entry.rel}
+            elif args.dry_run:      # changes nothing: no base got (and kept) for it
+                own[entry.rel] = base_paths(repo, entry) or set()
+            else:
+                own[entry.rel] = ensure_base(repo, reg, entry)
         except FsError as e:
             raise FsError(f"{entry.shown}: {e} - remove its entry with 'git assetsync unlink "
                           f"{path_arg(repo, entry.shown)}' and its files by hand")
@@ -5343,7 +5346,7 @@ def cmd_rm(ctx, repo, args):
             raise FsError(f"{entry.shown}: has uncommitted changes - use -f to remove it anyway")
     paths = sorted(set().union(*own.values())) if own and not args.dry_run else []
     if args.force:
-        save_discarded(repo, paths)
+        save_discarded(repo, paths, paths)
     if paths:                 # all at once
         repo.git(["rm", "-q", "-f", "--ignore-unmatch", "--pathspec-from-file=-",
                   "--pathspec-file-nul"], data="\0".join(lit(p) for p in paths).encode("utf-8"))
@@ -5893,6 +5896,17 @@ def main(argv=None):
     return EXIT_PIPE if PipeGuard.broken and rc == EXIT_OK else rc
 
 
+def only_looks(args):
+    """Does the command only look (show, list, check) - change nothing?"""
+    action = getattr(args, "action", None)
+    return args.cmd in ("status", "diff", "difftool", "verify") or \
+        action is None and args.cmd in ("source", "filter", "cache", "hooks") or \
+        action in ("releases", "show", "list", "dir") or \
+        action == "map" and not args.dir and not args.unset or \
+        action == "test" and not args.output or \
+        action == "trust" and not (args.names or args.all or args.revoke)
+
+
 def run(argv):
     colorp = argparse.ArgumentParser(add_help=False)
     colorp.add_argument("--color", nargs="?", const="always", default="auto",
@@ -6035,9 +6049,10 @@ def run(argv):
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
     p.add_argument("--source", metavar="URL|SOURCE",
                    help="take the files from another source (URL or name, as for add)")
-    p.add_argument("--release", metavar="TAG|PATTERN",
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--release", metavar="TAG|PATTERN",
                    help="release to take: a tag pins, a pattern takes the newest matching")
-    p.add_argument("--latest", action="store_true", help="follow the latest release")
+    g.add_argument("--latest", action="store_true", help="follow the latest release")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--prerelease", dest="prerelease", action="store_true", default=None,
                    help="prereleases count too")
@@ -6223,8 +6238,8 @@ def run(argv):
         args = ap.parse_args(["status"])
     args.extra = extra
     # commands that only look stop when nobody reads their output any more
-    PipeGuard.stop = args.cmd in ("status", "diff", "difftool", "verify") or \
-        args.cmd == "source" and args.action in (None, "releases")
+    PipeGuard.stop = only_looks(args)
+    repo = None
     try:
         try:
             repo = Repo()
@@ -6249,14 +6264,19 @@ def run(argv):
             with repo.scratch():
                 return {"status": cmd_status, "hook": cmd_hook, "diff": cmd_diff,
                         "difftool": cmd_difftool}[args.cmd](ctx, repo, args)
-        return {"hook": cmd_hook, "status": cmd_status, "pull": cmd_pull, "diff": cmd_diff,
-                "difftool": cmd_difftool, "add": cmd_add, "edit": cmd_edit,
-                "set": cmd_set, "unlink": cmd_unlink, "mv": cmd_mv, "restore": cmd_restore, "rm": cmd_rm,
-                "source": cmd_source,
-                "filter": cmd_trust if args.cmd == "filter" and args.action == "trust"
-                else cmd_filter, "verify": cmd_verify}[args.cmd](ctx, repo, args)
+        command = cmd_trust if args.cmd == "filter" and args.action == "trust" else {
+            "pull": cmd_pull, "add": cmd_add, "edit": cmd_edit, "set": cmd_set,
+            "unlink": cmd_unlink, "mv": cmd_mv, "restore": cmd_restore, "rm": cmd_rm,
+            "source": cmd_source, "filter": cmd_filter, "verify": cmd_verify}[args.cmd]
+        return command(ctx, repo, args)
     except FsError as e:
         error(str(e))
+        return EXIT_ERROR
+    except BrokenPipeError:       # PipeGuard: the reader is gone
+        raise
+    except OSError as e:          # e.g. a file where a directory is needed, no permission
+        name = e.filename and (shown_path(repo, e.filename) if repo else str(e.filename))
+        error(f"{name}: {e.strerror}" if name and e.strerror else str(e))
         return EXIT_ERROR
     except KeyboardInterrupt:
         return 130

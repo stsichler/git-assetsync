@@ -168,8 +168,10 @@ warning, and a note in the commit message).
 
 In a directory entry, only the files of the release count: one of them
 changed or deleted is a modification; other files there are not the
-entry's (see below). Files the entry itself gets are always committed,
-also if `.gitignore` would ignore them (e.g. `*.lib`).
+entry's (see below). Files an entry gets – the file of a file entry, the
+files of a directory entry – are always staged and committed, also if
+`.gitignore` would ignore them (e.g. `*.lib`), and written as `git
+checkout` writes them (line endings, filters of `.gitattributes`).
 
 What counts is the content, not how it is stored: a file that is
 re-stored differently after `.gitattributes` changed (moved to Git LFS,
@@ -273,6 +275,10 @@ discarded: lib/data.bin (git show 1a2b3c4d5e6f to get it back)
 ```
 
 `git show 1a2b3c4d5e6f > lib/data.bin` writes it back exactly as it was.
+Where the index goes too (`rm -f`, `--overwrite`, `restore -S`), a staged
+version that is neither committed nor what the working tree has is named
+as well: `discarded: lib/data.bin, as staged (git show … to get it
+back)` – as git stores it (e.g. line endings normalized).
 Nothing refers to the object, so `git gc` removes it after a while
 (normally two weeks).
 
@@ -1188,8 +1194,10 @@ So `--move 'images/*/app.bin' 'firmware/{parent}.bin'` makes
 'api/{path}'` moves a whole directory with its structure. Two files with
 the same target, or a target that is another file, are an error.
 
-A step whose pattern matches no files does nothing – a filter stays
+A step whose pattern matches no files changes no file – a filter stays
 valid for a release that happens to have none of them (e.g. no headers).
+Only `include` and `subdir` then leave nothing, which is what they are
+for: they keep the matching files only.
 Only grave problems are errors: a file that `extract` can't unpack,
 results that would replace each other (two files with the same target,
 a target that is another file), and a filter that leaves no files at all

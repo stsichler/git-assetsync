@@ -53,6 +53,7 @@
 #   29. restore: back to what the release gave
 #   30. rm: remove entries and their files
 #   31. A directory with files of others
+#   32. Ignored paths, errors while writing, checkout form
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -1358,8 +1359,8 @@ pullc y.bin
 check "set --asset + pull" "$(cat y.bin) $(git log -1 --format=%s)" "x v1 [assetsync] Update y.bin to acme/set v1"
 check "set --no-asset" "$(git assetsync set y.bin --no-asset >/dev/null; reg file.y.bin.asset)" ""
 git reset -q --hard
-check "set --release and --latest" "$(git assetsync set y.bin --release v1 --latest 2>&1)" \
-  "error: --release and --latest exclude each other"
+check "set --release and --latest" "$(git assetsync set y.bin --release v1 --latest 2>&1 | tail -1)" \
+  "git assetsync set: error: argument --latest: not allowed with argument --release"
 check "set --source: unknown host" "$(git assetsync set y.bin --source https://code.example.org/a/b 2>&1 | grep -c '^error: .*platform of code.example.org unknown')" "1"
 
 
@@ -2774,6 +2775,59 @@ check "a file renamed in case: replaced" "$(git ls-files vendor/include | onelin
 # rm: the release's files go, those of others stay
 check "rm: files of others kept" "$(git assetsync rm vendor) $(cd vendor && find . -type f | sort | oneline)" \
   "removed vendor/ (4 other files kept) ./README.md ./docs ./include/c.h ./include/mine.h "
+
+# =============================================================================
+section "32. Ignored paths, errors while writing, files as git checkout writes them"
+# =============================================================================
+cd "$T"
+printf 'a\n' > "$F/ig.txt"; asset ig.bin "ig 1"
+release acme/ig v1 16 "$F/ig.bin" "$F/ig.txt"
+new_repo r32
+echo '*.bin' > .gitignore && git add .gitignore && git commit -qm ignore
+# a file entry at a path the repository ignores: added like a directory's files
+check "add: a file at an ignored path" "$(rc asd add bin/ig.bin acme/ig --asset ig.bin) $(git ls-files bin)" \
+  "0 bin/ig.bin"
+git commit -qm add
+# an error writing (a file where its directory should be): reported, no traceback
+echo x > blocker && git add blocker && git commit -qm blocker
+out=$(asd add blocker/ig.txt acme/ig --asset ig.txt 2>&1); r=$?
+check "add: a file in the way of its directory" \
+  "$r $(printf '%s\n' "$out" | grep -c Traceback) $(printf '%s\n' "$out" | grep -c '^error: blocker')" "2 0 1"
+check "... nothing changed" "$(git status --porcelain)" ""
+# rm -f / --overwrite: a staged version that is neither committed nor in the
+# working tree is named too
+echo staged > bin/ig.bin && git add bin/ig.bin && echo work > bin/ig.bin
+out=$(asd rm -f bin/ig.bin)
+w=$(printf '%s\n' "$out" | sed -n 's/^discarded: bin\/ig.bin (git show \([0-9a-f]*\) to get it back)$/\1/p')
+s=$(printf '%s\n' "$out" | sed -n 's/^discarded: bin\/ig.bin, as staged (git show \([0-9a-f]*\) to get it back)$/\1/p')
+check "rm -f: the working tree's and the staged version named" "$(git show "$w") $(git show "$s") $(printf '%s\n' "$out" | tail -1)" \
+  "work staged removed bin/ig.bin"
+git commit -qm rm
+# files of a directory are written as git checkout writes them (here: CRLF)
+printf '*.txt eol=crlf\n' > .gitattributes && git add .gitattributes && git commit -qm crlf
+bytes() { "$PYTHON" -c 'import sys; print(repr(open(sys.argv[1], "rb").read()))' "$1"; }
+quiet asd add f.txt acme/ig --asset ig.txt
+quiet asd add d/ acme/ig
+check "a directory's files in checkout form, like a file's" "$(bytes f.txt) $(bytes d/ig.txt)" "b'a\r\n' b'a\r\n'"
+echo mine > d/mine.txt && git add d/mine.txt 2>/dev/null && git commit -qm "add, with a file of mine"
+check "... clean" "$(st)" ""
+# rm -n changes nothing - also where it doesn't know the files of a directory
+cd "$T" && git clone -q --no-local r32 r32c && cd r32c
+check "rm -n: base not in the clone: nothing got, nothing kept" \
+  "$(git assetsync rm -n d; git for-each-ref refs/assetsync | lines; git status --porcelain)" "would remove d/
+0"
+# restore -S: only the index goes - a staged version named, the working tree stays
+echo staged > f.txt && git add f.txt 2>/dev/null && echo work > f.txt
+out=$(git assetsync restore -S f.txt)
+s=$(printf '%s\n' "$out" | sed -n 's/^discarded: f.txt, as staged (git show \([0-9a-f]*\) to get it back)$/\1/p')
+check "restore -S: the staged version named, not the working tree's" \
+  "$(git show "$s") $(printf '%s\n' "$out" | grep -c '^discarded:') $(printf '%s\n' "$out" | tail -1) $(cat f.txt)" \
+  "staged 1 f.txt: restored in the index (acme/ig v1) work"
+git checkout -q f.txt
+# filter steps with an empty pattern are malformed, as for the other steps
+check "include/exclude with an empty pattern: malformed" \
+  "$(asd filter add e --include a '' 2>&1 | grep -c '^error: malformed filter step'; asd filter add e --exclude '' 2>&1 | grep -c '^error: malformed filter step')" "1
+1"
 
 # =============================================================================
 echo
