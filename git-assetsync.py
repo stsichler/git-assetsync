@@ -2876,32 +2876,60 @@ def config_value(value):
     return value
 
 
+def with_value(line, value):
+    """A key line 'KEY = VALUE' with another value: its indentation, spacing
+    and comment at the end stay. None if it has no '='."""
+    m = re.match(r"\s*[A-Za-z][A-Za-z0-9-]*\s*=[ \t]*", line)
+    if not m:
+        return None
+    rest, i, quoted = line[m.end():], 0, False
+    while i < len(rest):          # the old value ends where a comment starts
+        if rest[i] == "\\":
+            i += 2
+            continue
+        if rest[i] == '"':
+            quoted = not quoted
+        elif rest[i] in ";#" and not quoted:
+            break
+        i += 1
+    comment = rest[i:]
+    gap = re.search(r"[ \t]*$", rest[:i]).group(0) if comment else ""
+    return m.group(0) + config_value(value) + gap + comment
+
+
 def edit_config(text, items, ops):
     """(new text, {key: [values]} expected) of applying ops - the arguments
     of `git config -f FILE ...`: KEY VALUE, --unset-all KEY, --add KEY VALUE,
-    --remove-section S.SUB, --rename-section S.OLD S.NEW - to the text of a
+    --remove-section S.SUB, --rename-section S.OLD S.NEW, and --set-all KEY
+    VALUE... (all values of a key, where its first was) - to the text of a
     config file and its items, without running git for each. ValueError
-    for what it isn't sure to do as git would (the caller then does)."""
+    for what it isn't sure to do as git would (the caller then does).
+    Only the lines that change are touched: comments, blank lines and the
+    layout of the user's stay - a section ends with its last key, what
+    follows (e.g. a comment heading the next one) isn't part of it."""
     lines = [ln.rstrip("\r") for ln in text.split("\n")]
     items = {k: list(v) for k, v in items.items()}
 
     def blocks(name):
-        """[start, end) of the lines of each section block NAME (sect.sub)."""
+        """[start, end) of the lines of each section block NAME (sect.sub):
+        from its header to its last key."""
         sect, _, sub = name.partition(".")
-        found, start = [], None
+        found, start, last = [], None, None
         for i, ln in enumerate(lines + ["[end]"]):
             if ln.lstrip().startswith("["):
                 if start is not None:
-                    found.append((start, i))
+                    found.append((start, last + 1))
                     start = None
                 m = CONFIG_HEADER.fullmatch(ln)
                 if ln != "[end]" and not m and i < len(lines):
                     raise ValueError(f"header {ln}")
                 if m and m.group(1).lower() == sect and \
                         re.sub(r"\\(.)", r"\1", m.group(2)) == sub:
-                    start = i
+                    start = last = i
             elif ln.rstrip().endswith("\\"):
                 raise ValueError("continued line")
+            elif CONFIG_KEY.fullmatch(ln):
+                last = i
         if len(found) > 1:
             raise ValueError(f"{name} more than once")
         return found
@@ -2922,15 +2950,15 @@ def edit_config(text, items, ops):
                 lines.pop()
             lines.extend([header(name), line, ""])
             return
-        start, end = found[0]
-        at = end
-        while at > start + 1 and not lines[at - 1].strip():
-            at -= 1
-        lines.insert(at, line)
+        lines.insert(found[0][1], line)       # right after its last key
     for op in ops:
         if op[0] == "--remove-section":
             for start, end in blocks(op[1]):
                 del lines[start:end]
+                # no blank line twice where it was
+                if 0 < start < len(lines) and not lines[start - 1].strip() and \
+                        not lines[start].strip():
+                    del lines[start]
             items = {k: v for k, v in items.items()
                      if not k.startswith(op[1].split(".")[0] + "." + op[1].partition(".")[2] + ".")}
             continue
@@ -2938,12 +2966,15 @@ def edit_config(text, items, ops):
             found = blocks(op[1])
             if not found or blocks(op[2]):
                 raise ValueError("rename")
-            lines[found[0][0]] = header(op[2])
+            at = found[0][0]       # indentation and a comment after it stay
+            m = re.fullmatch(r'(\s*)\[[^"]*"(?:[^"\\]|\\.)*"\s*\](.*)', lines[at])
+            lines[at] = (m.group(1) + header(op[2]) + m.group(2)) if m else header(op[2])
             old, new = op[1] + ".", op[2] + "."
             items = {(new + k[len(old):] if k.startswith(old) else k): v for k, v in items.items()}
             continue
         flag, key, value = (op[0], op[1], op[2] if len(op) > 2 else None) \
             if op[0].startswith("--") else (None, op[0], op[1])
+        values = list(op[2:])
         name, _, k = key.rpartition(".")
         if not CONFIG_KEY.fullmatch(k) or "\n" in name:
             raise ValueError(key)
@@ -2958,11 +2989,24 @@ def edit_config(text, items, ops):
         elif flag == "--add":
             append(name, k, value)
             items.setdefault(norm, []).append(value)
+        elif flag == "--set-all":
+            if not idx:
+                for v in values:
+                    append(name, k, v)
+            else:
+                indent = re.match(r"[ \t]*", lines[idx[0]]).group(0) or "\t"
+                for i in reversed(idx):
+                    del lines[i]
+                lines[idx[0]:idx[0]] = [f"{indent}{k} = {config_value(v)}" for v in values]
+            if values:
+                items[norm] = values
+            else:
+                items.pop(norm, None)
         elif flag is None:
             if len(idx) > 1:
                 raise ValueError(f"{key} more than once")
             if idx:
-                lines[idx[0]] = f"\t{k} = {config_value(value)}"
+                lines[idx[0]] = with_value(lines[idx[0]], value) or f"\t{k} = {config_value(value)}"
             else:
                 append(name, k, value)
             items[norm] = [value]
@@ -3033,7 +3077,12 @@ class Registry:
         except ValueError:
             self.path.write_bytes(original)
             for args in ops:
-                git(["config", "-f", self.path] + list(args))
+                if args[0] == "--set-all":        # not git's: all values of a key
+                    git(["config", "-f", self.path, "--unset-all", args[1]], check=False)
+                    for v in args[2:]:
+                        git(["config", "-f", self.path, "--add", args[1], v])
+                else:
+                    git(["config", "-f", self.path] + list(args))
             self.items = config_items(git(["config", "-f", self.path, "--list", "-z"]).stdout)
 
     def set_file(self, rel, name, value):
@@ -3105,11 +3154,13 @@ class Registry:
         return sorted(rel for rel, f in self.files.items() if f.get("source") == name)
 
     def set_filter(self, name, steps):
-        """Create or replace the named filter [filter "name"]."""
+        """Create or replace the named filter [filter "name"]: an existing one's
+        steps where they are."""
         if name in self.filters:
-            self._cfg("--remove-section", f"filter.{name}")
-        for step in steps:
-            self._cfg("--add", f"filter.{name}.step", step)
+            self._cfg("--set-all", f"filter.{name}.step", *steps)
+        else:
+            for step in steps:
+                self._cfg("--add", f"filter.{name}.step", step)
         self.filters[name] = list(steps)
 
     def remove_filter(self, name):

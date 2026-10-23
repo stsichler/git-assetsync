@@ -54,6 +54,7 @@
 #   30. rm: remove entries and their files
 #   31. A directory with files of others
 #   32. Ignored paths, errors while writing, checkout form
+#   33. Comments and own lines in .git-assetsync
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -2862,6 +2863,63 @@ git checkout -q f.txt
 check "include/exclude with an empty pattern: malformed" \
   "$(asd filter add e --include a '' 2>&1 | grep -c '^error: malformed filter step'; asd filter add e --exclude '' 2>&1 | grep -c '^error: malformed filter step')" "1
 1"
+
+# =============================================================================
+section "33. Comments and own lines in .git-assetsync: only the lines that change"
+# =============================================================================
+cd "$T"
+printf 'c1\n' > "$F/cm1.txt"; printf 'c2\n' > "$F/cm2.txt"
+release acme/cm v1 16 "$F/cm1.txt" "$F/cm2.txt"
+new_repo r33
+quiet asd add a.txt acme/cm --asset cm1.txt --release v1
+quiet asd add b.txt acme/cm --asset cm2.txt
+quiet asd filter add f1 --extract --strip 1
+quiet asd filter add f2 --include '*.h'
+git commit -qm add
+"$PYTHON" - <<'EOF'
+s = open(".git-assetsync").read()
+s = s.replace('[file "a.txt"]', '# --- group A ---\n[file "a.txt"]   ; the a file')
+s = s.replace('\trelease = v1', '    release   = v1   ; pinned for X')
+s = s.replace('[file "b.txt"]', '\n# b: keep this comment\n[file "b.txt"]')
+s = s.replace('\tstep = strip 1', '\t# then strip\n\tstep = strip 1')
+s = s.replace('[filter "f2"]', '# f2: headers only\n[filter "f2"]  # f2 header note')
+s += "\n# trailing note\n"
+open(".git-assetsync", "w").write(s)
+EOF
+git commit -qam comments
+# changed lines: '-'/'+' lines of the last change to .git-assetsync, unstaged or staged
+changed() { git diff -U0 HEAD -- .git-assetsync | grep -E '^[-+][^-+]' | sed 's/^\([-+]\)[[:space:]]*/\1/' | oneline; }
+comments() { grep -cE '^# --- group A ---$|; the a file$|; pinned for X$|^# b: keep this comment$|^	# then strip$|^# f2: headers only$|# f2 header note$|^# trailing note$' .git-assetsync; }
+quiet asd set a.txt --release 'v*'
+check "registry: set changes only the value - indent, spacing, comment stay" \
+  "$(changed)" "-release   = v1   ; pinned for X +release   = v*   ; pinned for X "
+git commit -qm set
+printf 'c1 v2\n' > "$F/cm1.txt"; release acme/cm v2 17 "$F/cm1.txt" "$F/cm2.txt"
+quiet asd pull a.txt
+check "registry: pull changes only its keys' lines" "$(changed | tr ' ' '\n' | grep -E '^[-+]' | oneline)$(comments)" \
+  "-synced -digest -blob +synced +digest +blob 8"
+git commit -qm pull
+line=$(grep -n '^\[filter "f1"\]' .git-assetsync | cut -d: -f1)
+quiet asd filter set f1 --extract --strip 2 --exclude '*.md'
+check "registry: filter set replaces the steps where they are" \
+  "$(grep -n '^\[filter "f1"\]' .git-assetsync | cut -d: -f1) $(git config -f .git-assetsync --get-all filter.f1.step | oneline)$(comments)" \
+  "$line extract strip 2 exclude '*.md' 8"
+check "... the steps after its first, its comments after them" \
+  "$(sed -n "$((line + 1)),$((line + 4))p" .git-assetsync | sed 's/^[[:space:]]*//' | oneline)" \
+  "step = extract step = strip 2 step = exclude '*.md' # then strip "
+git commit -qm "filter set"
+quiet asd filter rename f2 g2
+check "registry: a renamed section keeps its header's comment" "$(changed)" \
+  '-[filter "f2"]  # f2 header note +[filter "g2"]  # f2 header note '
+git commit -qm rename
+quiet asd mv b.txt c.txt
+check "registry: mv - the comment above stays above" \
+  "$(grep -B1 '^\[file "c.txt"\]' .git-assetsync | head -1)" "# b: keep this comment"
+git commit -qm mv
+quiet asd unlink a.txt
+check "registry: unlink removes the section, not the comments of others" \
+  "$(grep -c 'a.txt' .git-assetsync) $(comments) $(tail -1 .git-assetsync)" "0 6 # trailing note"
+check "... the group heading above it is its own line" "$(grep -c '^# --- group A ---$' .git-assetsync)" "1"
 
 # =============================================================================
 echo
