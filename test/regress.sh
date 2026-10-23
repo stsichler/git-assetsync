@@ -888,6 +888,21 @@ git checkout -q p2.txt
 reset_calls
 quiet git assetsync status
 check "status: one request for both entries of the source" "$(calls)" "1"
+# other selections of the same source: its releases are listed once, also
+# for the releases a pull skips
+asset p.txt "p 5"
+release acme/p v5 14 "$F/p.txt"
+quiet git assetsync set p1.txt --release 'v*'
+quiet git assetsync set p2.txt --prerelease
+check "two selections" "$(reg file.p1.txt.release) $(reg file.p2.txt.prerelease) $(st p1.txt)$(st p2.txt)" "v* true PP"
+reset_calls
+quiet git assetsync status
+check "status: the releases listed once for two selections" "$(grep -c 'releases?per_page' "$GH/calls.log")" "1"
+reset_calls
+quiet git assetsync pull p1.txt p2.txt
+check "pull: the releases listed once, also for those skipped" \
+  "$(grep -c 'releases?per_page' "$GH/calls.log") $(git diff --cached --name-only | oneline)" "1 .git-assetsync p1.txt p2.txt "
+git reset -q --hard
 
 
 # =============================================================================

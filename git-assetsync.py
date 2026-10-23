@@ -697,6 +697,7 @@ class Platform:
 
     def __init__(self, host, project, label):
         self.host, self.project, self.label = host, project, label
+        self.answers = {}         # see json(): each asked once per run
 
     where = property(lambda self: self.label)    # for messages
 
@@ -723,10 +724,19 @@ class Platform:
         return p.stdout
 
     def json(self, path):
-        try:
-            return json.loads(self.api(path).decode("utf-8"))
-        except ValueError as e:
-            raise FsError(f"{self.label}: unexpected answer to '{self.CLI} api {path}': {e}")
+        """The answer to a GET request - asked once per run: release lists
+        and releases are needed several times (release selection, releases
+        skipped, the latest), also by entries with other selections."""
+        if path not in self.answers:
+            try:
+                self.answers[path] = json.loads(self.api(path).decode("utf-8"))
+            except NotFound as e:
+                self.answers[path] = e
+            except ValueError as e:
+                raise FsError(f"{self.label}: unexpected answer to '{self.CLI} api {path}': {e}")
+        if isinstance(self.answers[path], NotFound):
+            raise self.answers[path]
+        return self.answers[path]
 
     def not_found(self):
         return FsError(f"{self.KIND} {self.label} not found (or no access)")
@@ -734,7 +744,7 @@ class Platform:
     def check_project(self):
         """Error if the project doesn't exist (or isn't accessible)."""
         try:
-            self.api(self.project_path)
+            self.json(self.project_path)
         except NotFound:
             raise self.not_found()
 
@@ -922,6 +932,7 @@ class LocalFolder:
         self.dir, self.flat, self.pattern, self.by_name = Path(folder), flat, pattern, by_name
         self.host, self.project = parse_url(url)
         self.label = self.project
+        self.listed = None        # see releases(): listed once per run
 
     where = property(lambda self: f"{self.label} (local folder {self.place})")
     place = property(lambda self: f"{self.dir}" + (f", only {self.pattern}" if self.pattern else ""))
@@ -949,6 +960,11 @@ class LocalFolder:
                        sort_key=tag if self.by_name else "")
 
     def releases(self, limit=None):
+        if self.listed is None:
+            self.listed = self.list_releases()
+        return self.listed
+
+    def list_releases(self):
         self.check_project()
         if self.flat:
             groups = {}
@@ -1033,9 +1049,20 @@ def source_url(arg):
     return f"{urlparse(arg).scheme}://{host}/{path}"
 
 
+_origins = {}
+
+
 def platform_of(url, kind=None, remote=False):
     """Platform client for a source URL - its local folder if it is mapped
-    to one (unless remote); kind: its type key, else derived from the host."""
+    to one (unless remote); kind: its type key, else derived from the host.
+    One per source and run, so that it asks each thing once (see json())."""
+    key = (norm_url(url), (kind or "").lower(), remote)
+    if key not in _origins:
+        _origins[key] = new_origin(url, kind, remote)
+    return _origins[key]
+
+
+def new_origin(url, kind, remote):
     if not remote and norm_url(url) in MAPPINGS:
         m = MAPPINGS[norm_url(url)]
         return LocalFolder(m.folder, url, m.flat, m.pattern, m.by_name)
