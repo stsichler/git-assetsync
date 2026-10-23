@@ -59,7 +59,8 @@ Windows - are refused), subdir PATH (only that directory, as the root),
 strip N (N leading directories off; files with fewer are left out),
 include / exclude PATTERN... (only /
 not the files matching any of them; gitignore-like), move / copy PATTERN
-TARGET (TARGET/: into that directory; else a path with {path} {dir}
+TARGET (what matches - a file, or a directory with all below it - goes
+into TARGET/ under its name, else to the path TARGET with {path} {dir}
 {parent} {name} {stem} {ext}), apply PATTERN NAME (the filter NAME on the
 matching files only), changelog PATTERN... (reads only: the text of the
 matching files goes with the release notes into pull's commit message,
@@ -1674,7 +1675,9 @@ def glob_regex(pattern):
     the filter's root: without a '/' it matches a name at any depth, a
     leading or inner '/' anchors it, a trailing '/' matches directories only;
     '*' and '?' don't match '/', '**/' matches any number of directories. A
-    matching directory stands for everything below it."""
+    matching directory stands for everything below it: the group 'item' is
+    what matched - the file, or the outermost directory -, 'rest' the path
+    below it (None for a file)."""
     dir_only = pattern.endswith("/")
     pat = pattern.strip("/")
     anchored = "/" in pattern.rstrip("/")
@@ -1695,8 +1698,16 @@ def glob_regex(pattern):
             i = j + 1
         else:
             rx, i = rx + re.escape(pat[i]), i + 1
-    return re.compile(("" if anchored else "(?:.*/)?") + rx
-                      + ("/.*" if dir_only else "(?:/.*)?") + r"\Z", re.S)
+    return re.compile(("" if anchored else "(?:.*?/)??") + f"(?P<item>{rx})"
+                      + ("/(?P<rest>.*)" if dir_only else "(?:/(?P<rest>.*))?") + r"\Z", re.S)
+
+
+def matched_item(rx, rel):
+    """(what the pattern matched: rel or a directory above it, the path
+    below that or None) - see glob_regex()."""
+    m = rx.match(rel)
+    rest = m.group("rest")
+    return (rel[:len(rel) - len(rest) - 1] if rest else rel), rest
 
 
 def parse_step(step):
@@ -1746,16 +1757,17 @@ def fill(template, values, quote=False):
     return re.sub(r"\{(\w+)\}", value, template)
 
 
-def target_path(template, rel, what):
-    """Where move / copy put the file rel: into the directory template if it
-    ends with '/', else to the path template with its placeholders filled
-    in. Relative to the filter's root."""
+def target_path(template, rel, what, rest=None):
+    """Where move / copy put rel, a file or directory (with the file rest
+    below it): into the directory template, under its name, if it ends with
+    '/', else to the path template with its placeholders filled in.
+    Relative to the filter's root."""
     values = path_values(rel)
     path = template + values["name"] if template.endswith("/") else fill(template, values)
     result = safe_path(path.lstrip("/"), what)
     if not result:
         raise FsError(f"{what}: '{rel}' gets no file name from '{template}'")
-    return result
+    return f"{result}/{rest}" if rest else result
 
 
 def shell_command():
@@ -1999,8 +2011,9 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
             moved = set() if name == "copy" else set(matched)
             rest = {r: v for r, v in files.items() if r not in moved}
             new, origin = {}, {}
-            for r in matched:
-                t = target_path(args[1], r, f"{work.what}: '{step}'")
+            for r in matched:         # what matched moves: a file, or a directory as a whole
+                item, below = matched_item(rx, r)
+                t = target_path(args[1], item, f"{work.what}: '{step}'", below)
                 if t in new:
                     raise FsError(f"{work.what}: '{step}': '{origin[t]}' and '{r}' would both "
                                   f"become '{t}'")
@@ -6222,8 +6235,9 @@ def run(argv):
     g.add_argument("--exclude", action=StepOption, nargs="+", metavar="PATTERN",
                    help="not the files matching any of the patterns")
     g.add_argument("--move", action=StepOption, nargs=2, metavar=("PATTERN", "TARGET"),
-                   help="move the matching files: into TARGET/ (with a trailing '/'), or "
-                        "to TARGET with {path} {dir} {parent} {name} {stem} {ext}")
+                   help="move what matches - a file, or a directory with all below it: "
+                        "into TARGET/ (with a trailing '/') under its name, or to the path "
+                        "TARGET with {path} {dir} {parent} {name} {stem} {ext}")
     g.add_argument("--copy", action=StepOption, nargs=2, metavar=("PATTERN", "TARGET"),
                    help="copy the matching files to TARGET, as --move does, keeping them where they are")
     g.add_argument("--apply", action=StepOption, nargs=2, metavar=("PATTERN", "NAME"),

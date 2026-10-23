@@ -1902,6 +1902,26 @@ check "move: unknown placeholder" "$(git assetsync filter add bad1 --move '*' '{
   "error: filter step 'move '*' '{base}'': unknown placeholder {base} (known: {path}, {dir}, {parent}, {name}, {stem}, {ext})"
 check "move: target outside" "$(asd add acme/pk x/ --asset pkg.zip --filter outside 2>&1 | grep -c "unsafe path '../up/a.h'")" "1"
 git status --porcelain | grep -q . && git reset -q --hard
+# what the pattern matches moves: a file, or a directory with all below it;
+# TARGET is its new path, TARGET/ the directory it goes into, under its name
+filt mvdir --extract --move src/ code
+filt mvinto --extract --move src/ code/
+filt mvname --extract --copy src '{name}-all'
+filt mvall --extract --move '*' all/
+check "move: a directory renamed (TARGET)" \
+  "$(quiet asd add acme/pk x/ --asset pkg.zip --filter mvdir; git ls-files x | grep -v '^x/boards\|^x/lib' | oneline)" "x/code/x/a.h x/code/y/b.h "
+git reset -q --hard; git clean -qfd
+check "move: a directory into TARGET/, under its name" \
+  "$(quiet asd add acme/pk x/ --asset pkg.zip --filter mvinto; git ls-files x | grep -v '^x/boards\|^x/lib' | oneline)" "x/code/src/x/a.h x/code/src/y/b.h "
+git reset -q --hard; git clean -qfd
+check "copy: placeholders are the directory's" \
+  "$(quiet asd add acme/pk x/ --asset pkg.zip --filter mvname; git ls-files x/src-all x/src | oneline)" \
+  "x/src-all/x/a.h x/src-all/y/b.h x/src/x/a.h x/src/y/b.h "
+git reset -q --hard; git clean -qfd
+check "move: '*' moves each top-level file and directory, as it is" \
+  "$(quiet asd add acme/pk x/ --asset pkg.zip --filter mvall; git ls-files x | oneline)" \
+  "x/all/boards/boardA/README x/all/boards/boardA/app.bin x/all/boards/boardB/app.bin x/all/lib/z.lib x/all/src/x/a.h x/all/src/y/b.h "
+git reset -q --hard; git clean -qfd
 
 # named filters: defined once, used per asset of one release
 new_repo r22c
@@ -1938,7 +1958,7 @@ check "rename: not pending" "$(st v)" ""
 git commit -q -m "rename filter"
 # filter test: local files or the assets of a release; nothing else changes
 check "filter test: a local file" "$(git assetsync filter test hdr "$F/pkg.zip")" "2 bytes  include/a.h"
-check "filter test: a directory" "$(git assetsync filter test fw "$T/pk/src" | oneline)" "2 bytes  fw/a.h 2 bytes  fw/b.h "
+check "filter test: a directory" "$(git assetsync filter test fw "$T/pk/src" | oneline)" "2 bytes  fw/x/a.h 2 bytes  fw/y/b.h "
 check "filter test: --source" "$(git assetsync filter test sdk2 --source acme/pk 2>/dev/null | oneline)" \
   "3 bytes  fw/fw.bin 2 bytes  include/a.h "
 check "filter test: --source, input and steps shown" "$(git assetsync filter test sdk2 --source acme/pk 2>&1 >/dev/null | oneline)" \

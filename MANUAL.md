@@ -1185,11 +1185,14 @@ inner `/` anchors it to the root (`/*.h`, `include/*.h` – but not
 `x/include/a.h`), a trailing `/` matches a directory and everything below
 it; `**/` matches any number of directories (`**/include/*.h`).
 
-**`TARGET` of `move` and `copy`**: with a trailing `/` the files go into
-that directory under their names – e.g. to gather files spread over
-several directories (`--move '*.h' include/`; `./` is the root). Else
-`TARGET` is the new path of each file, with placeholders for parts of its
-old path – for `images/boardA/app.bin`:
+**`TARGET` of `move` and `copy`**: what the pattern matches moves – a
+file, or a directory with everything below it (where a pattern matches
+directories inside each other, the outermost). With a trailing `/`,
+`TARGET` is the directory it goes into, under its name – e.g. to gather
+files spread over several directories (`--move '*.h' include/`; `./` is
+the root), or `--move include/ api/`, which gives `api/include/…`. Else
+`TARGET` is its new path, with placeholders for parts of its old path –
+for `images/boardA/app.bin`:
 
 | Placeholder | Value |
 |---|---|
@@ -1201,9 +1204,11 @@ old path – for `images/boardA/app.bin`:
 | `{ext}` | `.bin` |
 
 So `--move 'images/*/app.bin' 'firmware/{parent}.bin'` makes
-`firmware/boardA.bin`, `firmware/boardB.bin`, …; `--move include/
-'api/{path}'` moves a whole directory with its structure. Two files with
-the same target, or a target that is another file, are an error.
+`firmware/boardA.bin`, `firmware/boardB.bin`, …; `--move include/ api`
+renames the directory `include` to `api`, with everything below it
+(`include/sub/a.h` → `api/sub/a.h`); for a directory the placeholders are
+its own (`{name}` = `include`). Two files with the same target, or a
+target that is another file, are an error.
 
 A step whose pattern matches no files changes no file – a filter stays
 valid for a release that happens to have none of them (e.g. no headers).
