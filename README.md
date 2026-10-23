@@ -177,7 +177,7 @@ cd my-repo
 #    The source is the URL of the project on GitHub or GitLab; it is
 #    recorded as source 'acme/tool'. --asset is a glob pattern that must
 #    match exactly one asset (not needed if the release has only one).
-git assetsync add bin/tool https://github.com/acme/tool --asset 'tool-*-linux-x64'
+git assetsync add https://github.com/acme/tool bin/tool --asset 'tool-*-linux-x64'
 git commit
 
 # 2. See whether a new release is out
@@ -214,7 +214,7 @@ of your own may be there too:
 
 ```sh
 git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' LICENSE
-git assetsync add third_party/zlib/ https://github.com/madler/zlib --asset 'zlib-*.tar.gz' \
+git assetsync add https://github.com/madler/zlib third_party/zlib/ --asset 'zlib-*.tar.gz' \
     --filter zlib-headers
 ```
 
@@ -228,7 +228,7 @@ Basic commands – what you need day to day:
 | `pull PATH…`, `pull --all` | update files and directories to the selected release (`--release`: once another one) and stage them, with a proposed commit message |
 | `diff [PATH…]`, `difftool [PATH…]` | local modifications; `--upstream`: what `pull` would bring – in your difftool also as two directories (`-d`) |
 | `restore PATH…` | discard local modifications: back to what the release gave, like `git restore` |
-| `add PATH SOURCE` | take a file or directory from release assets |
+| `add SOURCE PATH` | take a file or directory from release assets |
 | `rm PATH…`, `unlink PATH…`, `mv OLD NEW` | remove entries with their files (like `git rm`) or without, move them |
 
 Advanced commands:

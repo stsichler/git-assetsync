@@ -152,14 +152,16 @@ Basic commands - what you need day to day:
         -W, --worktree          restore the working tree (the default; with
                                 -S: both)
 
-    add PATH SOURCE             take the file PATH from an asset of the
+    add SOURCE PATH             take the file PATH from an asset of the
                                 release SOURCE selects - or with PATH/ (or
                                 an existing directory) the files of a
                                 directory, next to files there; SOURCE: the
                                 name of a [source], or a URL (owner/repo:
                                 github.com) - the source with that URL, else
                                 a new one named 'owner/repo' (a number
-                                appended if taken);
+                                appended if taken); first the source, then
+                                the path, as for git submodule add and
+                                source map;
                                 PATH and .git-assetsync are staged like `git
                                 add` - a plain `git commit` offers the
                                 proposed message; like cp, no directory is
@@ -6278,12 +6280,12 @@ def run(argv):
                        help="take a file or directory from release assets")
     p.add_argument("--filter", metavar="NAME",
                    help="the named filter (see 'filter add') to apply to the assets")
+    p.add_argument("source", metavar="SOURCE",
+                   help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
     p.add_argument("path", metavar="PATH",
                    help="file in this repository; with a trailing '/' or an existing "
                         "directory: a directory for the files of the release (files of "
                         "others there stay)")
-    p.add_argument("source", metavar="SOURCE",
-                   help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
     p.add_argument("--asset", metavar="PATTERN",
                    help="asset of the release (glob pattern; a file: must match exactly one, "
                         "default the release's only asset; a directory: all matching, "

@@ -217,7 +217,7 @@ Basic commands – what you need day to day:
 | [`diff [PATH…]`](#diff) | local modifications against what the release gave; what `pull` would bring |
 | [`difftool [PATH…]`](#difftool) | the same in your difftool, file by file or (`-d`) as two directories |
 | [`restore PATH…`](#restore) | discard local modifications: back to what the release gave, without pulling |
-| [`add PATH SOURCE`](#add) | take a file or directory from release assets |
+| [`add SOURCE PATH`](#add) | take a file or directory from release assets |
 | [`rm PATH…`](#rm) | remove entries and their files, like `git rm` |
 | [`unlink PATH…`](#unlink) | remove entries (the files are kept) |
 | [`mv OLD NEW`](#mv) | move a file or directory, keeping its entry |
@@ -516,17 +516,24 @@ directory](#files-of-your-own-in-a-directory)); if that isn't possible,
 ### `add`
 
 ```
-git assetsync add PATH SOURCE [--asset PATTERN] [--release TAG|PATTERN] [--prerelease]
+git assetsync add SOURCE PATH [--asset PATTERN] [--release TAG|PATTERN] [--prerelease]
                   [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-n]
 ```
 
-The arguments are in the same order as for `git filesync add`. Takes the
+First the source, then the path – as for `git submodule add URL PATH`,
+[`source map`](#source-map) and `git filesync add`. Takes the
 file or directory `PATH` from assets of the release `SOURCE` selects:
 downloads them, applies the filter, writes the result to `PATH`, records
 the entry in `.git-assetsync` and stages both – like `git add`, without
 committing. A plain `git commit` then offers the proposed message (`git
 commit --no-edit` takes it as it is).
 
+- **`SOURCE`** is the name of a `[source]` in `.git-assetsync`, or a URL
+  (`https://github.com/owner/repo`, `https://gitlab.com/group/project`,
+  also with subgroups; the URL of any page of the project works as well);
+  `owner/repo` is short for a repository on github.com. A URL takes the
+  source with that URL, or creates one (with `--type`, if given). The
+  release selection – `--release`, `--prerelease` – is the entry's.
 - **`PATH`** is the file or directory in your repository, relative to the
   current directory. With a trailing `/` (or if it is an existing
   directory) it becomes a [directory entry](#files-and-directories), else
@@ -536,12 +543,6 @@ commit --no-edit` takes it as it is).
   directory 'src/new' does not exist`); a directory entry's own directory
   may be new, the one above it must exist. `pull` and `restore` make
   directories that are missing again, as `git checkout` does.
-- **`SOURCE`** is the name of a `[source]` in `.git-assetsync`, or a URL
-  (`https://github.com/owner/repo`, `https://gitlab.com/group/project`,
-  also with subgroups; the URL of any page of the project works as well);
-  `owner/repo` is short for a repository on github.com. A URL takes the
-  source with that URL, or creates one (with `--type`, if given). The
-  release selection – `--release`, `--prerelease` – is the entry's.
 - **`--asset PATTERN`** selects the assets: a glob pattern (`*`, `?`,
   `[…]`), e.g. `--asset 'tool-*-linux-x64.tar.gz'`. Quote it, so the
   shell doesn't expand it. The pattern is recorded and used for later
@@ -579,14 +580,14 @@ long as it is what its release gave – local modifications need
 history.
 
 ```sh
-git assetsync add bin/tool acme/tool --asset 'tool-*-linux-x64'
+git assetsync add acme/tool bin/tool --asset 'tool-*-linux-x64'
 
 git assetsync filter add glab-binary --extract --include bin/glab
-git assetsync add tools/glab https://gitlab.com/gitlab-org/cli \
+git assetsync add https://gitlab.com/gitlab-org/cli tools/glab \
     --asset '*_linux_amd64.tar.gz' --filter glab-binary
 
 git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' LICENSE
-git assetsync add third_party/zlib/ madler/zlib --asset 'zlib-*.tar.gz' --filter zlib-headers
+git assetsync add madler/zlib third_party/zlib/ --asset 'zlib-*.tar.gz' --filter zlib-headers
 ```
 
 ### `rm`
@@ -1249,7 +1250,7 @@ its own:
 git assetsync filter add unpack --extract --strip 1 --exclude README.md
 git assetsync filter add sdk --apply 'sdk-*-headers.zip' unpack \
     --apply 'sdk-*-libs.zip' unpack --move 'fw-*.bin' firmware/
-git assetsync add vendor/sdk/ acme/sdk --filter sdk
+git assetsync add acme/sdk vendor/sdk/ --filter sdk
 ```
 
 ```
@@ -1678,7 +1679,7 @@ arguments before git-assetsync sees them:
 
 - **Wildcard characters** (`*`, `?`, `[…]`) are expanded if a file in the
   current directory matches, quoted or not:
-  `git assetsync add lib/tool.zip acme/tool --asset 'tool-*.zip'` turns
+  `git assetsync add acme/tool lib/tool.zip --asset 'tool-*.zip'` turns
   into `tool-1.0.zip` when that file is there.
 - **Arguments starting with `/`** become Windows paths: `unlink /tmp/x` (of
   a broken entry) turns into `C:/Users/…/Temp/x`.
@@ -1695,7 +1696,7 @@ git-assetsync can keep a copy of itself in your repository, so everyone
 has the same version without installing it:
 
 ```sh
-git assetsync add tools/git-assetsync.py stsichler/git-assetsync --asset git-assetsync.py
+git assetsync add stsichler/git-assetsync tools/git-assetsync.py --asset git-assetsync.py
 git commit
 git config alias.assetsync '!python3 tools/git-assetsync.py'     # each clone, once (Windows: !py …)
 ```
