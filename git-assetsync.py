@@ -2879,27 +2879,6 @@ def config_value(value):
     return value
 
 
-def with_value(line, value):
-    """A key line 'KEY = VALUE' with another value: its indentation, spacing
-    and comment at the end stay. None if it has no '='."""
-    m = re.match(r"\s*[A-Za-z][A-Za-z0-9-]*\s*=[ \t]*", line)
-    if not m:
-        return None
-    rest, i, quoted = line[m.end():], 0, False
-    while i < len(rest):          # the old value ends where a comment starts
-        if rest[i] == "\\":
-            i += 2
-            continue
-        if rest[i] == '"':
-            quoted = not quoted
-        elif rest[i] in ";#" and not quoted:
-            break
-        i += 1
-    comment = rest[i:]
-    gap = re.search(r"[ \t]*$", rest[:i]).group(0) if comment else ""
-    return m.group(0) + config_value(value) + gap + comment
-
-
 def edit_config(text, items, ops):
     """(new text, {key: [values]} expected) of applying ops - the arguments
     of `git config -f FILE ...`: KEY VALUE, --unset-all KEY, --add KEY VALUE,
@@ -2909,7 +2888,8 @@ def edit_config(text, items, ops):
     for what it isn't sure to do as git would (the caller then does).
     Only the lines that change are touched: comments, blank lines and the
     layout of the user's stay - a section ends with its last key, what
-    follows (e.g. a comment heading the next one) isn't part of it."""
+    follows (e.g. a comment heading the next one) isn't part of it. A
+    changed key line is written anew (as git config does)."""
     lines = [ln.rstrip("\r") for ln in text.split("\n")]
     items = {k: list(v) for k, v in items.items()}
 
@@ -2969,9 +2949,9 @@ def edit_config(text, items, ops):
             found = blocks(op[1])
             if not found or blocks(op[2]):
                 raise ValueError("rename")
-            at = found[0][0]       # indentation and a comment after it stay
-            m = re.fullmatch(r'(\s*)\[[^"]*"(?:[^"\\]|\\.)*"\s*\](.*)', lines[at])
-            lines[at] = (m.group(1) + header(op[2]) + m.group(2)) if m else header(op[2])
+            at = found[0][0]       # a comment after it: a line of its own, below
+            comment = CONFIG_HEADER.fullmatch(lines[at]).group(3)
+            lines[at:at + 1] = [header(op[2])] + ([f"\t{comment}"] if comment else [])
             old, new = op[1] + ".", op[2] + "."
             items = {(new + k[len(old):] if k.startswith(old) else k): v for k, v in items.items()}
             continue
@@ -3009,7 +2989,7 @@ def edit_config(text, items, ops):
             if len(idx) > 1:
                 raise ValueError(f"{key} more than once")
             if idx:
-                lines[idx[0]] = with_value(lines[idx[0]], value) or f"\t{k} = {config_value(value)}"
+                lines[idx[0]] = f"\t{k} = {config_value(value)}"
             else:
                 append(name, k, value)
             items[norm] = [value]
@@ -3028,6 +3008,8 @@ class Registry:
         self.sources, self.files, self.kinds, self.filters = {}, {}, {}, {}
         self.dry_run = False      # only change the in-memory state
         self.items, self.pending = {}, []     # see flush()
+        # the file's own line endings (CRLF?) stay; None: no file yet
+        self.crlf = b"\r\n" in self.path.read_bytes() if self.path.exists() else None
         if self.path.exists():
             p = git(["config", "-f", self.path, "--list", "-z"], check=False)
             if p.returncode:
@@ -3072,6 +3054,8 @@ class Registry:
         original = self.path.read_bytes()
         try:
             text, expected = edit_config(original.decode("utf-8"), self.items, ops)
+            if self.crlf:
+                text = text.replace("\n", "\r\n")
             self.path.write_bytes(text.encode("utf-8"))
             p = git(["config", "-f", self.path, "--list", "-z"], check=False)
             if p.returncode or config_items(p.stdout) != expected:
@@ -3218,15 +3202,24 @@ class Registry:
         self.kinds[new] = self.kinds.pop(old)
 
     def finish(self):
-        """Fix line endings and stage the registry (or its removal when empty)."""
+        """Stage the registry (or its removal when empty) - with the line
+        endings it had (git config writes LF), a new one in working tree
+        form."""
         if self.dry_run:
             return
         self.flush()
         if self.path.exists():
             if not self.sources and not self.files and not self.filters:
                 self.path.unlink()
-            else:
+            elif self.crlf is None:
                 self.repo.fix_eol(self.path)
+            else:
+                data = self.path.read_bytes()
+                same = data.replace(b"\r\n", b"\n")
+                if self.crlf:
+                    same = same.replace(b"\n", b"\r\n")
+                if same != data:
+                    self.path.write_bytes(same)
         self.repo.git(["add", "-A", "--", REGISTRY])
 
     def uncommitted(self):
