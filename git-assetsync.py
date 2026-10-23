@@ -85,7 +85,8 @@ directory entry stands for that entry in status, diff, difftool, verify
 and pull (commands that change entries refuse it). Options follow the
 command. No command commits: they change the working tree and stage, and
 you commit - add and pull with a proposed message (like git merge
---squash: a plain `git commit` offers it).
+--squash: added to .git/SQUASH_MSG, which a plain `git commit` offers; a
+copy of it all in .git/ASSETSYNC_MSG).
 
 Basic commands - what you need day to day:
 
@@ -4370,35 +4371,20 @@ def cmd_difftool(ctx, repo, args):
     return rc
 
 
-def message_file(repo, name, msg, rels=None):
-    """Keep the proposed commit message in .git/ASSETSYNC_MSG_<name>; returns
-    the file and the command that commits the files (default: name) and
-    their entries with it - with paths relative to the current directory,
-    where it is run."""
-    rels = [name] if rels is None else rels
-    msgfile = repo.state_file("ASSETSYNC_MSG_", rels[0])
-    msgfile.write_bytes(msg.encode("utf-8"))
-    paths = " ".join(path_arg(repo, r) for r in rels + [REGISTRY])
-    return msgfile, f'git commit -e -F "{shown_path(repo, msgfile)}" -- {paths}'
-
-
 def propose_message(repo, msg):
-    """Also put a proposed commit message into .git/SQUASH_MSG, which a plain
-    `git commit` (and IDEs) offer; git removes it after the next commit.
-    Proposals of several commands are collected. A SQUASH_MSG of git's own
-    (e.g. from merge --squash) is left alone. Returns True if done."""
-    squash = repo.gitdir / "SQUASH_MSG"
-    ours = repo.state_file("ASSETSYNC_", "SQUASH_MSG")     # copy of what we wrote
+    """Add a proposed commit message to .git/SQUASH_MSG, which a plain `git
+    commit` (and IDEs) offer; git removes it after the next commit.
+    Proposals are collected - of several commands, also with one of git's
+    own (merge --squash); the same one again changes nothing. A copy of it
+    all goes to .git/ASSETSYNC_MSG (always that file, overwritten): it
+    brings the message back when SQUASH_MSG is gone. Returns the copy."""
+    squash, copy = repo.gitdir / "SQUASH_MSG", repo.gitdir / "ASSETSYNC_MSG"
     if squash.exists():
         prev = squash.read_text(encoding="utf-8", errors="replace")
-        if not ours.exists() or ours.read_text(encoding="utf-8", errors="replace") != prev:
-            return False
-        if msg in prev:
-            return True
-        msg = prev.rstrip("\n") + "\n\n" + msg
-    for f in (squash, ours):
+        msg = prev if msg in prev else prev.rstrip("\n") + "\n\n" + msg
+    for f in (squash, copy):
         f.write_bytes(msg.encode("utf-8"))
-    return True
+    return copy
 
 
 def shown_path(repo, path):
@@ -4410,23 +4396,12 @@ def shown_path(repo, path):
         return Path(path).as_posix()
 
 
-def commit_hint(repo, name, msg, rels=None):
-    """(command, note) for committing staged changes with the proposed
-    message: a plain `git commit` if the message could be prepared for it
-    (see propose_message), otherwise one with a message file."""
-    if propose_message(repo, msg):
-        # git drops SQUASH_MSG after any commit (also one that didn't use
-        # it) and on reset; our copy stays until the next proposal
-        copy = shown_path(repo, repo.state_file("ASSETSYNC_", "SQUASH_MSG"))
-        return "git commit", f"it offers the proposed commit message; a copy stays in {copy}"
-    _, cmd = message_file(repo, name, msg, rels)
-    return cmd, "a plain 'git commit' won't offer the proposed message: .git/SQUASH_MSG is in use"
-
-
-def report_staged(repo, name, msg, done, rels=None, how="Commit with"):
-    """Tell how to commit what a command staged without committing."""
-    cmd, note = commit_hint(repo, name, msg, rels)
-    print(f"{name}: {done}. {how}:\n    {cmd}\n({note})")
+def report_staged(repo, name, msg, done):
+    """Propose the commit message and tell how to commit what a command
+    staged without committing: a plain `git commit`."""
+    copy = shown_path(repo, propose_message(repo, msg))
+    print(f"{name}: {done}. Commit with:\n    git commit\n(it offers the proposed commit "
+          f"message; a copy stays in {copy})")
 
 
 def save_discarded(repo, worktree, index=(), known=None):
@@ -4838,8 +4813,7 @@ def cmd_pull(ctx, repo, args):
             print(f"{name}: {paint('restored', 'green')} - the same as committed, nothing to "
                   "commit")
         else:
-            report_staged(repo, name, pull_message(pulled, msgs),
-                          paint("updated and staged", "green"), [e.rel for e in pulled])
+            report_staged(repo, name, pull_message(pulled, msgs), paint("updated and staged", "green"))
     for st in hints:          # after pull --release: the selection stays
         one_off_hint(ctx, st)
     return rc
@@ -5025,7 +4999,7 @@ def cmd_add(ctx, repo, args):
     # staged only, like git add; the proposed message is prepared for the commit
     msg = "\n".join([f"{COMMIT_PREFIX}Add {shown_rel} from {name} {release.tag}", ""]
                     + release_lines(release, assets, args.filter, stats)) + "\n"
-    report_staged(repo, shown_rel, msg, paint("staged", "green"), rels=[rel])
+    report_staged(repo, shown_rel, msg, paint("staged", "green"))
     return EXIT_OK
 
 

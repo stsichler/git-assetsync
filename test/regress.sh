@@ -343,7 +343,7 @@ new_repo r1
 mkdir bin                 # add makes no directory, as cp
 OUT=$(asd add acme/tool bin/tool.bin --asset 'tool-*.bin' 2>&1)
 check "add stages, like git add" "$(git status --porcelain | oneline)" "A  .git-assetsync A  bin/tool.bin "
-check "add: says how to commit" "$(echo "$OUT" | grep -cxE '    git commit|\(it offers the proposed commit message; a copy stays in \.git/ASSETSYNC_SQUASH_MSG\)')" "2"
+check "add: says how to commit" "$(echo "$OUT" | grep -cxE '    git commit|\(it offers the proposed commit message; a copy stays in \.git/ASSETSYNC_MSG\)')" "2"
 check "add: file is the asset" "$(cat bin/tool.bin)" "tool 1.0"
 check "added, not committed yet: '?'" "$(git assetsync status -s --no-fetch)" " ? bin/tool.bin"
 check "... a section of its own" "$(git assetsync status --no-fetch | grep -A2 '^Not committed yet:' | grep -cE "^${TAB}new file:[[:space:]]+bin/tool\.bin\$")" "1"
@@ -828,13 +828,13 @@ check "two adds: proposals collected" "$(grep -c '^\[assetsync\] Add ' .git/SQUA
 git commit -q --no-edit
 check "commit takes both" "$(git log -1 --format=%B | grep -c '^\[assetsync\] Add ')" "2"
 check "SQUASH_MSG removed by git" "$(ls .git/SQUASH_MSG 2>/dev/null)" ""
-check "... the copy stays" "$(grep -c '^\[assetsync\] Add ' .git/ASSETSYNC_SQUASH_MSG)" "2"
+check "... the copy stays" "$(grep -c '^\[assetsync\] Add ' .git/ASSETSYNC_MSG)" "2"
 mkdir -p sub
 check "copy: path relative to the current directory" \
   "$(cd sub && git assetsync add acme/p p3.txt --asset p.txt 2>&1 | grep -o 'a copy stays in .*')" \
-  "a copy stays in ../.git/ASSETSYNC_SQUASH_MSG)"
+  "a copy stays in ../.git/ASSETSYNC_MSG)"
 git commit -q -m "another message"
-check "copy: a commit without it" "$(ls .git/SQUASH_MSG 2>/dev/null; grep -c '^\[assetsync\] Add sub/p3.txt' .git/ASSETSYNC_SQUASH_MSG)" "1"
+check "copy: a commit without it" "$(ls .git/SQUASH_MSG 2>/dev/null; grep -c '^\[assetsync\] Add sub/p3.txt' .git/ASSETSYNC_MSG)" "1"
 asset p.txt "p 2"
 release acme/p v2 11 "$F/p.txt"
 OUT=$(git assetsync pull p1.txt 2>&1); RC=$?
@@ -844,23 +844,23 @@ check "pull: hint" "$(echo "$OUT" | grep -c '^p1.txt: updated and staged. Commit
 check "pull: proposed message in SQUASH_MSG" "$(head -1 .git/SQUASH_MSG)" "[assetsync] Update p1.txt to acme/p v2 (was v1)"
 git commit -q --no-edit
 check "pull: a plain commit takes it" "$(git log -1 --format=%s)" "[assetsync] Update p1.txt to acme/p v2 (was v1)"
-# a SQUASH_MSG of git's own is left alone
+# a SQUASH_MSG git wrote itself (e.g. merge --squash): the proposal is added to it
 echo "squash of someone else" > .git/SQUASH_MSG
 OUT=$(git assetsync pull p2.txt 2>&1)
-check "foreign SQUASH_MSG kept" "$(cat .git/SQUASH_MSG)" "squash of someone else"
-check "... message file instead" "$(echo "$OUT" | grep -c 'git commit -e -F ".*ASSETSYNC_MSG_p2.txt" -- p2.txt .git-assetsync')" "1"
-rm .git/SQUASH_MSG; git commit -q -F .git/ASSETSYNC_MSG_p2.txt
+check "SQUASH_MSG of git's own: the proposal added" \
+  "$(head -1 .git/SQUASH_MSG) $(grep -c '^\[assetsync\] Update p2.txt' .git/SQUASH_MSG) $(echo "$OUT" | grep -cx '    git commit')" \
+  "squash of someone else 1 1"
+check "... the copy: all of it" "$(cmp -s .git/SQUASH_MSG .git/ASSETSYNC_MSG && echo same)" "same"
+git commit -q --no-edit
 asset p.txt "p 3"
 release acme/p v3 12 "$F/p.txt"
-quiet git assetsync pull p1.txt && git commit -q --no-edit
-# in a subdirectory, the proposed command works there: its paths are relative to it
-echo "squash of someone else" > .git/SQUASH_MSG
-CMD=$(cd sub && git assetsync pull ../p2.txt 2>&1 | grep -o 'git commit -e -F .*')
-check "message file: paths relative to the current directory" "$CMD" \
-  'git commit -e -F "../.git/ASSETSYNC_MSG_p2.txt" -- ../p2.txt ../.git-assetsync'
-rm .git/SQUASH_MSG
-(cd sub && eval "${CMD/ -e / }") >/dev/null 2>&1      # without the editor
-check "... and commits there" "$(git log -1 --format=%s)$(git status --porcelain)" \
+quiet git assetsync pull p1.txt
+check "after a commit the next proposal starts afresh, the copy too" \
+  "$(grep -c 'squash of someone else' .git/ASSETSYNC_MSG) $(head -1 .git/ASSETSYNC_MSG)" \
+  "0 [assetsync] Update p1.txt to acme/p v3 (was v2)"
+git commit -q --no-edit
+quiet git assetsync pull p2.txt && git commit -q --no-edit
+check "... and commits" "$(git log -1 --format=%s)$(git status --porcelain)" \
   "[assetsync] Update p2.txt to acme/p v3 (was v2)"
 # several entries: one proposal for all; other staged files are the user's
 asset p.txt "p 4"

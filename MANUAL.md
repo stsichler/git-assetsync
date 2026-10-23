@@ -1491,18 +1491,18 @@ git config assetsync.notesLines 40
 git config --global assetsync.notesTotalLines 200
 ```
 
-`add` and `pull` stage only and put the proposal into
-`.git/SQUASH_MSG`, which a plain `git commit` offers (as do IDEs like VS
-Code); proposals of several commands are collected, and git removes the
-file after the commit. If `.git/SQUASH_MSG` is in use by git itself (after
-`git merge --squash`), it is left alone, and the command prints a
-`git commit -F` command with a message file instead.
+`add` and `pull` stage only and add the proposal to `.git/SQUASH_MSG`,
+which a plain `git commit` offers (as do IDEs like VS Code). Proposals are
+collected – of several commands, also with one git wrote itself (after
+`git merge --squash`); the same proposal again changes nothing. Git
+removes the file after the commit, so the next proposal starts afresh.
 
-A copy stays in `.git/ASSETSYNC_SQUASH_MSG` until the next proposal (the
-path is printed along with the hint to commit). It brings the message back
-if `SQUASH_MSG` is gone – after a commit that was aborted with an empty
-message and then made with another one, after `git reset`, or after `git
-commit -m`: `git commit -e -F .git/ASSETSYNC_SQUASH_MSG`.
+A copy of it all goes to `.git/ASSETSYNC_MSG` – always that file,
+overwritten with each proposal (the path is printed along with the hint
+to commit). It brings the message back if `SQUASH_MSG` is gone – after a
+commit that was aborted with an empty message and then made with another
+one, after `git reset`, or after `git commit -m`: `git commit -e -F
+.git/ASSETSYNC_MSG`.
 
 ### GitHub and GitLab access
 
