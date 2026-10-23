@@ -1680,7 +1680,9 @@ check "... no longer executable: pulled" "$(git ls-tree HEAD run | cut -d' ' -f1
 release acme/xbit v3 12 "$F/xb1.tar"
 pullc run
 check "... executable again: pulled" "$(git ls-tree HEAD run | cut -d' ' -f1) $(git ls-files -s run | cut -d' ' -f1)" "100755 100755"
-git config --unset core.filemode
+# back to the default - not on Windows, where git init sets core.filemode =
+# false (the file system has no executable bit)
+command -v cygpath >/dev/null || git config --unset core.filemode
 # the mode of a file entry is recorded: a lost executable bit is a modification
 check "mode recorded" "$(reg file.run.mode)" "100755"
 if ! command -v cygpath >/dev/null; then    # Windows: no executable bit (core.filemode = false)
