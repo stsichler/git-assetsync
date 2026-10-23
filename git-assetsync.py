@@ -135,7 +135,7 @@ Basic commands - what you need day to day:
                                 `diff --upstream` to see what it would do)
 
     difftool [PATH...] [-- OPTS]  the same in the difftool (diff.tool), file by
-                                file (asks first if no PATH is given); OPTS go
+                                file (asks before each, like git difftool); OPTS go
                                 to `git difftool` (e.g. -t meld); the working
                                 file itself is passed, the other sides as
                                 temporary copies
@@ -143,7 +143,8 @@ Basic commands - what you need day to day:
         -d, --dir-diff          all files at once, as two directories (e.g. a
                                 directory entry in Meld; temporary copies)
         -y, --no-prompt         don't ask before each file
-        --prompt                ask even if PATHs are given
+        --prompt                ask (the default, unless difftool.prompt is
+                                false); the last of -y and --prompt counts
 
     restore PATH...             like `git restore`: discard local
                                 modifications - back to what the release
@@ -4285,14 +4286,10 @@ def cmd_diff(ctx, repo, args):
 
 
 def difftool_prompting(repo, args):
-    """Ask before each file like `git difftool`: by default only when no paths
-    were given; -y/--no-prompt and difftool.prompt=false turn it off,
-    --prompt turns it on."""
-    if args.prompt:
-        return True
-    if args.no_prompt or args.paths:
-        return False
-    return config_bool("difftool.prompt", True)
+    """Ask before each file like `git difftool` (also with paths given):
+    -y/--no-prompt or --prompt, the last one given, else difftool.prompt
+    (default: ask)."""
+    return config_bool("difftool.prompt", True) if args.prompt is None else args.prompt
 
 
 def difftool_name(repo, extra):
@@ -6204,10 +6201,12 @@ def run(argv):
         if name == "difftool":
             p.add_argument("-d", "--dir-diff", action="store_true",
                            help="compare all files at once, as two directories")
-            p.add_argument("-y", "--no-prompt", action="store_true",
-                           help="don't ask before launching the tool for each file")
-            p.add_argument("--prompt", action="store_true",
-                           help="ask before each file even if paths are given")
+            p.add_argument("-y", "--no-prompt", dest="prompt", action="store_const",
+                           const=False, help="don't ask before launching the tool for "
+                                             "each file")
+            p.add_argument("--prompt", dest="prompt", action="store_const", const=True,
+                           help="ask before each file (the default, unless difftool.prompt "
+                                "= false); the last of -y and --prompt counts")
 
     filterp = argparse.ArgumentParser(add_help=False)
     g = filterp.add_argument_group("filter steps (applied in the order given)")

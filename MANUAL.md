@@ -452,18 +452,19 @@ The same as [`diff`](#diff), in your difftool (`diff.tool`, e.g. Meld);
 | `--upstream`, `--release` | as for `diff` |
 | `-d`, `--dir-diff` | all files at once, as two directories |
 | `-y`, `--no-prompt` | don't ask before each file |
-| `--prompt` | ask even for explicitly given paths |
+| `--prompt` | ask before each file (the default, unless `difftool.prompt = false`); the last of `-y` and `--prompt` counts |
 
 **File by file** (the default), like `git difftool`: the left side is a
 temporary copy of what the release gave, in a directory named after it
 (`synced-v1.0/`); the right side is the working file itself – so edits
 made in the tool are kept – or with `--upstream` a temporary copy
 (`upstream-v1.1/`). A file that is
-missing on one side is compared with an empty file. Without path
-arguments, `difftool` asks before each file (`Viewing (1/3):
-'third_party/zlib/zlib.h'` / `Launch 'meld' [Y/n/q]?`; Enter = yes, `q`
-= stop); `-y` / `--no-prompt` or `difftool.prompt = false` skip the
-questions, `--prompt` asks even for explicitly given paths.
+missing on one side is compared with an empty file. Like `git
+difftool`, it asks before each file – also with paths given (`Viewing
+(1/3): 'third_party/zlib/zlib.h'` / `Launch 'meld' [Y/n/q]?`; Enter =
+yes, `q` = stop); `-y` / `--no-prompt` or `difftool.prompt = false` skip
+the questions, `--prompt` asks anyway; of `-y` and `--prompt`, the last
+one given counts.
 
 **As two directories** (`-d`), with `git difftool --dir-diff`: one call of
 the tool for all files that differ – useful for directory entries, e.g.

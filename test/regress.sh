@@ -2256,8 +2256,13 @@ check "difftool prompt text" "$(echo "$OUT" | grep -c "Viewing (2/3): 'd/b.txt'"
 check "difftool prompt names tool" "$(printf 'q\n' | git assetsync difftool | grep -c "Launch 'fake' \[Y/n/q\]?")" "1"
 check "difftool prompt: EOF quits" "$(git assetsync difftool </dev/null | grep -c 'TOOL ')" "0"
 check "difftool prompt: q quits" "$(printf 'q\n' | git assetsync difftool | grep -c 'TOOL ')" "0"
-check "difftool with path: no prompt" "$(git assetsync difftool f.txt </dev/null)" "TOOL synced-v2 r25/f.txt"
-check "difftool --prompt with path" "$(printf 'n\n' | git assetsync difftool --prompt f.txt | grep -c 'TOOL ')" "0"
+check "difftool with path: asks too, as git difftool" "$(printf 'n\n' | git assetsync difftool f.txt | grep -c 'TOOL ')" "0"
+check "difftool -y with path" "$(git assetsync difftool -y f.txt </dev/null)" "TOOL synced-v2 r25/f.txt"
+check "difftool.prompt = false" "$(git -c difftool.prompt=false assetsync difftool f.txt </dev/null)" "TOOL synced-v2 r25/f.txt"
+check "... --prompt asks anyway" "$(printf 'n\n' | git -c difftool.prompt=false assetsync difftool --prompt f.txt | grep -c 'TOOL ')" "0"
+check "-y and --prompt: the last counts" \
+  "$(git assetsync difftool --prompt -y f.txt </dev/null) $(printf 'n\n' | git assetsync difftool -y --prompt f.txt | grep -c 'TOOL ')" \
+  "TOOL synced-v2 r25/f.txt 0"
 check "difftool -d: two directories" "$(git assetsync difftool -d)" \
   "DIRS ./d/a.txt ./d/b.txt ./f.txt | ./d/a.txt ./d/b.txt ./f.txt "
 git checkout -q f.txt d
