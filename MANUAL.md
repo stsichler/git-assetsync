@@ -82,6 +82,7 @@ Git-config format:
 	synced = v1.1                # tag of the release the file comes from
 	digest = sha256:5b2c…        # SHA-256 of that asset
 	blob = 8d01b7aa…             # the file as committed (git's blob id)
+	mode = 100755                # its mode: 100644, or 100755 (executable)
 [source "acme/multi"]
 	url = https://github.com/acme/multi
 [file "firmware/fw.bin"]
@@ -120,12 +121,17 @@ Git-config format:
   file is pinned to that release) or a pattern with `*`, `?` or `[…]`
   (the newest release whose tag matches); `prerelease = true` lets
   prereleases count – and `asset` (glob pattern; without it, the
-  release's only asset) say what to take. `synced`, `digest` and `blob`
-  are written by git-assetsync and record what the committed file is
-  based on: the release tag, the asset's SHA-256 and the id of the file
-  as `git add` stores it (after line-ending conversion and Git LFS). With
-  `blob`, `status` knows offline whether the committed file and the
-  working tree file are still the asset. Where the platform reports no
+  release's only asset) say what to take. `synced`, `digest`, `blob` and
+  `mode` are written by git-assetsync and record what the committed file
+  is based on: the release tag, the asset's SHA-256, the id of the file
+  as `git add` stores it (after line-ending conversion and Git LFS), and
+  its mode as the filter gave it – `100755` for an executable (e.g. one
+  taken out of an archive), else `100644`. With `blob` and `mode`,
+  `status` knows offline whether the committed file and the working tree
+  file are still the asset – a lost executable bit too (where the system
+  has one; with `core.filemode = false`, as on Windows, git takes modes
+  from the index); `restore` brings it back. Entries synced before 0.20.2
+  have no `mode`: there it doesn't count until their next `pull`. Where the platform reports no
   digests, `assetid` records which uploads they were (see
   [Integrity](#integrity)).
 - **`[dir "PATH"]`** – a directory and the assets it comes from: like
@@ -148,10 +154,10 @@ The commands maintain the file: `add`, `set`, `unlink` and `mv` for the
 sections. It can also be edited by hand – with [`edit`](#edit), which
 checks and stages it afterwards, or with `git config -f .git-assetsync
 …` – but that is never needed; `synced`, `digest`,
-`filterhash`, `blob` and `tree` should be left to git-assetsync. An entry
-written by hand without them is fetched by the next `pull` (an existing
-file at its path is only replaced if it is the same, a directory with
-files only with `--overwrite`). Changes to
+`filterhash`, `blob`, `mode` and `tree` should be left to git-assetsync.
+An entry written by hand without them is fetched by the next `pull`
+(files already at its paths only go with `--overwrite`, unless they are
+what the release gives). Changes to
 the file are committed along with what the next `pull` stages, or on
 their own.
 
