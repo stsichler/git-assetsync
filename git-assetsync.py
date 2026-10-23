@@ -2254,8 +2254,7 @@ OBJECT_VARS = ("GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 
 class Repo:
     scratch_dir = None      # see scratch()
-    fetched = None          # see prefetch(): {path: (blob in HEAD, blob in the working tree)}
-    now = {}                # see prefetch(): {(blob, path): stored_now()}
+    now = {}                # see items_match_base(): {(blob, path): stored_now()}
     pointers = {}           # see lfs_pointers()
     modes = None            # see head_modes()
     filemode = None         # see worktree_mode()
@@ -2280,8 +2279,9 @@ class Repo:
         self.trees = {}           # see tree_entries(): {tree: its entries}
         self.scripts = {}         # see script_blob()
         self.known_trees = {}     # see has_tree(): {tree: whether it is here}
-        self.head_objects = {}    # see prefetch_dirs(): {path: head_object()}
-        self.diffs = None         # see prefetch_dirs(): (paths asked, files differing)
+        self.heads = {}           # see head_entry(): {path: (mode, type, id) | None}
+        self.diffs = None         # see prefetch(): (paths asked, files differing from HEAD)
+        self.work = {}            # see worktree_items(): {path: (mode, id) | None}
         self.now = {}
         self.pointers = {}
         self.missing = set()      # see lfs_pointers()
@@ -2298,56 +2298,80 @@ class Repo:
         except ValueError:            # Windows: another drive
             raise FsError(f"'{path}' is outside the repository")
 
-    def prefetch(self, bases):
-        """For commands that only look: the blobs of these files {path: base
-        blob} in HEAD and in the working tree, with two git commands for all
-        instead of a few per file (head_blob(), worktree_blob() then use
-        them) - and for those that differ from their base, how the base would
-        be stored now (stored_now(), for matches_base())."""
-        rels = [r for r in bases if "\n" not in r]
+    def prefetch(self, entries):
+        """For commands that look at many entries {path: (a directory?, its
+        base)}: what HEAD has at their paths, whether the base trees of
+        directories are here, which of their files differ from HEAD, and how
+        those files would be stored - a few git commands for all instead of
+        some per entry (head_entry(), has_tree(), changed_files(),
+        worktree_items() then use them)."""
+        rels = [r for r in entries if "\n" not in r]
         if not rels:
             return
-        p = self.git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], check=False,
-                     data="".join(f"HEAD:{r}\n" for r in rels).encode("utf-8"))
-        head = {}
-        for r, line in zip(rels, p.stdout.decode("utf-8", "replace").splitlines()):
-            oid, _, kind = line.rpartition(" ")
-            head[r] = oid if kind == "blob" else None
-        files = [r for r in rels if (self.top / r).is_file()]
-        work = {}
-        if files:     # with the filters for each path (LFS, line endings), as git add
-            p = self.git(["hash-object", "--stdin-paths"],
-                         data="".join(f"{r}\n" for r in files).encode("utf-8"))
-            work = dict(zip(files, p.stdout.decode("utf-8", "replace").split()))
-        self.fetched = {r: (head.get(r), work.get(r)) for r in rels}
-        self.lfs_pointers(o for r in rels for o in self.fetched[r] if o and o != bases[r])
-        pairs = [(bases[r], r) for r in rels
-                 if bases[r] and any(o and o != bases[r] for o in self.fetched[r])]
-        try:
-            self.now.update(self.stored_now(pairs))
-        except FsError:       # a base not here: left to the entry, which reports it
-            for pair in pairs:
-                try:
-                    self.now.update(self.stored_now([pair]))
-                except FsError:
-                    pass
+        self.heads.update(dict.fromkeys(rels))
+        for i in range(0, len(rels), 100):
+            p = self.git(["ls-tree", "-z", "HEAD", "--"] + rels[i:i + 100], check=False)
+            for item in p.stdout.decode("utf-8", "replace").split("\0"):
+                info, _, path = item.partition("\t")
+                if path in self.heads:
+                    mode, kind, oid = info.split(" ")
+                    self.heads[path] = (mode, kind, oid)
+        trees = list(dict.fromkeys(b for r in rels for d, b in [entries[r]] if d and b))
+        if trees:
+            p = self.git(["cat-file", "--batch-check=%(objecttype)"], check=False,
+                         data="".join(f"{t}\n" for t in trees).encode("utf-8"))
+            lines = p.stdout.decode("utf-8", "replace").splitlines()
+            if len(lines) == len(trees):
+                self.known_trees.update((t, kind == "tree") for t, kind in zip(trees, lines))
+        changed = set()
+        for i in range(0, len(rels), 100):
+            p = self.git(["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"]
+                         + [lit(r) for r in rels[i:i + 100]], check=False)
+            if p.returncode:
+                return
+            changed.update(p.stdout.decode("utf-8", "replace").split("\0"))
+        self.diffs = (set(rels), changed - {""})
+        # the files that may differ from HEAD (changed, not in HEAD): stored
+        # as git add would, all at once
+        maybe = []
+        for r in rels:
+            is_dir, base = entries[r]
+            paths = [f"{r}/{n}" for n in self.tree_names(base)] \
+                if is_dir and base and self.has_tree(base) else [] if is_dir else [r]
+            head = self.heads.get(r)
+            committed = {f"{r}/{p}" for _, k, _, p in self.tree_entries(head[2]) if k == "blob"} \
+                if is_dir and head and head[1] == "tree" else \
+                {r} if head and head[1] == "blob" else set()
+            maybe += [p for p in paths if p in self.diffs[1] or p not in committed]
+        self.worktree_items(maybe)
 
-    def head_blob(self, rel):
-        """Blob id of the file rel in HEAD, None if HEAD has none."""
-        if self.fetched is not None and rel in self.fetched:
-            return self.fetched[rel][0]
-        p = self.git(["rev-parse", "--verify", "-q", f"HEAD:{rel}"], check=False)
-        return out(p) if p.returncode == 0 else None
+    def head_entry(self, rel):
+        """(mode, type, id) of what HEAD has at rel, None if nothing."""
+        if rel not in self.heads:
+            p = self.git(["ls-tree", "-z", "HEAD", "--", rel], check=False)
+            info, _, path = p.stdout.decode("utf-8", "replace").rstrip("\0").partition("\t")
+            self.heads[rel] = tuple(info.split(" ")) if path == rel else None
+        return self.heads[rel]
 
     def worktree_blob(self, path):
         """Blob id of the (clean-filtered) working tree file, None if missing.
         For a file tracked in LFS here, this is the id of its LFS pointer."""
         rel = self.rel(path)
-        if self.fetched is not None and rel in self.fetched:
-            return self.fetched[rel][1]
+        if rel in self.work:
+            return (self.work[rel] or (None, None))[1]
+        head = self.heads.get(rel)
+        if self.diffs and rel in self.diffs[0] and rel not in self.diffs[1] and \
+                head and head[1] == "blob" and path.is_file():
+            return head[2]        # as in HEAD (prefetch)
         if not path.is_file():
             return None
         return out(self.git(["hash-object", f"--path={rel}", str(path)]))
+
+    def forget(self, rel):
+        """The working tree file rel changes: what is known about it goes."""
+        self.work.pop(rel, None)
+        if self.diffs:
+            self.diffs[0].discard(rel)
 
     def script_blob(self, rel):
         """worktree_blob() of a script a filter runs - once per run, for all
@@ -2585,43 +2609,11 @@ class Repo:
             self.trees[tree] = result
         return self.trees[tree]
 
-    def prefetch_dirs(self, entries):
-        """For commands that look at many directory entries {path: base
-        tree}: whether their base trees are here, what HEAD has at their
-        paths, and which of their files differ from HEAD - with a few git
-        commands for all instead of some per entry (has_tree(),
-        head_object() and changed_files() then use them)."""
-        rels = [r for r in entries if "\n" not in r]
-        if not rels:
-            return
-        asked = [b for b in dict.fromkeys(entries[r] for r in rels) if b] + \
-            [f"HEAD:{r}" for r in rels]
-        p = self.git(["cat-file", "--batch-check=%(objecttype) %(objectname)"], check=False,
-                     data="".join(f"{a}\n" for a in asked).encode("utf-8"))
-        answers = p.stdout.decode("utf-8", "replace").splitlines()
-        if p.returncode or len(answers) != len(asked):
-            return
-        for a, line in zip(asked, answers):
-            kind, _, oid = line.partition(" ")
-            found = not line.endswith(" missing")
-            if a.startswith("HEAD:"):
-                self.head_objects[a[5:]] = (kind, oid) if found else None
-            else:
-                self.known_trees[a] = found and kind == "tree"
-        changed = set()
-        for i in range(0, len(rels), 100):
-            p = self.git(["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"]
-                         + [lit(r) for r in rels[i:i + 100]], check=False)
-            if p.returncode:
-                return
-            changed.update(p.stdout.decode("utf-8", "replace").split("\0"))
-        self.diffs = (set(rels), changed - {""})
-
     def changed_files(self, rel):
-        """Paths below rel whose working tree file differs from HEAD (tracked
-        files)."""
+        """Paths at or below rel whose working tree file differs from HEAD
+        (tracked files)."""
         if self.diffs and rel in self.diffs[0]:
-            return {c for c in self.diffs[1] if c.startswith(rel + "/")}
+            return {c for c in self.diffs[1] if c == rel or c.startswith(rel + "/")}
         p = self.git(["diff", "--name-only", "--no-renames", "-z", "HEAD", "--", lit(rel)],
                      check=False)
         return set(p.stdout.decode("utf-8", "replace").split("\0")) - {""}
@@ -2683,41 +2675,26 @@ class Repo:
         items = self.index_items(rel)
         return items[0][0] if items else "100644"
 
-    def worktree_items(self, rel, paths=None):
-        """[(mode, id, path)] of the files at rel as `git add -A` would
-        stage them (untracked ones included, ignored ones not), computed with
-        a copy of the index, which stays as it is. With paths: only those
-        files are looked at (read, stored) - not the others there."""
-        with self.temp_index(copy=True) as env:
-            if paths is None:
-                self.git(["add", "-A", "--", lit(rel)], env=env, check=False)
-            else:
-                tracked = set(self.git(["ls-files", "-z", "--", lit(rel)], env=env)
-                              .stdout.decode("utf-8", "replace").split("\0"))
-                some = [p for p in sorted(paths) if p in tracked or (self.top / p).is_file()]
-                if some:      # -f: also those the repository ignores (e.g. *.lib)
-                    self.git(["add", "-A", "-f", "--pathspec-from-file=-",
-                              "--pathspec-file-nul"], env=env, check=False,
-                             data="\0".join(lit(p) for p in some).encode("utf-8"))
-            p = self.git(["ls-files", "-s", "-z", "--", lit(rel)], env=env)
-        items = []
-        for item in p.stdout.decode("utf-8", "replace").split("\0"):
-            if item:
+    def worktree_items(self, paths):
+        """{path: (mode, id)} of these working tree files as `git add` would
+        stage them (also where the repository ignores them; none for a path
+        with no file) - computed with a copy of the index, which stays as it
+        is: one git add for all; each path once per run (see forget())."""
+        todo = sorted(p for p in set(paths) if p not in self.work)
+        self.work.update(dict.fromkeys(todo))
+        files = [p for p in todo if (self.top / p).is_file()]
+        if files:
+            with self.temp_index(copy=True) as env:
+                self.git(["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"], env=env,
+                         check=False, data="\0".join(lit(p) for p in files).encode("utf-8"))
+                listing = self.git(["ls-files", "-s", "-z"], env=env).stdout
+            wanted = set(files)
+            for item in listing.decode("utf-8", "replace").split("\0"):
                 info, _, path = item.partition("\t")
-                mode, oid, _ = info.split(" ")
-                if paths is None or path in paths:
-                    items.append((mode, oid, path))
-        return items
-
-    def head_object(self, rel):
-        """(type, id) of what HEAD has at rel: ('blob' | 'tree', id), or None."""
-        if rel in self.head_objects:
-            return self.head_objects[rel]
-        p = self.git(["rev-parse", "--verify", "-q", f"HEAD:{rel}"], check=False)
-        if p.returncode:
-            return None
-        oid = out(p)
-        return out(self.git(["cat-file", "-t", oid])), oid
+                if path in wanted:
+                    mode, oid, _ = info.split(" ")
+                    self.work[path] = (mode, oid)
+        return {p: self.work[p] for p in paths if self.work.get(p)}
 
     def has_tree(self, oid):
         if oid not in self.known_trees:
@@ -2735,15 +2712,6 @@ class Repo:
         """Paths of the files below a tree."""
         return [path for _, kind, _, path in self.tree_entries(tree) if kind == "blob"]
 
-    def worktree_tree(self, rel):
-        """Tree the directory rel would get by `git add -A` (untracked files
-        included, ignored ones not); None if there are no files. Computed
-        with a copy of the index, which stays as it is."""
-        with self.temp_index(copy=True) as env:
-            self.git(["add", "-A", "--", lit(rel)], env=env, check=False)
-            p = self.git(["write-tree", f"--prefix={rel}/"], env=env, check=False)
-            return out(p) if p.returncode == 0 else None
-
     def dir_files(self, rel):
         """Files in the working tree below rel that git sees: tracked and
         untracked ones, not ignored ones."""
@@ -2751,11 +2719,6 @@ class Repo:
                       lit(rel)])
         names = dict.fromkeys(n for n in p.stdout.decode("utf-8", "replace").split("\0") if n)
         return [n for n in names if (self.top / n).is_file()]
-
-    def state_file(self, prefix, name):
-        """.git/<prefix><name> for state kept between commands (name made
-        safe as a file name)."""
-        return self.gitdir / (prefix + re.sub(r"[^A-Za-z0-9._-]", "_", name))
 
     def fix_eol(self, path):
         """Rewrite a file we wrote (LF; git config -f too) in working tree
@@ -2843,12 +2806,8 @@ def origin_text(entry):
 
 
 def prefetch_files(repo, entries):
-    """repo.prefetch() for the file entries among these, prefetch_dirs() for
-    the directory entries."""
-    repo.prefetch({e.rel: e.blob for e in entries
-                   if e.kind == "file" and not path_problem(e.rel)})
-    repo.prefetch_dirs({e.rel: e.blob for e in entries
-                        if e.kind == "dir" and not path_problem(e.rel)})
+    """repo.prefetch() for these entries."""
+    repo.prefetch({e.rel: (e.is_dir, e.blob) for e in entries if not path_problem(e.rel)})
 
 
 def path_problem(rel):
@@ -3357,7 +3316,6 @@ class State:
     committed: Optional[str] = None   # see evaluate()
     worktree: str = "clean"
     local: str = "clean"
-    head_blob: Optional[str] = None   # committed blob of a file, tree of a directory
     changed: bool = False     # what pull would take differs from the base:
     tag_changed: bool = False     # another release,
     digest_changed: bool = False  # other assets in the same release,
@@ -3365,8 +3323,6 @@ class State:
     pending: bool = False     # something for pull to do
     modified: bool = False    # local modifications (not allowed)
     unchecked: bool = False   # a directory whose base isn't in this clone: not checked
-    base_now: Optional[str] = None    # base as it would be stored now
-    files_now: dict = field(default_factory=dict)   # a directory: so, file by file
     changelog: list = field(default_factory=list)   # [(path, text)] its filter read (pull)
 
 
@@ -3377,84 +3333,59 @@ def base_unavailable(st, e):
     return False
 
 
-def matches_base(repo, st, oid):
-    """Is a blob (of HEAD, or of the working tree file: then not stored) the
-    synced asset, i.e. the base recorded in .git-assetsync? Also when it is
-    stored differently since (.gitattributes changed: LFS, line endings)."""
-    entry = st.entry
+def base_files(repo, entry):
+    """[(mode, id, path in the repository)] of the files an entry got from
+    its release - its base; mode None where it isn't recorded (a [file]).
+    None if the base tree of a directory isn't in this clone (committed
+    together with files of others, it never is: see ensure_base)."""
     if not entry.blob:
-        return False
-    if oid == entry.blob:
-        return True
-    try:
-        ptr = repo.lfs_pointer_of(oid)
-        # in LFS now: the pointer names the content's hash, no download needed
-        if ptr and not entry.steps and entry.digest == f"sha256:{ptr[0]}":
-            return True
-        if st.base_now is None:
-            st.base_now = repo.now.get((entry.blob, st.rel)) or \
-                repo.as_local(repo.read_content(entry.blob, st.rel), st.rel)
-        return oid == st.base_now
-    except FsError as e:
-        return base_unavailable(st, e)
+        return []
+    if not entry.is_dir:
+        return [(None, entry.blob, entry.rel)]
+    if not repo.has_tree(entry.blob):
+        return None
+    return [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(entry.blob)
+            if k == "blob"]
 
 
 def items_match_base(repo, st, items):
-    """matches_base() for the files of a directory entry [(mode, id, path in
-    the directory)]: the same files with the same modes as its base tree,
-    and each file that differs from its base blob is that blob re-stored
-    with the current .gitattributes - checked only for the files that differ
-    (re-storing means reading the whole content, through the LFS filters
-    too), all at once (stored_now)."""
+    """Are these files [(mode, id, path in the repository)] - of HEAD, or of
+    the working tree - the base recorded in .git-assetsync: the same paths,
+    the same modes where the base has one, and each file that differs from
+    its base blob that blob stored as it would be now (.gitattributes
+    changed since: LFS, line endings)? Re-storing reads the whole content
+    (through the LFS filters too): only for the files that differ, all at
+    once (stored_now)."""
     entry = st.entry
     if not entry.blob:
         return False
     try:
-        base = {p: (m, o) for m, k, o, p in repo.tree_entries(entry.blob) if k == "blob"}
+        base = {p: (m, o) for m, o, p in base_files(repo, entry) or []}
         now = {p: (m, o) for m, o, p in items}
-        if base.keys() != now.keys() or any(base[p][0] != now[p][0] for p in base):
+        if base.keys() != now.keys() or any(m and m != now[p][0] for p, (m, _) in base.items()):
             return False
-        differ = [path for path, (_, oid) in now.items() if oid != base[path][1]]
-        new = repo.stored_now((base[p][1], f"{st.rel}/{p}") for p in differ
-                              if p not in st.files_now)
-        st.files_now.update({path[len(st.rel) + 1:]: oid for (_, path), oid in new.items()})
-        return all(now[p][1] == st.files_now[p] for p in differ)
+        differ = [p for p, (_, o) in now.items() if o != base[p][1]]
+        if not differ:
+            return True
+        # in LFS now: the pointer names the content's hash - of an asset taken
+        # as it is, its digest: no download needed
+        if not entry.is_dir and not entry.steps:
+            ptr = repo.lfs_pointer_of(now[entry.rel][1])
+            if ptr and entry.digest == f"sha256:{ptr[0]}":
+                return True
+        todo = [(base[p][1], p) for p in differ if (base[p][1], p) not in repo.now]
+        repo.now.update(repo.stored_now(todo))
+        return all(now[p][1] == repo.now[(base[p][1], p)] for p in differ)
     except FsError as e:
         return base_unavailable(st, e)
 
 
-def local_state_file(repo, st):
-    entry = st.entry
-    known = bool(entry.blob)
-    cur = repo.worktree_blob(entry.target)
-    head = st.head_blob = repo.head_blob(entry.rel)
-    if head and known:
-        st.committed = "unmodified" if matches_base(repo, st, head) else "adapted"
-    if cur is None:
-        st.worktree = "deleted" if head else "missing"
-    elif not head:
-        st.worktree = "added"
-    elif cur != head:         # the content, as git add would store it now
-        st.worktree = "modified"
-    if cur is None:
-        st.local = "missing"
-    elif not known:
-        st.local = "clean"
-    elif st.worktree == "clean":
-        st.local = "clean" if st.committed == "unmodified" else "modified"
-    else:
-        st.local = "clean" if matches_base(repo, st, cur) else "modified"
-
-
 def base_paths(repo, entry):
-    """Paths (in the repository) of the files a directory entry got from its
-    release - those of its base tree; None if that tree isn't in this clone
-    (committed together with files of others, it never is: see ensure_base)."""
-    if not entry.blob:
-        return set()
-    if not repo.has_tree(entry.blob):
-        return None
-    return {f"{entry.rel}/{p}" for p in repo.tree_names(entry.blob)}
+    """Paths (in the repository) of the files an entry got from its release
+    - those of its base; None if a directory's base tree isn't in this
+    clone (see base_files())."""
+    files = base_files(repo, entry)
+    return None if files is None else {p for _, _, p in files}
 
 
 def ensure_base(repo, reg, entry):
@@ -3491,23 +3422,25 @@ def release_tree(repo, rel, items, paths):
     return repo.make_tree([(m, o, p[len(rel) + 1:]) for m, o, p in items if p in paths])
 
 
-def local_state_dir(repo, st):
-    """As local_state_file(), for a directory: only the files it got from its
-    release (its base) count - other files there are someone else's.
-    Without the base in this clone: not checked (st.unchecked)."""
+def local_state(repo, st):
+    """The committed and working tree state of an entry: of the files it
+    got from its release (its base) - in a directory only those, other
+    files there are someone else's. Without the base in this clone (a
+    directory's): not checked (st.unchecked)."""
     entry = st.entry
-    paths = base_paths(repo, entry)
-    if paths is None:
+    base = base_files(repo, entry)
+    if base is None:
         st.unchecked = True
         return
     known = bool(entry.blob)
-    obj = repo.head_object(entry.rel)
-    head = []                 # the committed files of the release [(mode, id, path in it)]
-    if obj and obj[0] == "tree":
-        head = [(m, o, p) for m, k, o, p in repo.tree_entries(obj[1])
-                if k == "blob" and f"{entry.rel}/{p}" in paths]
-    st.head_blob = obj[1] if head else None
-    if obj and obj[0] != "tree":
+    paths = {p for _, _, p in base} if entry.is_dir else {entry.rel}
+    obj = repo.head_entry(entry.rel)          # (mode, type, id)
+    head = []                 # the committed files of the release [(mode, id, path)]
+    if obj and obj[1] == ("tree" if entry.is_dir else "blob"):
+        head = [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(obj[2])
+                if k == "blob" and f"{entry.rel}/{p}" in paths] if entry.is_dir else \
+            [(obj[0], obj[2], entry.rel)]
+    if obj and entry.is_dir and obj[1] != "tree":
         st.committed = "adapted"             # committed as a file
     elif head and known:
         st.committed = "unmodified" if items_match_base(repo, st, head) else "adapted"
@@ -3525,7 +3458,7 @@ def local_state_dir(repo, st):
     elif st.worktree == "clean":
         st.local = "clean" if st.committed == "unmodified" else "modified"
     else:
-        now = [(m, o, p[len(entry.rel) + 1:]) for m, o, p in repo.worktree_items(entry.rel, paths)]
+        now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
         st.local = "clean" if items_match_base(repo, st, now) else "modified"
 
 
@@ -3572,7 +3505,7 @@ def evaluate(ctx, repo, entry):
                           f"'git assetsync filter add {entry.filter} ...')")
         expand_steps(entry.steps, entry.reg.filters)
         with repo.scratch():      # only looks: nothing stored in the repository
-            (local_state_dir if entry.is_dir else local_state_file)(repo, st)
+            local_state(repo, st)
     except FsError as e:
         st.error = str(e)
         return st
@@ -4216,7 +4149,8 @@ def diff_items(ctx, repo, reg, args):
                 upstream.append((entry, st, files))
                 continue
             elif entry.is_dir:      # its files, not others'
-                other = repo.worktree_items(entry.rel, base_paths(repo, entry) or set())
+                other = [(m, o, p) for p, (m, o)
+                         in repo.worktree_items(base_paths(repo, entry) or set()).items()]
             else:                   # prefetched; the mode as git add would take it
                 blob = repo.worktree_blob(entry.target)
                 other = [(repo.worktree_mode(entry.rel), blob, entry.rel)] if blob else []
@@ -4449,8 +4383,7 @@ def install_file(repo, rel, target, files, overwrite=False):
         raise FsError(f"'{rel}' is a directory")
     save_discarded(repo, [rel] if cur and cur != blob else [], [rel], {rel: cur} if cur else None)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if repo.fetched:
-        repo.fetched.pop(rel, None)         # changes now
+    repo.forget(rel)                        # changes now
     target.write_bytes(repo.checkout_form(blob, rel))
     set_executable(target, executable)
     repo.git(["add", "-f", "--", lit(rel)])     # -f: also where ignored, like [dir]
@@ -4625,8 +4558,7 @@ def install_files(repo, jobs):
             if cur and cur != ids[rel]:
                 replaced[rel] = cur
             target.parent.mkdir(parents=True, exist_ok=True)
-            if repo.fetched:
-                repo.fetched.pop(rel, None)         # changes now
+            repo.forget(rel)                        # changes now
     save_discarded(repo, replaced, [r for _, _, r in ok], replaced)
     if ok:
         repo.git(["update-index", "-z", "--add", "--index-info"],
@@ -4953,7 +4885,7 @@ def cmd_add(ctx, repo, args):
             base = base or ()
         if not args.overwrite:
             old = State(entry=old_entry, rel=rel)
-            (local_state_dir if is_dir else local_state_file)(repo, old)
+            local_state(repo, old)
             if old.local == "modified":
                 raise FsError(f"'{shown_rel}' has local modifications - use --overwrite to "
                               "discard them")
@@ -5215,8 +5147,7 @@ def verify_compare(repo, entry, release, items, keeps):
     is what they give."""
     st = State(entry=entry, rel=entry.rel)
     if not entry.is_dir:
-        (_, new, _), = items
-        if matches_base(repo, st, new):
+        if items_match_base(repo, st, items):
             return True, f"verified ({release.tag})"
         return False, f"differs from what {release.tag} gives now"
     rel_items = [(m, o, path[len(entry.rel) + 1:]) for m, o, path in items]
@@ -5231,7 +5162,7 @@ def verify_compare(repo, entry, release, items, keeps):
         return True, f"verified ({release.tag})"
     if keeps:
         return False, f"differs from what {release.tag} gives now"
-    if items_match_base(repo, st, rel_items):
+    if items_match_base(repo, st, items):
         return True, f"verified ({release.tag})"
     p = repo.git(["diff-tree", "-r", "--no-renames", "--name-status", entry.blob, new])
     changes = [f"\t{line}" for line in out(p).splitlines()]
@@ -5417,7 +5348,7 @@ def restore_plan(repo, entry, staged, worktree):
         sides["index"] = [i for i in repo.index_items(entry.rel) if i[2] in paths]
     if worktree:
         if entry.is_dir:          # its files, not those of others there
-            sides["worktree"] = repo.worktree_items(entry.rel, paths)
+            sides["worktree"] = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
         else:
             blob = repo.worktree_blob(entry.target)
             sides["worktree"] = [("", blob, entry.rel)] if blob else []
