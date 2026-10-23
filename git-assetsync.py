@@ -2343,7 +2343,9 @@ class Repo:
             committed = {f"{r}/{p}" for _, k, _, p in self.tree_entries(head[2]) if k == "blob"} \
                 if is_dir and head and head[1] == "tree" else \
                 {r} if head and head[1] == "blob" else set()
-            maybe += [p for p in paths if p in self.diffs[1] or p not in committed]
+            # a [file]: always read (stat data can miss a change, see
+            # worktree_items()); a directory's files where git sees a change
+            maybe += [p for p in paths if not is_dir or p in self.diffs[1] or p not in committed]
         self.worktree_items(maybe)
 
     def head_entry(self, rel):
@@ -2360,10 +2362,6 @@ class Repo:
         rel = self.rel(path)
         if rel in self.work:
             return (self.work[rel] or (None, None))[1]
-        head = self.heads.get(rel)
-        if self.diffs and rel in self.diffs[0] and rel not in self.diffs[1] and \
-                head and head[1] == "blob" and path.is_file():
-            return head[2]        # as in HEAD (prefetch)
         if not path.is_file():
             return None
         return out(self.git(["hash-object", f"--path={rel}", str(path)]))
@@ -2668,23 +2666,28 @@ class Repo:
 
     def worktree_items(self, paths):
         """{path: (mode, id)} of these working tree files as `git add` would
-        stage them (also where the repository ignores them; none for a path
-        with no file) - computed with a copy of the index, which stays as it
-        is: one git add for all; each path once per run (see forget())."""
+        stage them (none for a path with no file): their content read - one
+        hash-object for all, with the filters of each path; not trusting
+        stat data, which can't tell a file changed in the same second with
+        the same size - and the mode as git add takes it: the executable
+        bit, with core.filemode = false the index's (new files 100644). In
+        scratch() the contents are stored, for diff. Each path once per run
+        (see forget())."""
         todo = sorted(p for p in set(paths) if p not in self.work)
         self.work.update(dict.fromkeys(todo))
         files = [p for p in todo if (self.top / p).is_file()]
         if files:
-            with self.temp_index(copy=True) as env:
-                self.git(["add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul"], env=env,
-                         check=False, data="\0".join(lit(p) for p in files).encode("utf-8"))
-                listing = self.git(["ls-files", "-s", "-z"], env=env).stdout
-            wanted = set(files)
-            for item in listing.decode("utf-8", "replace").split("\0"):
-                info, _, path = item.partition("\t")
-                if path in wanted:
-                    mode, oid, _ = info.split(" ")
-                    self.work[path] = (mode, oid)
+            p = self.git(["hash-object", "--stdin-paths"] + (["-w"] if self.scratch_dir else []),
+                         data="".join(f"{f}\n" for f in files).encode("utf-8"))
+            ids = p.stdout.decode("utf-8", "replace").split()
+            stat_bit = config_bool("core.filemode", True)
+            index = {} if stat_bit else {path: mode for mode, _, path in self.index_items(".")}
+            for f, oid in zip(files, ids):
+                if stat_bit:
+                    mode = "100755" if os.stat(self.top / f).st_mode & 0o100 else "100644"
+                else:
+                    mode = index.get(f, "100644")
+                self.work[f] = (mode, oid)
         return {p: self.work[p] for p in paths if self.work.get(p)}
 
     def has_tree(self, oid):
@@ -3444,7 +3447,8 @@ def local_state(repo, st):
         st.worktree = "deleted" if head else "missing"
     elif not head:
         st.worktree = "added"
-    elif repo.changed_files(entry.rel) & paths:
+    elif repo.changed_files(entry.rel) & paths or \
+            any(repo.work.get(p, (m, o)) not in (None, (m, o)) for m, o, p in head):
         st.worktree = "modified"
     if not files:
         st.local = "missing"

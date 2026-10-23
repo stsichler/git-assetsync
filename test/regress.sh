@@ -671,6 +671,14 @@ echo mine > lm.txt
 out=$(pullcm --overwrite lm.txt 2>/dev/null)
 id=$(printf '%s\n' "$out" | sed -n 's/^discarded: lm.txt (git show \([0-9a-f]*\) to get it back)$/\1/p')
 check "pull --overwrite: an uncommitted one named, to get back" "$(git show "$id") $(cat lm.txt) $(st)" "mine lm 1 "
+# a change git's stat data can't tell (the same size and time - e.g. written
+# in the same second as the file it replaces): noticed all the same
+git config core.trustctime false        # (ctime can't be set back: compare without it)
+touch -t 202601010000 lm.txt && git update-index -q --refresh   # an older file, in the index
+cp -p lm.txt "$T/lm.saved" && printf 'XX 1\n' > lm.txt && touch -r "$T/lm.saved" lm.txt
+check "a change with the same size and time: modified" "$(st lm.txt)" " M"
+cp -p "$T/lm.saved" lm.txt; git config --unset core.trustctime
+check "... back: clean" "$(st lm.txt)" ""
 
 # uncommitted modification, with a new release
 echo dirty > lm.txt
