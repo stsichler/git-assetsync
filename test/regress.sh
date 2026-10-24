@@ -1691,6 +1691,24 @@ check "... executable again: pulled" "$(git ls-tree HEAD run | cut -d' ' -f1) $(
 # back to the default - not on Windows, where git init sets core.filemode =
 # false (the file system has no executable bit)
 command -v cygpath >/dev/null || git config --unset core.filemode
+# the mode of a file entry is recorded: a lost executable bit is a modification
+check "mode recorded" "$(reg file.run.mode)" "100755"
+if ! command -v cygpath >/dev/null; then    # Windows: no executable bit (core.filemode = false)
+  chmod -x run
+  check "mode: chmod -x is a local modification" "$(st run)" " M"
+  quiet git assetsync restore run
+  check "... restore brings the bit back" "$(test -x run && echo x) $(st run)" "x "
+fi
+git update-index --chmod=-x run && git commit -qm "no x"
+check "mode: committed without it: modified" "$(st run)" " M"
+quiet git assetsync restore -SW run && git commit -qm "x again"
+check "... restore -SW: committed with it again" "$(git ls-tree HEAD run | cut -d' ' -f1) $(st run)" "100755 "
+git config -f .git-assetsync --unset file.run.mode && git commit -qam "an entry from before 0.20.2"
+git update-index --chmod=-x run && git commit -qm "no x"
+check "no mode recorded (before 0.20.2): not compared" "$(st run)" ""
+release acme/xbit v4 13 "$F/xb2.tar"
+pullc run
+check "... recorded with the next pull" "$(reg file.run.mode)" "100644"
 
 
 # =============================================================================
