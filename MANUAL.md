@@ -166,16 +166,24 @@ their own.
 
 A file taken from an asset must stay exactly what the release gives – a
 binary or a generated file can't be merged with local changes. A file that
-differs – committed or not, also deleted – is reported by `status` as
-**NOT ALLOWED**, `status --exit-code` exits with 1, and `pull` refuses to
-update it. [`diff`](#diff) shows the modification; [`restore`](#restore)
-discards it and brings back what the release gave, `pull --overwrite`
-discards it and updates to what the selected release gives (with a
-warning, and a note in the commit message).
+differs – committed or not – is reported by `status` as **NOT ALLOWED**,
+`status --exit-code` exits with 1, and `pull` refuses to update it.
+[`diff`](#diff) shows the modification; [`restore`](#restore) discards it
+and brings back what the release gave, `pull --overwrite` discards it and
+updates to what the selected release gives (with a warning, and a note in
+the commit message).
+
+A file that is gone – deleted, the deletion committed or not – is
+**missing**, not allowed either while it is an entry: whether a file may
+be absent depends only on whether the entry has a base (`blob`/`tree`).
+`pull` refuses it, also with `--overwrite`, and `pull --all` leaves it
+out; only `restore` gets it back (making missing directories too) – or
+`unlink`/`rm` remove the entry. An entry without a base, not synced yet,
+is `new` instead: `pull` takes its release.
 
 In a directory entry, only the files of the release count: one of them
-changed or deleted is a modification; other files there are not the
-entry's (see below). Files an entry gets – the file of a file entry, the
+changed or deleted is a modification, all of them gone is missing; other
+files there are not the entry's (see below). Files an entry gets – the file of a file entry, the
 files of a directory entry – are always staged and committed, also if
 `.gitignore` would ignore them (e.g. `*.lib`), and written as `git
 checkout` writes them (line endings, filters of `.gitattributes`).
@@ -318,7 +326,11 @@ Locally modified files:
   (use "git assetsync diff <file>..." to see the modifications)
   (use "git assetsync restore -SW <file>..." to restore the release asset)
 	modified:   lib/data.bin  (NOT ALLOWED)
-	deleted:    bin/tool  (NOT ALLOWED)
+
+Missing files:
+  (use "git assetsync restore <file>..." to get them back)
+  (use "git assetsync unlink <file>..." to remove their entries)
+	missing:    bin/tool  (NOT ALLOWED: still an entry)
 
 Not committed yet:
   (use "git commit" to commit them)
@@ -328,11 +340,17 @@ Not committed yet:
 - **Upstream changes to pull** – `pending`: the entry selects another
   release than the one it comes from (`v1.0 -> v1.1`), the asset of
   that release was replaced (re-uploaded with other content), or the
-  filter was changed (`filter changed`). `new`: an entry without a synced
-  release yet, or one not in the working tree yet.
+  filter was changed (`filter changed`). `new`: an entry not synced yet
+  (`not synced yet, release v1.1`) – e.g. written by hand with
+  [`edit`](#edit), with just its source and asset: `pull` takes the
+  release, as `add` would.
 - **Locally modified files** – the file (directory) differs from what the
   release gave: in the working tree or committed – both are not allowed,
   and `restore -SW` (then a commit) brings it back either way.
+- **Missing files** – what an entry got is gone: its file, or all files of
+  its release in a directory – deleted, also with the deletion committed.
+  Not allowed while it is an entry: `restore` gets it back, `unlink` (or
+  `rm`) removes the entry.
 - **Not committed yet** – an entry added or pulled and staged, not
   committed yet.
 
@@ -344,9 +362,9 @@ shown as usual. The hints in parentheses follow `advice.statusHints`.
 
 | Option | Meaning |
 |---|---|
-| `-s`, `--short` | one line per file with something to report, two columns like `git status -s`: upstream (`P` pending, `N` new, `E` error) and local (`M` modified, committed or not; `D` deleted; `?` not committed yet) |
+| `-s`, `--short` | one line per file with something to report, two columns like `git status -s`: upstream (`P` pending, `N` new, `E` error) and local (`M` modified, committed or not; `D` missing; `?` not committed yet) |
 | `-v`, `--verbose` | also list all files with asset, source, release selection and synced release |
-| `--exit-code` | exit with 1 if something is to pull or a file is modified |
+| `--exit-code` | exit with 1 if something is to pull or a file is modified or missing |
 | `--no-fetch` | don't ask GitHub or GitLab for new releases: only local modifications are shown, see [Offline operation](#offline-operation) |
 
 Like `git status`, it exits with 0 unless `--exit-code` is given; errors
@@ -379,15 +397,17 @@ whose filter was changed (with [`set`](#set)) is filtered again, from the
 brought back what is committed, there is nothing to commit, and it says
 so.
 
-`pull` refuses a file with local modifications, committed or not (see
-[No local modifications](#no-local-modifications)); the other files are
-pulled anyway, and the exit code is 2.
+`pull` refuses a file with local modifications, committed or not, and a
+missing one (see [No local modifications](#no-local-modifications)); the
+other files are pulled anyway, and the exit code is 2. An entry not synced
+yet is taken as `add` would: a file of the release already there is taken
+if it is the same, else only with `--overwrite`.
 
 
 | Option | Meaning |
 |---|---|
-| `--all` | all entries with something to pull (with `--overwrite` also modified ones) |
-| `--release TAG\|PATTERN` | this release instead of the one the entry selects, once – see below; a pattern takes the newest matching release; not with `--all` |
+| `--all` | all entries with something to pull (with `--overwrite` also modified ones; missing ones are left out, with a warning); not with paths |
+| `--release TAG\|PATTERN` | this release instead of the one the entry selects, once – see below; a pattern takes the newest matching release; also with `--all`: an entry whose project has no such release is an error |
 | `--overwrite` | discard local modifications: restore or update the file (directory) anyway; in a directory also replace files of yours in the way of the release's |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` shows it (assets, source, release selection, filter, the release synced) |
 | `-n`, `--dry-run` | only report what would happen; nothing is downloaded or changed |
@@ -707,11 +727,14 @@ staged (`… - not staged; fix it with 'git assetsync edit'`); gaps that
 ```
 warning: .git-assetsync: [source "acme/old"] is not used by any file
 warning: .git-assetsync: [file "bin/tool"]: no [source "acme/tol"]
-warning: .git-assetsync: [file "lib/x.bin"] lacks synced or blob (what it was synced with) - pull takes the release
+warning: .git-assetsync: [file "lib/x.bin"] has synced but no blob (what it was synced with) - pull takes the release again
 ```
 
-Unchanged, nothing happens; if the editor fails, nothing is staged; an
-emptied file is removed (and that staged). For the usual changes the
+An entry with just its source (and asset, release selection, filter) is
+no gap but one not synced yet – e.g. many written at once by copy and
+paste: `pull --all` takes their releases. Unchanged, nothing happens; if
+the editor fails, nothing is staged; an emptied file is removed (and that
+staged). For the usual changes the
 dedicated commands are safer – [`set`](#set), [`source`](#source),
 [`filter`](#filter), [`unlink`](#unlink), [`mv`](#mv) – since `edit` keeps
 whatever you write: a changed `blob` or `tree` changes what counts as a
@@ -1047,9 +1070,9 @@ post-merge: hook of another tool, without our lines (add them with 'git assetsyn
 
 `hooks install` installs (or updates) two hooks that report on stderr:
 
-- `pre-push` – reminds of new releases, local modifications and errors
-  before pushing
-- `post-merge` – reminds of local modifications after `git pull`/`git
+- `pre-push` – reminds of new releases, local modifications, missing
+  files and errors before pushing
+- `post-merge` – reminds of local modifications and missing files after `git pull`/`git
   merge`, without asking GitHub or GitLab
 
 ```

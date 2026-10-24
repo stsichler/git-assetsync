@@ -57,6 +57,7 @@
 #   33. Comments and own lines in .git-assetsync
 #   34. add and mv make no directories; pull and restore do
 #   35. executable: making files executable
+#   36. Missing files, entries not synced yet, pull --all --release
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -700,8 +701,9 @@ check "... message" "$(git log -1 --format=%s)" "[assetsync] Update lm.txt to ac
 rm lm.txt
 check "deleted: D" "$(st)" " D"
 check "deleted: pull refused" "$(rc git assetsync pull lm.txt)" "2"
-pullc --overwrite lm.txt
-check "deleted: pull --overwrite restores" "$(cat lm.txt)" "lm 2"
+check "deleted (missing): pull --overwrite refused too" "$(rc git assetsync pull --overwrite lm.txt)" "2"
+quiet git assetsync restore lm.txt
+check "... restore gets it back" "$(cat lm.txt) $(st)" "lm 2 "
 
 # a change back to the asset version is no modification
 echo changed > lm.txt && git commit -qam "local change"
@@ -721,7 +723,7 @@ printf '[source "h"]\n\turl = https://github.com/acme/hand\n[file "hand.txt"]\n\
 git add .git-assetsync && git commit -qm "hand-written entry"
 check "hand-written entry: new" "$(st)" "N"
 check "hand-written entry: -v" "$(git assetsync status -v | grep -cE "^${TAB}not synced: hand\.txt  \(hand\.txt from h, latest release; not synced yet\)")" "1"
-check "hand-written entry: note" "$(git assetsync status | grep -cE "^${TAB}new:[[:space:]]+hand\.txt  \(release v1\)")" "1"
+check "hand-written entry: note" "$(git assetsync status | grep -cE "^${TAB}new:[[:space:]]+hand\.txt  \(not synced yet, release v1\)")" "1"
 echo mine > hand.txt
 check "existing other file: refused" "$(git assetsync pull hand.txt 2>&1 | tail -1)" \
   "error: 'hand.txt' is in the way of the release - use --overwrite to replace it"
@@ -2281,8 +2283,7 @@ check "pull --release: status pending" "$(git assetsync status -s f.txt)" "P  f.
 check "pull --release: up to date" "$(git assetsync pull --release v1 f.txt)" "f.txt: up to date"
 check "pull --release: pattern = newest matching" "$(git assetsync pull -n --release 'v*' f.txt | head -1)" \
   "would: Update f.txt to acme/df v2 (was v1)"
-check "pull --release: not with --all" "$(git assetsync pull --all --release v1 2>&1)" \
-  "error: --release needs the files to pull, not --all"
+check "pull --release: also with --all" "$(git assetsync pull -n --all --release v1 2>&1 | grep -c '^error'; git status --porcelain)" "0"
 check "pull --release: unknown tag" "$(git assetsync pull --release v9 f.txt 2>&1)" \
   "error: f.txt: no release with tag 'v9' in acme/df"
 pullc f.txt
@@ -2552,10 +2553,10 @@ check "edit: staged" "$(GIT_EDITOR="sh '$T/ed-pin.sh'" git assetsync edit)" \
   '.git-assetsync staged (use "git assetsync status" to see what changes, "git assetsync pull <file>..." to update)'
 check "edit: the change" "$(reg file.e.txt.release) $(git status --porcelain | oneline)" "v1 M  .git-assetsync "
 git commit -qm pinned
-printf 'git config -f "$1" source.other.url https://github.com/acme/other\ngit config -f "$1" file.x.txt.source nosuch\ngit config -f "$1" dir.e.txt/sub.source acme/e\n' > "$T/ed-gaps.sh"
+printf 'git config -f "$1" source.other.url https://github.com/acme/other\ngit config -f "$1" file.x.txt.source nosuch\ngit config -f "$1" dir.e.txt/sub.source acme/e\ngit config -f "$1" file.y.txt.source acme/e\ngit config -f "$1" file.y.txt.synced v1\n' > "$T/ed-gaps.sh"
 OUT=$(GIT_EDITOR="sh '$T/ed-gaps.sh'" git assetsync edit 2>&1)
 check "edit: warnings" "$(echo "$OUT" | grep '^warning:' | oneline)" \
-  "warning: .git-assetsync: [source \"other\"] is not used by any file warning: .git-assetsync: [file \"e.txt\"] overlaps with the entry for e.txt/sub warning: .git-assetsync: [dir \"e.txt/sub\"] lacks synced or tree (what it was synced with) - pull takes the release warning: .git-assetsync: [file \"x.txt\"]: no [source \"nosuch\"] warning: .git-assetsync: [file \"x.txt\"] lacks synced or blob (what it was synced with) - pull takes the release "
+  "warning: .git-assetsync: [source \"other\"] is not used by any file warning: .git-assetsync: [file \"e.txt\"] overlaps with the entry for e.txt/sub warning: .git-assetsync: [file \"x.txt\"]: no [source \"nosuch\"] warning: .git-assetsync: [file \"y.txt\"] has synced but no blob (what it was synced with) - pull takes the release again "
 check "edit: staged despite warnings" "$(git status --porcelain | oneline)" "M  .git-assetsync "
 git reset -q --hard
 printf 'printf "[file\\n" >> "$1"\n' > "$T/ed-broken.sh"
@@ -2891,11 +2892,16 @@ check "add: a file where its directory should be" "$(asd add acme/ig blocker/ig.
   "error: cannot add 'blocker/ig.txt': 'blocker' is not a directory"
 mkdir w && quiet asd add acme/ig w/ig.txt --asset ig.txt && git commit -qm w
 rm -r w && echo x > w
-out=$(asd pull --overwrite w/ig.txt 2>&1); r=$?
+# synced: the file is missing - refused; not synced yet (written by hand),
+# pull would make it: a file where its directory should be is refused
+# before anything changes
+check "pull: a file where its directory should be: missing" "$(asd pull --overwrite w/ig.txt 2>&1 | grep -c '^error: w/ig.txt: missing')" "1"
+for k in synced digest blob mode; do git config -f .git-assetsync --unset "file.w/ig.txt.$k"; done
+out=$(asd pull w/ig.txt 2>&1); r=$?
 check "pull: a file where its directory should be: refused before anything changes" \
   "$r $(printf '%s\n' "$out" | grep '^error') $(cat w) $(git status --porcelain | oneline)" \
-  "2 error: 'w' is a file where the directory of w/ig.txt is needed - move it away x  D w/ig.txt ?? w "
-rm w && git checkout -q w
+  "2 error: 'w' is a file where the directory of w/ig.txt is needed - move it away x  M .git-assetsync  D w/ig.txt ?? w "
+rm w && git checkout -q w .git-assetsync
 check "... nothing changed" "$(git status --porcelain)" ""
 # rm -f / --overwrite: a staged version that is neither committed nor in the
 # working tree is named too
@@ -3038,7 +3044,9 @@ rm -r s z
 check "restore: makes the directories" "$(quiet asd restore s/a.txt z/d; cat s/a.txt; ls z/d | oneline)" "c1 v2
 cm1.txt cm2.txt "
 rm -r s
-check "pull: makes the directories" "$(quiet asd pull --overwrite s/a.txt; cat s/a.txt)" "c1 v2"
+check "pull: a missing file refused - restore gets it back" \
+  "$(asd pull --overwrite s/a.txt 2>&1 | grep -c 'missing - NOT ALLOWED'; quiet asd restore s/a.txt; cat s/a.txt)" "1
+c1 v2"
 # files of others in the way: only those that differ from what the release
 # gives need --overwrite; the same ones become the entry's (as for a file)
 git add -A && git commit -qm restored
@@ -3088,6 +3096,46 @@ check "filter test: executable" "$(asd filter test exe "$F/prog" 2>/dev/null) | 
   "10 bytes  prog  (executable) | 10 bytes  prog"
 check "filter step executable: needs a pattern" "$(asd filter add exe3 --executable 2>&1 | tail -1)" \
   "git assetsync filter add: error: argument --executable: expected at least one argument"
+
+# =============================================================================
+section "36. Missing files, entries not synced yet, pull --all --release"
+# =============================================================================
+release acme/only2 v2 19 "$F/cm2.txt"
+new_repo r36
+mkdir d && echo mine > d/mine.txt
+quiet asd add acme/cm f.txt --asset cm2.txt && quiet asd add acme/cm d/ && quiet asd add acme/only2 g.txt
+git add -A && git commit -qm add
+# what an entry got, gone - also with the deletion committed: missing, not new
+git rm -q f.txt && git commit -qm "rm f.txt"
+check "missing (deletion committed): D" "$(st f.txt)" " D"
+check "... a section of its own" "$(git assetsync status --no-fetch | grep -A3 '^Missing files:' | sed 's/^[[:space:]]*//' | oneline)" \
+  'Missing files: (use "git assetsync restore <file>..." to get them back) (use "git assetsync unlink <file>..." to remove their entries) missing:    f.txt  (NOT ALLOWED: still an entry) '
+check "... status --exit-code: 1" "$(rc git assetsync status --no-fetch --exit-code f.txt)" "1"
+check "... the hooks say so" "$(git assetsync hook post-merge 2>&1 | grep -c 'f.txt: MISSING - NOT ALLOWED')" "1"
+check "... pull refused, also with --overwrite" "$(git assetsync pull --overwrite f.txt 2>&1)" \
+  "error: f.txt: missing - NOT ALLOWED while it is an entry; get it back with 'git assetsync restore f.txt', or remove the entry with 'git assetsync unlink f.txt'"
+check "... pull --all leaves it out" "$(git assetsync pull --all 2>&1 | grep -c '^warning: f.txt: missing - left out'; git status --porcelain | oneline)" "1"
+quiet git assetsync restore f.txt
+check "... restore gets it back" "$(cat f.txt) $(st f.txt)" "c2  ?"
+git add f.txt && git commit -qm "f.txt back"
+# a directory: some of its release's files gone is a modification, all of them missing
+git rm -q d/cm1.txt && git commit -qm "rm cm1"
+check "a directory, some files gone: modified" "$(st d)" " M"
+git rm -q d/cm2.txt && git commit -qm "rm cm2"
+check "... all of them (files of others stay): missing" "$(st d) $(ls d)" " D mine.txt"
+quiet git assetsync restore d && git add d && git commit -qm "d back"
+# an entry not synced yet (written by hand): new, pull takes the release as add would
+git config -f .git-assetsync file.h.txt.source acme/cm && git config -f .git-assetsync file.h.txt.asset cm2.txt
+git commit -qam "h.txt by hand"
+check "not synced yet: new" "$(st h.txt) $(git assetsync status | grep -c 'new:        h.txt  (not synced yet, release v2)')" "N 1"
+pullcm h.txt >/dev/null 2>&1
+check "... pull: Add" "$(cat h.txt) $(git log -1 --format=%s)" "c2 [assetsync] Add h.txt from acme/cm v2"
+# pull --all --release: once, for all; an entry whose project has no such release: an error
+out=$(git assetsync pull --all --release v1 2>&1); r=$?
+check "pull --all --release: the others pulled, one error" \
+  "$r $(printf '%s\n' "$out" | grep -c "^error: g.txt: no release with tag 'v1'") $(git diff --cached --name-only | oneline)$(cat d/cm1.txt)" \
+  "2 1 .git-assetsync d/cm1.txt c1"
+git reset -q --hard
 
 # =============================================================================
 echo

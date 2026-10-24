@@ -96,15 +96,17 @@ copy of it all in .git/ASSETSYNC_MSG).
 Basic commands - what you need day to day:
 
     status [PATH...]            state of the entries like `git status`: new
-                                releases (or another filter) to pull, local
-                                modifications
+                                releases (or another filter) to pull, entries
+                                not synced yet, local modifications, missing
+                                files (what an entry got, gone - deleted,
+                                committed or not: restore gets it back)
         -s, --short             short format: upstream and local columns
                                 (P pending, N new, E error; M modified -
-                                committed or not -, D deleted, ? not
+                                committed or not -, D missing, ? not
                                 committed yet)
         -v, --verbose           also list all files with their sources
         --exit-code             exit 1 if something is to pull or a file is
-                                modified
+                                modified or missing
         --no-fetch              don't ask the platform for new releases
 
     pull PATH... | --all        update the files (directories) to the selected
@@ -116,14 +118,18 @@ Basic commands - what you need day to day:
                                 releases, shortened: assetsync.notesLines per
                                 release, default 20, assetsync.notesTotalLines
                                 in all, default 60); refused
-                                if modified (committed or not); in a
-                                directory its files are replaced or deleted,
-                                files of others stay
-        --all                   all files with something to pull
+                                if modified (committed or not) or missing
+                                (also with --overwrite: restore gets it
+                                back); an entry not synced yet is taken as
+                                add would; in a directory its files are
+                                replaced or deleted, files of others stay
+        --all                   all files with something to pull (missing
+                                ones left out)
         --release TAG|PATTERN   this release instead of the selected one (a
                                 pattern: the newest matching), once: the
                                 selection stays, status shows the selected
-                                one as pending (to stay: set --release)
+                                one as pending (to stay: set --release); also
+                                with --all
         --overwrite             discard local modifications
         -v, --verbose           first name where each entry comes from: its
                                 asset(s), source, release selection, filter,
@@ -3338,6 +3344,8 @@ class State:
     filter_changed: bool = False  # or another filter
     pending: bool = False     # something for pull to do
     modified: bool = False    # local modifications (not allowed)
+    missing: bool = False     # its file (a directory: all its release's) gone, while it is an
+                              # entry (not allowed) - deleted, committed or not
     unchecked: bool = False   # a directory whose base isn't in this clone: not checked
     changelog: list = field(default_factory=list)   # [(path, text)] its filter read (pull)
 
@@ -3527,9 +3535,12 @@ def evaluate(ctx, repo, entry):
     except FsError as e:
         st.error = str(e)
         return st
-    # deleted committed files count as modified; never committed ones are new
-    st.modified = bool(entry.blob) and (st.committed == "adapted" or st.local == "modified"
-                                        or st.worktree == "deleted")
+    # what an entry got from its release: gone - deleted, committed or not -
+    # is missing, else changed is modified (both not allowed); an entry not
+    # synced yet is new
+    st.missing = bool(entry.blob) and st.local == "missing"
+    st.modified = bool(entry.blob) and not st.missing and \
+        (st.committed == "adapted" or st.local == "modified")
     if ctx.fetch:
         try:
             st.origin, st.release = ctx.release(entry.url, entry.spec)
@@ -3548,7 +3559,7 @@ def evaluate(ctx, repo, entry):
             st.digest_changed = bool(entry.assetid and assets_id(st.assets) != entry.assetid)
         st.filter_changed = filter_hash(entry.steps, entry.reg.filters, repo) != entry.filterhash
         st.changed = st.tag_changed or st.digest_changed or st.filter_changed
-    st.pending = st.changed or st.worktree == "missing"
+    st.pending = st.changed or (not entry.blob and st.worktree == "missing")
     if st.pending:
         for name in untrusted(repo, entry.steps, entry.reg.filters):
             st.warnings.append(f"filter {name} runs commands and isn't trusted here yet "
@@ -3562,15 +3573,15 @@ def upstream_state(st):
     if st.changed and not e.synced and e.blob:
         return "pending", f"entry changed, release {st.release.tag}"
     if st.changed and not e.synced:
-        return "new", f"release {st.release.tag}"
+        return "new", f"not synced yet, release {st.release.tag}"
     if st.tag_changed:
         return "pending", f"{e.synced} -> {st.release.tag}"
     if st.digest_changed:
         return "pending", f"asset{'s' if len(st.assets) > 1 else ''} replaced in release {e.synced}"
     if st.filter_changed:
         return "pending", "filter changed"
-    if st.worktree == "missing":
-        return "new", "not in the working tree yet"
+    if st.worktree == "missing" and not e.blob:
+        return "new", "not synced yet"
     return None
 
 
@@ -3582,6 +3593,8 @@ def describe(st):
     up = upstream_state(st)
     if up:
         parts.append((f"upstream {up[0]} ({up[1]})", "yellow"))
+    if st.missing:
+        parts.append(("MISSING - NOT ALLOWED while it is an entry", "boldred"))
     if st.modified:
         parts.append(("local modifications NOT ALLOWED", "boldred"))
     return parts or [("up to date", "green")]
@@ -3598,16 +3611,13 @@ def render(parts, stream="out"):
 
 def short_code(st):
     """Two columns, like `git status -s`: upstream (P pending, N new, E
-    error) and local (M modified - committed or not -, D deleted, ? not
+    error) and local (M modified - committed or not -, D missing, ? not
     committed yet)."""
     if st.error:
         return "E "
     up = upstream_state(st)
     x = {"pending": "P", "new": "N"}[up[0]] if up else " "
-    if st.modified:
-        y = "D" if st.local == "missing" or st.worktree == "deleted" else "M"
-    else:
-        y = "?" if st.worktree == "added" else " "
+    y = "D" if st.missing else "M" if st.modified else "?" if st.worktree == "added" else " "
     return x + y
 
 
@@ -3676,8 +3686,14 @@ def print_long(ctx, repo, sts, verbose):
     section("Locally modified files:",
             ['use "git assetsync diff <file>..." to see the modifications',
              'use "git assetsync restore -SW <file>..." to restore the release asset'],
-            [("deleted" if st.local == "missing" or st.worktree == "deleted" else "modified",
-              st.entry.shown, "NOT ALLOWED", "boldred") for st in modified], "red")
+            [("modified", st.entry.shown, "NOT ALLOWED", "boldred") for st in modified], "red")
+    # gone while it is an entry: never allowed either
+    missing = [st for st in ok if st.missing]
+    section("Missing files:",
+            ['use "git assetsync restore <file>..." to get them back',
+             'use "git assetsync unlink <file>..." to remove their entries'],
+            [("missing", st.entry.shown, "NOT ALLOWED: still an entry", "boldred")
+             for st in missing], "red")
     new = [st for st in ok if st.worktree == "added" and not st.modified]
     section("Not committed yet:", ['use "git commit" to commit them'],
             [("new file", st.entry.shown, None, None) for st in new], "green")
@@ -3702,7 +3718,7 @@ def print_long(ctx, repo, sts, verbose):
         print("new releases not checked (--no-fetch)")
     elif not up_rows and len(ok) == len(sts):
         what = entries_text([st.entry for st in sts])
-        print("nothing to pull" + ("" if modified or new else
+        print("nothing to pull" + ("" if modified or missing or new else
                                    f", {'all ' if len(sts) > 1 else ''}{what} unmodified"))
 
 
@@ -3726,7 +3742,7 @@ def cmd_status(ctx, repo, args):
             st.warnings.append(f"which files are those of {st.entry.synced} isn't known in "
                                "this clone - local modifications not checked ('git assetsync "
                                f"verify {path_arg(repo, st.entry.shown)}' gets it)")
-    attention = [st for st in sts if st.error or st.pending or st.modified]
+    attention = [st for st in sts if st.error or st.pending or st.modified or st.missing]
     rc = EXIT_ERROR if any(st.error for st in sts) else \
         EXIT_PENDING if args.exit_code and attention else EXIT_OK
     for st in sts:
@@ -3943,8 +3959,8 @@ def push_check(repo, args):
 
 def hook_reminders(sts):
     """Terse notes on stderr about entries needing attention: something to
-    pull, local modifications, an error."""
-    attention = [st for st in sts if st.error or st.pending or st.modified]
+    pull, local modifications, missing files, an error."""
+    attention = [st for st in sts if st.error or st.pending or st.modified or st.missing]
     for st in attention:
         print(f"assetsync: {paint(st.entry.shown, 'yellow', 'err')}: "
               f"{render(describe(st), 'err')}", file=sys.stderr)
@@ -3953,6 +3969,9 @@ def hook_reminders(sts):
     if any(st.modified for st in attention):
         print("assetsync: see 'git assetsync status' and 'git assetsync diff <file>' for "
               "local modifications", file=sys.stderr)
+    if any(st.missing for st in attention):
+        print("assetsync: run 'git assetsync restore <file>' to get missing files back",
+              file=sys.stderr)
 
 
 def cmd_hook(ctx, repo, args):
@@ -4571,6 +4590,10 @@ def pull_one(ctx, repo, reg, st, args, keep):
                     raise FsError(f"{rel}: {st.error}")
     elif not entry.is_dir and entry.blob:
         base = {entry.rel}    # its file: what its release gave
+    if st.missing:            # only restore gets it back
+        raise FsError(f"{rel}: missing - NOT ALLOWED while it is an entry; get it back with "
+                      f"'git assetsync restore {path_arg(repo, rel)}', or remove the entry "
+                      f"with 'git assetsync unlink {path_arg(repo, rel)}'")
     if not st.pending and not st.modified:
         print(f"{rel}: {paint('up to date', 'green')}")
         return None
@@ -4636,8 +4659,6 @@ def one_off_hint(ctx, st):
 def cmd_pull(ctx, repo, args):
     reg = Registry(repo)
     reg.dry_run = args.dry_run
-    if args.release and args.all:
-        raise FsError("--release needs the files to pull, not --all")
     if args.all and args.paths:
         raise FsError("--all cannot be combined with paths")
     if args.all:
@@ -4656,6 +4677,10 @@ def cmd_pull(ctx, repo, args):
         if st.error:
             report_error(st)
             rc = EXIT_ERROR
+            continue
+        if args.all and st.missing:
+            warn(f"{entry.shown}: missing - left out (see 'git assetsync status')")
+            done += 1
             continue
         if args.all and not st.pending and not (args.overwrite and st.modified):
             continue
@@ -4937,9 +4962,11 @@ def registry_problems(reg):
             problems.append(f'{sect}: no [source "{v["source"]}"]')
         if v.get("filter") and v["filter"] not in reg.filters:
             problems.append(f'{sect}: no [filter "{v["filter"]}"]')
-        if not v.get("synced") or not v.get(BASE_KEY[kind]):
-            problems.append(f"{sect} lacks synced or {BASE_KEY[kind]} (what it was synced "
-                            "with) - pull takes the release")
+        # without both: not synced yet (pull takes the release); without synced
+        # only: its source or asset changed (set)
+        if v.get("synced") and not v.get(BASE_KEY[kind]):
+            problems.append(f"{sect} has synced but no {BASE_KEY[kind]} (what it was synced "
+                            "with) - pull takes the release again")
     return problems
 
 
