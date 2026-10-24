@@ -203,7 +203,7 @@ Basic commands - what you need day to day:
     mv OLD NEW                  move a file or directory (git mv), keeping its
                                 entry; a directory with entries in it moves
                                 with all of them; as git mv, the directory
-                                NEW goes into must exist
+                                NEW goes into must exist (NEW/: NEW itself)
         -n, --dry-run           (both) only show what would be done
 
 Advanced commands - change entries, sources and filters; set up:
@@ -4638,6 +4638,8 @@ def cmd_pull(ctx, repo, args):
     reg.dry_run = args.dry_run
     if args.release and args.all:
         raise FsError("--release needs the files to pull, not --all")
+    if args.all and args.paths:
+        raise FsError("--all cannot be combined with paths")
     if args.all:
         entries = reg.entries()
     elif args.paths:
@@ -5508,6 +5510,9 @@ def cmd_mv(ctx, repo, args):
     if not moved:
         raise FsError(f"'{old}' is not synced")
     dst = repo.user_path(args.dst)
+    if args.dst.endswith(("/", "\\")) and not dst.is_dir():    # a directory, as git mv
+        raise FsError(f"destination directory does not exist, source={old}, "
+                      f"destination={args.dst}")
     if dst.is_dir():
         dst = dst / Path(old).name
     new = repo.rel(dst)

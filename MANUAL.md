@@ -585,9 +585,10 @@ is already what the release gives. In an existing directory, the files of
 the release go next to those there; files of yours in their way are only
 replaced with `--overwrite` (see [Files of your own in a
 directory](#files-of-your-own-in-a-directory)). An entry that exists
-already is replaced only with `--force`; its file (directory) as well, as
-long as it is what its release gave – local modifications need
-`--overwrite` too. For big binary files
+already is replaced only with `--force` – like `unlink` and then `add`:
+the new entry has only the keys given now (release selection, asset,
+filter); its file (directory) is replaced as well, as long as it is what
+its release gave – local modifications need `--overwrite` too. For big binary files
 (1 MiB or more) that are not stored in Git LFS, `add` warns and suggests
 `git lfs track`: each update adds another copy to the repository's
 history.
@@ -642,8 +643,9 @@ git assetsync mv OLD NEW [-n]
 ```
 
 Moves a file or directory (with `git mv`) and its entry, and stages both.
-`NEW` may be an existing directory; like `git mv`, `mv` makes no
-directories – the one `NEW` goes into must exist. A directory moves with everything in
+`NEW` may be an existing directory – with a trailing `/` it must be one;
+like `git mv`, `mv` makes no directories – the one `NEW` goes into must
+exist. A directory moves with everything in
 it, files of yours too (`mv` says how many). `OLD` may also be an ordinary
 directory with entries in it (e.g. `bin/` with several synced tools): it
 moves like with `git mv`, and all entries in it follow.

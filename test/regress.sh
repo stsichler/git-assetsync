@@ -372,6 +372,7 @@ check "status: hint" "$(git assetsync status | grep -c 'use "git assetsync pull 
 check "status: relative path from subdirectory" "$(cd bin && git assetsync status -s)" "P  tool.bin"
 check "status: exit code 0" "$(rc git assetsync status)" "0"
 check "status --exit-code: 1" "$(rc git assetsync status --exit-code)" "1"
+check "pull --all with paths refused" "$(git assetsync pull --all bin/tool.bin 2>&1)" "error: --all cannot be combined with paths"
 check "pull without paths refused" "$(rc git assetsync pull)" "2"
 check "pull without paths: message" "$(git assetsync pull 2>&1)" "error: specify file(s) or --all"
 # into a pipe closed early (head): the pull still finishes, exit 141 like git
@@ -3029,6 +3030,8 @@ check "add: a new directory itself is fine (as cp -r)" "$(rc asd add acme/cm d/)
 mkdir s && quiet asd add acme/cm s/a.txt --asset cm1.txt && git commit -qm add
 check "mv: into a directory that isn't there (as git mv)" "$(asd mv d z/d 2>&1; ls -d z 2>/dev/null)" \
   "error: destination directory does not exist, source=d, destination=z/d"
+check "mv: to a directory with '/' that isn't there (as git mv)" "$(asd mv s/a.txt new/ 2>&1; ls new 2>/dev/null)" \
+  "error: destination directory does not exist, source=s/a.txt, destination=new/"
 check "mv: into one that is" "$(mkdir z && asd mv d z/d) $(ls z/d | oneline)" "moved d -> z/d (entry kept) cm1.txt cm2.txt "
 git commit -qm mv
 rm -r s z
