@@ -64,7 +64,9 @@ not the files matching any of them; gitignore-like), move / copy PATTERN
 TARGET (what matches - a file, or a directory with all below it - goes
 into TARGET/ under its name, else to the path TARGET with {path} {dir}
 {parent} {name} {stem} {ext}), apply PATTERN NAME (the filter NAME on the
-matching files only), changelog PATTERN... (reads only: the text of the
+matching files only), executable PATTERN... (the matching files become
+executable - assets themselves never are), changelog PATTERN... (reads
+only: the text of the
 matching files goes with the release notes into pull's commit message,
 shortened like them), convert PATTERN TARGET COMMAND (each matching file:
 {in} -> {out}, which replaces it at TARGET; TARGET/: {out} a directory),
@@ -272,7 +274,7 @@ Advanced commands - change entries, sources and filters; set up:
                                 order given:
         --extract [PATTERN...], --subdir PATH, --strip N, --include PATTERN...,
         --exclude PATTERN..., --move PATTERN TARGET, --copy PATTERN TARGET,
-        --apply PATTERN NAME, --changelog PATTERN...,
+        --apply PATTERN NAME, --executable PATTERN..., --changelog PATTERN...,
         --convert PATTERN TARGET COMMAND, --run PATTERN COMMAND
                                 (each option one step)
     filter set NAME STEP-OPTIONS...  replace the steps of a filter
@@ -1421,7 +1423,7 @@ def auto_prune():
 
 # filter steps; the options of filter add / set have the same names
 STEPS = ("extract", "subdir", "strip", "include", "exclude", "move", "copy", "apply",
-         "changelog", "convert", "run")
+         "executable", "changelog", "convert", "run")
 # the steps that run commands: only in trusted filters (see trust)
 COMMAND_STEPS = ("convert", "run")
 # placeholders in the target of move / copy, for a file a/b/c.txt
@@ -1730,7 +1732,8 @@ def parse_step(step):
           "strip": len(args) == 1 and args[0].isdigit() and int(args[0]) > 0,
           "include": bool(args) and all(args), "exclude": bool(args) and all(args),
           "move": len(args) == 2 and all(args), "copy": len(args) == 2 and all(args),
-          "apply": len(args) == 2 and all(args), "changelog": bool(args) and all(args),
+          "apply": len(args) == 2 and all(args), "executable": bool(args) and all(args),
+          "changelog": bool(args) and all(args),
           "convert": len(args) == 3 and all(args), "run": len(args) == 2 and all(args)}.get(name)
     if ok is None:
         raise FsError(f"unknown filter step '{step}' (known: {', '.join(STEPS)})")
@@ -2163,6 +2166,12 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
                 if len(parts) > n:
                     add_member(new, "/".join(parts[n:]), v, f"{work.what}: '{step}'")
             files = new
+        elif name == "executable":
+            # an asset itself never is: the matching files become executable
+            rxs = [glob_regex(a) for a in args]
+            matched = {r for r in files if any(x.match(r) for x in rxs)}
+            files = {r: (v[0], True) if r in matched else v for r, v in files.items()}
+            info = f"{plural(len(matched), 'file')} executable" if matched else "no files match"
         else:
             rxs = [glob_regex(a) for a in args]
             files = {r: v for r, v in files.items()
@@ -6113,6 +6122,8 @@ def run(argv):
                    help="copy the matching files to TARGET, as --move does, keeping them where they are")
     g.add_argument("--apply", action=StepOption, nargs=2, metavar=("PATTERN", "NAME"),
                    help="apply the filter NAME to the matching files")
+    g.add_argument("--executable", action=StepOption, nargs="+", metavar="PATTERN",
+                   help="make the matching files executable (an asset itself never is)")
     g.add_argument("--changelog", action=StepOption, nargs="+", metavar="PATTERN",
                    help="add the text of the matching files to the release notes in pull's "
                         "commit message (the files stay)")

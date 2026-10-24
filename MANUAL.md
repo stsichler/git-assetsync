@@ -125,8 +125,9 @@ Git-config format:
   `mode` are written by git-assetsync and record what the committed file
   is based on: the release tag, the asset's SHA-256, the id of the file
   as `git add` stores it (after line-ending conversion and Git LFS), and
-  its mode as the filter gave it – `100755` for an executable (e.g. one
-  taken out of an archive), else `100644`. With `blob` and `mode`,
+  its mode as the filter gave it – `100755` for an executable (taken out
+  of an archive, or made one with [`--executable`](#executables)), else
+  `100644`. With `blob` and `mode`,
   `status` knows offline whether the committed file and the working tree
   file are still the asset – a lost executable bit too (where the system
   has one; with `core.filemode = false`, as on Windows, git takes modes
@@ -1162,6 +1163,7 @@ has the name of its step:
 | `--move PATTERN TARGET` | move what matches – files, or directories with all below them – to `TARGET`, see below |
 | `--copy PATTERN TARGET` | the same, but the files also stay where they are |
 | `--apply PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
+| `--executable PATTERN…` | make the matching files executable – an asset itself never is, see [Executables](#executables) |
 | `--changelog PATTERN…` | reads only: the text of the matching files goes with the release notes into the commit message of `pull`, see [Changelogs from the assets](#changelogs-from-the-assets) |
 | `--convert PATTERN TARGET COMMAND` | convert each matching file with a command of your own (e.g. bin2c), see [Commands in filters](#commands-in-filters) |
 | `--run PATTERN COMMAND` | run a command on the matching files at once (`'*'`: all), see [Commands in filters](#commands-in-filters) |
@@ -1230,6 +1232,28 @@ for an entry – a filter applied with `apply` may leave nothing of its
 part. A file entry must end up with exactly one file. In `pull` and
 `verify` filters are silent; [`filter test`](#filter) shows what each
 step did.
+
+#### Executables
+
+An asset itself is never executable: a downloaded file is just data. A
+file is executable when an archive marks it so (tar, ZIP and 7z made on
+Unix keep the executable bit) or a [command](#commands-in-filters) makes
+it. **`--executable PATTERN…`** makes the matching files executable –
+e.g. a program that is an asset as it is:
+
+```sh
+git assetsync filter add exe --executable '*'
+git assetsync add acme/tool bin/tool --asset 'tool-*-linux-x64' --filter exe
+```
+
+In a directory, a pattern chooses them (`--extract --executable 'bin/*'`).
+The executable bit is part of what an entry gets, like its content: a
+file entry records it in `mode`, a directory entry in its `tree`;
+`status` counts a lost (or added) bit as a local modification, `pull` and
+`restore` set it – so don't make such a file executable by hand, but
+with the filter (`git assetsync set bin/tool --filter exe`). On Windows
+(`core.filemode = false`) the bit is kept in the repository for the
+other platforms.
 
 #### Filters using filters
 

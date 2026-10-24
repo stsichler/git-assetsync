@@ -56,6 +56,7 @@
 #   32. Ignored paths, errors while writing, checkout form
 #   33. Comments and own lines in .git-assetsync
 #   34. add and mv make no directories; pull and restore do
+#   35. executable: making files executable
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -3052,6 +3053,36 @@ if ! command -v cygpath >/dev/null; then    # Windows: no executable bit
   chmod +x xm/run.sh && git add xm && git commit -qm "x"
   check "... with its mode: the entry's" "$(rc asd add acme/xbit xm/ --release v1 --filter unpack)" "0"
 fi
+
+# =============================================================================
+section "35. executable: making files executable"
+# =============================================================================
+cd "$T"
+printf '\177ELF fake\n' > "$F/prog"
+release acme/prog v1 18 "$F/prog"
+new_repo r35
+quiet asd filter add exe --executable '*' && git commit -qm exe
+check "filter step executable" "$(git config -f .git-assetsync --get-all filter.exe.step)" "executable '*'"
+mkdir bin && quiet asd add acme/prog bin/prog --filter exe && git commit -qm prog
+check "an asset as it is, made executable" \
+  "$(git ls-tree HEAD bin/prog | cut -d' ' -f1) $(reg file.bin/prog.mode) $(st bin/prog)" "100755 100755 "
+if ! command -v cygpath >/dev/null; then    # Windows: no executable bit
+  check "... in the working tree" "$(test -x bin/prog && echo x)" "x"
+fi
+# without the step as the asset is; the filter set later: pending, pull makes it so
+quiet asd add acme/prog bin/plain && git commit -qm plain
+check "without it: not executable" "$(reg file.bin/plain.mode)" "100644"
+quiet asd set bin/plain --filter exe && git commit -qm "with exe"
+check "... the filter set: pending" "$(st bin/plain)" "P"
+pullc bin/plain
+check "... pulled: executable" "$(git ls-tree HEAD bin/plain | cut -d' ' -f1) $(reg file.bin/plain.mode) $(st bin/plain)" \
+  "100755 100755 "
+# filter test shows it; a pattern that matches nothing changes nothing
+quiet asd filter add exe2 --executable 'nothing*'
+check "filter test: executable" "$(asd filter test exe "$F/prog" 2>/dev/null) | $(asd filter test exe2 "$F/prog" 2>/dev/null)" \
+  "10 bytes  prog  (executable) | 10 bytes  prog"
+check "filter step executable: needs a pattern" "$(asd filter add exe3 --executable 2>&1 | tail -1)" \
+  "git assetsync filter add: error: argument --executable: expected at least one argument"
 
 # =============================================================================
 echo
