@@ -21,8 +21,11 @@ Upstream changes to pull:
 	pending:    bin/tool.bin  (v1.0 -> v1.1)
 
 $ git assetsync pull bin/tool.bin
-[main 4f1c2a9] Update bin/tool.bin to acme/tool v1.1 (was v1.0)
- 2 files changed, 2 insertions(+), 2 deletions(-)
+bin/tool.bin: updated and staged. Commit with:
+    git commit
+(it offers the proposed commit message; a copy stays in .git/ASSETSYNC_MSG)
+
+$ git commit
 ```
 
 ## Why?
@@ -93,7 +96,7 @@ from other Git repositories see git-filesync.
 - Built-in filters, without running any code: unpack ZIP, tar and – with
   7-Zip installed – 7z archives safely, take a subdirectory, strip leading
   directories, include or exclude files by pattern, move and copy files
-  into a new structure; filters are named, used by any number of entries
+  into a new structure, make files executable; filters are named, used by any number of entries
   and by each other (e.g. per asset); in a directory, files of your own
   can be next to those of the release, which an update replaces or deletes
 - Converting files with commands of your own (bin2c, hex2c, …), per file
@@ -113,7 +116,8 @@ from other Git repositories see git-filesync.
 - Checks the download against the digest GitHub reports (GitLab reports
   none)
 - Commands named like Git commands behave like them (`status`, `pull`,
-  `diff`, `restore`, `mv`); dry runs for `pull`, `add`, `unlink`, `mv`
+  `diff`, `restore`, `mv`); dry runs (`-n`) for the commands that change
+  something
 - `diff` / `difftool` show local modifications, or what `pull` would
   bring (with `--release`: another release, e.g. to go back to an older
   one once); `difftool -d` compares directories at once (e.g. in Meld)

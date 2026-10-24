@@ -3271,7 +3271,7 @@ class Entry:
     # the base: blob of a file, tree of a directory, as committed
     blob = property(lambda self: self.v.get(BASE_KEY[self.kind], ""))
     # a [file]'s mode, as its filter gave it (a [dir]'s are in its tree);
-    # None for an entry synced before 0.20.2: not known, doesn't count
+    # None for an entry synced before 0.21.0: not known, doesn't count
     mode = property(lambda self: self.v.get("mode") or None)
     filterhash = property(lambda self: self.v.get("filterhash") or None)
 
@@ -3352,7 +3352,7 @@ def base_unavailable(st, e):
 def base_files(repo, entry):
     """[(mode, id, path in the repository)] of the files an entry got from
     its release - its base; mode None where it isn't recorded (a [file]
-    synced before 0.20.2).
+    synced before 0.21.0).
     None if the base tree of a directory isn't in this clone (committed
     together with files of others, it never is: see ensure_base)."""
     if not entry.blob:
@@ -4545,7 +4545,6 @@ def pull_done(repo, reg, job, base):
     entry.set(BASE_KEY[entry.kind], base)
     if not entry.is_dir:
         entry.set("mode", "100755" if job.files[entry.rel][1] else "100644")
-    print(f"{entry.shown}: {paint('updated', 'green')}")
     return msg, set(job.base) | set(job.files)
 
 
@@ -4683,6 +4682,9 @@ def cmd_pull(ctx, repo, args):
         pulled.append(job.entry)
         msgs.append(msg)
         paths |= done_paths
+    if len(pulled) > 1:       # one: said with the hint to commit
+        for entry in pulled:
+            print(f"{entry.shown}: {paint('updated', 'green')}")
     if args.all and not done and rc == EXIT_OK:
         print(paint("everything up to date", "green"))
     if pulled:

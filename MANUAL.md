@@ -36,13 +36,13 @@ has **assets**: the files attached to it.
 git-assetsync takes a file or a directory of your repository from assets:
 it downloads them, optionally unpacks and selects files from them with a
 [filter](#filters), writes the result to the path and records in
-`.git-assetsync` which release and assets it comes from. Which release
-that is, is decided by the source: the latest release, the newest one
-whose tag matches a pattern, or one fixed release (see
-[Selecting the release](#selecting-the-release)). Which assets of it, is
-decided by the entry: a glob pattern for the asset names – they usually
-contain the version, so the pattern stays the same across releases while
-the path in your repository doesn't change.
+`.git-assetsync` which release and assets it comes from. Both are the
+entry's: which release – the latest, the newest one whose tag matches a
+pattern, or one fixed release (see [Selecting the
+release](#selecting-the-release)) – and which assets of it: a glob pattern
+for the asset names – they usually contain the version, so the pattern
+stays the same across releases while the path in your repository doesn't
+change.
 
 Updates are never applied automatically: `status` shows that a new release
 is out, `pull` updates the file (directory) and stages it with a proposed
@@ -131,7 +131,7 @@ Git-config format:
   `status` knows offline whether the committed file and the working tree
   file are still the asset – a lost executable bit too (where the system
   has one; with `core.filemode = false`, as on Windows, git takes modes
-  from the index); `restore` brings it back. Entries synced before 0.20.2
+  from the index); `restore` brings it back. Entries synced before 0.21.0
   have no `mode`: there it doesn't count until their next `pull`. Where the platform reports no
   digests, `assetid` records which uploads they were (see
   [Integrity](#integrity)).
@@ -145,10 +145,10 @@ Git-config format:
   filters are referred to by name – but they are never created or removed
   automatically.
 
-All files of a source take the same release, e.g. a header and a library
-published together. To follow a different release of the same project,
-use a second source with the same URL (`add` does that when `--release`
-differs).
+There is one `[source]` per URL; each entry selects its release itself
+(`release`, `prerelease`), so the entries of one project can follow
+different releases – e.g. two tools released from one repository under
+different tag prefixes.
 
 The commands maintain the file: `add`, `set`, `unlink` and `mv` for the
 `[file]` and `[dir]` entries, [`source`](#source) for the `[source]`
@@ -199,8 +199,8 @@ another case (`README.md` and `README.MD` are one file on Windows and
 macOS), or a file of yours where the release has a directory – is
 refused, by `add` and by `pull`, naming the files in the way. With
 `--overwrite` the release's files replace them and become the entry's. A
-file of yours that is just what the release gives (the same path and
-content) is not in the way: it becomes the entry's without `--overwrite`,
+file of yours that is just what the release gives (the same path,
+content and mode) is not in the way: it becomes the entry's without `--overwrite`,
 as for a file entry (`add` onto an existing file of the same content).
 
 Which files are the release's comes from the recorded `tree`: what the
@@ -400,8 +400,9 @@ as it is, so `status` then shows the selected release as pending, and a plain
 
 ```console
 $ git assetsync pull --release v1.0 bin/tool
-[main 7d2e0b1] Update bin/tool to acme/tool v1.0 (was v1.1)
- 2 files changed, 2 insertions(+), 2 deletions(-)
+bin/tool: updated and staged. Commit with:
+    git commit
+(it offers the proposed commit message; a copy stays in .git/ASSETSYNC_MSG)
 note: bin/tool: it still selects v1.1 - 'git assetsync pull bin/tool' goes back to it; to stay on v1.0: 'git assetsync set bin/tool --release v1.0'
 ```
 
@@ -510,8 +511,9 @@ git assetsync restore -SW lib/data.bin
 git commit -m "Restore lib/data.bin"
 ```
 
-In a directory entry, the files of the release are written back, with
-executable bits as synced; files of yours there stay. Files are written
+The files are written back with their executable bits as synced (a file
+entry's recorded `mode`, a directory entry's `tree`); in a directory, files
+of yours stay. Files are written
 as the current `.gitattributes` say (line endings, Git LFS). `restore`
 works offline: what an entry was synced with is in the repository
 (`blob`/`tree`) – for a directory that may have to be got again in a
@@ -570,7 +572,7 @@ commit --no-edit` takes it as it is).
 | Option | Meaning |
 |---|---|
 | `--asset PATTERN` | the assets to take (glob; a file: exactly one match, default the release's only asset; a directory: all matching, default all) |
-| `--release TAG\|PATTERN` | release to take: a tag pins the source to that release, a pattern takes the newest release whose tag matches (default: the latest release) |
+| `--release TAG\|PATTERN` | release to take: a tag pins the entry to that release, a pattern takes the newest release whose tag matches (default: the latest release) |
 | `--prerelease` | prereleases count too (with a pattern, or instead of the latest release) |
 | `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
 | `--filter NAME` | the named [filter](#filters) to apply to the assets |
@@ -850,12 +852,12 @@ git assetsync source releases SOURCE|URL [--assets] [-n N | --all] [--type githu
 Lists the releases of a project, newest first: tag, date and title (if it
 differs from the tag), marked `latest` (as the platform defines it),
 `prerelease` (GitLab: `upcoming`), `draft`, and `selected by …` with the
-sources of this repository that select it now. A help for choosing
+entries of this repository that select it now. A help for choosing
 `--release` and `--asset` for [`add`](#add) and [`set`](#set):
 
 ```console
 $ git assetsync source releases acme/tool --assets -n 2
-v1.1      2026-10-11  Tool 1.1  (latest, selected by acme/tool)
+v1.1      2026-10-11  Tool 1.1  (latest, selected by bin/tool)
     tool-1.1-linux-x64     14.6 MiB
     tool-1.1-windows.zip   15.2 MiB
 v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
@@ -1499,7 +1501,7 @@ remove them when the editor opens.
 
 **Skipped releases:** when the update skips releases – newer than the
 synced one, older than the new one, selected by the same rule as the
-source (its tag pattern; prereleases only if it takes them; no drafts) –
+entry (its tag pattern; prereleases only if it takes them; no drafts) –
 `Since:` lists them, and their notes follow those of the new release,
 newest first:
 
@@ -1575,7 +1577,7 @@ servers are downloaded plainly, without login – they have to be public
 (`http://` links work, with a warning).
 
 On GitLab, releases with a release date in the future ("upcoming
-releases") count as prereleases: they are skipped unless the source has
+releases") count as prereleases: they are skipped unless the entry has
 `prerelease = true`. There are no drafts there.
 
 `ASSETSYNC_GH` / `ASSETSYNC_GLAB` set other commands instead of `gh` /
@@ -1660,9 +1662,9 @@ that differ from what the release gave are looked at more closely.
 
 ### Colors
 
-Output is colored like `git status`: pending updates yellow, committed
-modifications cyan, uncommitted changes red, NOT ALLOWED and errors bold
-red.
+Output is colored like `git status`: pending updates yellow, local
+modifications red (NOT ALLOWED and errors bold red), entries not committed
+yet green.
 
 Colors follow `color.assetsync`, falling back to `color.ui` (default: on
 for terminals); `--color[=always|never|auto]` and `--no-color` override
@@ -1705,7 +1707,7 @@ them. For GitLab sources, install `glab` in the job (and give
 | `0` | ok |
 | `1` | something to do: `status --exit-code` with something to pull or a modified file; `verify` or `diff --exit-code` found a difference |
 | `2` | error (also: `pull` refused a modified file) |
-| `141` | the output went into a pipe that was closed early (e.g. `\| head`), as with git: a command that only looks (`status`, `diff`, `difftool`, `verify`, `source`, `source releases`) stops there; one that changes something finishes its work first – never only half of it |
+| `141` | the output went into a pipe that was closed early (e.g. `\| head`), as with git: a command that only looks (`status`, `diff`, `difftool`, `verify`, and those that list or show, like `source releases`, `filter show` or `cache list`) stops there; one that changes something finishes its work first – never only half of it |
 
 `--dry-run` / `-n` exit with 0, or 2 on errors.
 
@@ -1727,7 +1729,7 @@ arguments before git-assetsync sees them:
   a broken entry) turns into `C:/Users/…/Temp/x`.
 
 For such arguments, run the script directly instead of through the alias,
-e.g. `py C:/tools/git-assetsync.py add lib/tool.zip acme/tool --asset
+e.g. `py C:/tools/git-assetsync.py add acme/tool lib/tool.zip --asset
 tool-*.zip` in cmd or PowerShell; in Git Bash, put `MSYS_NO_PATHCONV=1` in
 front of it. Don't set `MSYS_NO_PATHCONV` (or `MSYS=noglob`) for git
 itself: it breaks how git passes the arguments to the alias.

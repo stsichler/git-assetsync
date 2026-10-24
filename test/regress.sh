@@ -850,6 +850,7 @@ OUT=$(git assetsync pull p1.txt 2>&1); RC=$?
 check "pull: staged, not committed" "$RC $(git status --porcelain | oneline)$(git log -1 --format=%s)" \
   "0 M  .git-assetsync M  p1.txt another message"
 check "pull: hint" "$(echo "$OUT" | grep -c '^p1.txt: updated and staged. Commit with:')" "1"
+check "... one entry: said once" "$(echo "$OUT" | grep -c 'updated')" "1"
 check "pull: proposed message in SQUASH_MSG" "$(head -1 .git/SQUASH_MSG)" "[assetsync] Update p1.txt to acme/p v2 (was v1)"
 git commit -q --no-edit
 check "pull: a plain commit takes it" "$(git log -1 --format=%s)" "[assetsync] Update p1.txt to acme/p v2 (was v1)"
@@ -879,6 +880,7 @@ OUT=$(git assetsync pull --all 2>&1)
 check "pull --all: all staged, one proposal" \
   "$(echo "$OUT" | grep -c '^3 files: updated and staged') $(cat p1.txt p2.txt sub/p3.txt | oneline)$(git status --porcelain | oneline)" \
   "1 p 4 p 4 p 4 M  .git-assetsync A  other.txt M  p1.txt M  p2.txt M  sub/p3.txt "
+check "... each entry named" "$(echo "$OUT" | grep ': updated$' | oneline)" "p1.txt: updated p2.txt: updated sub/p3.txt: updated "
 git commit -q --no-edit
 check "... a plain commit takes the proposed message" "$(git log -1 --format=%s)" "[assetsync] Update 3 files from acme/p"
 
@@ -1704,9 +1706,9 @@ git update-index --chmod=-x run && git commit -qm "no x"
 check "mode: committed without it: modified" "$(st run)" " M"
 quiet git assetsync restore -SW run && git commit -qm "x again"
 check "... restore -SW: committed with it again" "$(git ls-tree HEAD run | cut -d' ' -f1) $(st run)" "100755 "
-git config -f .git-assetsync --unset file.run.mode && git commit -qam "an entry from before 0.20.2"
+git config -f .git-assetsync --unset file.run.mode && git commit -qam "an entry from before 0.21.0"
 git update-index --chmod=-x run && git commit -qm "no x"
-check "no mode recorded (before 0.20.2): not compared" "$(st run)" ""
+check "no mode recorded (before 0.21.0): not compared" "$(st run)" ""
 release acme/xbit v4 13 "$F/xb2.tar"
 pullc run
 check "... recorded with the next pull" "$(reg file.run.mode)" "100644"
