@@ -58,6 +58,7 @@
 #   34. add and mv make no directories; pull and restore do
 #   35. executable: making files executable
 #   36. Missing files, entries not synced yet, pull --all --release
+#   37. A step it doesn't know, cache limits of 0, verify keeps a base
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -2119,8 +2120,11 @@ check "run PATTERN: a result at another file's path" "$(asd add acme/cmd e/ --fi
 check "run PATTERN: no match, nothing done" "$(asd add acme/cmd r0/ --filter rp0 >/dev/null 2>&1; git ls-files r0 | oneline)" \
   "r0/data.hex r0/fw.bin r0/notes.txt "
 git reset -q --hard; rm -rf r0
+git config -f .git-assetsync filter.old.step "run 'cp -R {in}/. {out}/'"
+check "run without a pattern (before 0.19.0): filter show shows it" "$(git assetsync filter show old 2>&1 | head -1)" \
+  "run 'cp -R {in}/. {out}/'"
 check "run without a pattern (before 0.19.0): what to write now" \
-  "$(git config -f .git-assetsync filter.old.step "run 'cp -R {in}/. {out}/'"; git assetsync filter show old 2>&1 | tail -1)" \
+  "$(git assetsync filter test old "$F/fw.bin" 2>&1 | tail -1)" \
   "error: filter step 'run 'cp -R {in}/. {out}/'': run needs a pattern first, like the other steps - for all files: run '*' 'cp -R {in}/. {out}/'"
 git checkout -q .git-assetsync
 # errors
@@ -2771,6 +2775,11 @@ git reset -q --hard HEAD
 rm g.txt && git commit -qam "deleted"
 check "rm: file already deleted" "$(git assetsync rm g.txt) $(git status --porcelain | oneline)" "removed g.txt M  .git-assetsync "
 git commit -qm "rm g"
+addc acme/rs g.txt --asset rf.txt
+rm g.txt
+check "rm: file deleted, not committed (nothing lost)" "$(git assetsync rm g.txt 2>&1) $(git status --porcelain | oneline)" \
+  "removed g.txt M  .git-assetsync D  g.txt "
+git commit -qm "rm g"
 # a directory: only its own files count and go, files of others and ignored
 # ones stay; from a subdirectory
 echo new > d/new.txt; mkdir -p d/build && echo out > d/build/o.log; echo x > d/a.txt
@@ -3136,6 +3145,39 @@ check "pull --all --release: the others pulled, one error" \
   "$r $(printf '%s\n' "$out" | grep -c "^error: g.txt: no release with tag 'v1'") $(git diff --cached --name-only | oneline)$(cat d/cm1.txt)" \
   "2 1 .git-assetsync d/cm1.txt c1"
 git reset -q --hard
+
+# =============================================================================
+section "37. A step it doesn't know, cache limits of 0, verify keeps a base"
+# =============================================================================
+# a filter with a step this version doesn't know (a typo, a newer version):
+# the filter commands still work - to see and to fix it
+new_repo r37
+printf '[filter "a"]\n\tstep = bogus 1\n[filter "b"]\n\tstep = extract\n' > .git-assetsync
+git add .git-assetsync && git commit -qm filters
+check "a step it doesn't know: filter lists them" "$(git assetsync filter 2>&1 | oneline)" \
+  "a${TAB}(1 step; not used) b${TAB}(1 step; not used) "
+check "... filter show" "$(git assetsync filter show a 2>&1 | head -1)" "bogus 1"
+check "... filter trust lists" "$(git assetsync filter trust 2>&1)" "no filter runs commands"
+check "... filter set fixes it" "$(git assetsync filter set a --strip 2 >/dev/null 2>&1; reg filter.a.step)" "strip 2"
+check "... filter remove of another" "$(rc git assetsync filter remove b)" "0"
+git reset -q --hard
+# cache prune: 0 for a limit means none, as in the configuration
+SAVED_CACHE=$ASSETSYNC_CACHE; export ASSETSYNC_CACHE=$T/cache37
+quiet asd add acme/cm c.txt --asset cm1.txt
+check "cache prune --max-size 0: no size limit" "$(git assetsync cache prune --max-size 0 | tail -1; ls "$ASSETSYNC_CACHE/sha256" | lines)" \
+  "removed 0 files (0 bytes) from the download cache - files used in the last minutes are kept
+1"
+check "cache prune --older-than 0: no age limit" "$(git -c assetsync.cacheMaxSize=off assetsync cache prune --older-than 0)" \
+  "no limits set (assetsync.cacheMaxAge, assetsync.cacheMaxSize) - nothing to do"
+export ASSETSYNC_CACHE=$SAVED_CACHE
+git reset -q --hard
+# verify keeps a directory's base in a clone, also when one of its blobs was
+# never committed (the file modified before the first commit)
+mkdir v && echo mine > v/mine.txt
+quiet asd add acme/cm v/ && echo changed > v/cm1.txt && git add -A && git commit -qm "v, modified"
+cd "$T" && git clone -q --no-local r37 r37c && cd r37c
+check "verify: base got again, kept" "$(git assetsync verify v | head -1) $(git for-each-ref refs/assetsync | lines) $(st v)" \
+  "v/: verified (v2) 1  M"
 
 # =============================================================================
 echo

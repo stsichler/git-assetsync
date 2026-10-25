@@ -310,7 +310,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 assetsync.cacheMaxSize SIZE; 0/off: none) -
                                 also done automatically after a download, at
                                 most once a day
-        --older-than DAYS, --max-size SIZE  other limits (SIZE: 500M, 2G)
+        --older-than DAYS, --max-size SIZE  other limits (SIZE: 500M, 2G; 0
+                                or off: none, as in the configuration)
         -n, --dry-run           only show what would be removed
     cache clear [-n]            remove everything
     cache dir                   print its directory (e.g. for CI caching)
@@ -1340,25 +1341,34 @@ def cache_limits():
     """(max age in days, max size in bytes) from assetsync.cacheMaxAge
     (default CACHE_MAX_AGE) and assetsync.cacheMaxSize (default none);
     None = no limit ('0' or 'off')."""
-    off = ("0", "off", "false", "no", "never")
     age, size = config_get("assetsync.cacheMaxAge"), config_get("assetsync.cacheMaxSize")
-    if not age:
-        max_age = CACHE_MAX_AGE
-    elif age.lower() in off:
-        max_age = None
-    elif age.isdigit():
-        max_age = int(age)
-    else:
-        raise FsError(f"assetsync.cacheMaxAge: '{age}' is not a number of days")
-    return max_age, None if not size or size.lower() in off else parse_size(size)
+    return (age_limit(age, "assetsync.cacheMaxAge") if age else CACHE_MAX_AGE,
+            size_limit(size) if size else None)
 
 
-def prune_cache(max_age, max_size, dry_run=False, grace=True):
+LIMIT_OFF = ("0", "off", "false", "no", "never")
+
+
+def age_limit(text, what):
+    """Days of a cache age limit (config or option): None for none (0, off)."""
+    if text.strip().lower() in LIMIT_OFF:
+        return None
+    if not text.strip().isdigit():
+        raise FsError(f"{what}: '{text}' is not a number of days")
+    return int(text)
+
+
+def size_limit(text):
+    """Bytes of a cache size limit (config or option): None for none (0, off)."""
+    return None if text.strip().lower() in LIMIT_OFF else parse_size(text)
+
+
+def prune_cache(max_age, max_size, dry_run=False, grace=True, everything=False):
     """Remove from the cache what wasn't used for max_age days, then the
     least recently used until it is at most max_size - with grace never what
     was used in the last minutes; also leftovers (unfinished downloads, index entries
-    without their file). Returns the removed [(file, size, last used,
-    descriptions)]."""
+    without their file). everything: all of it (clear). Returns the removed
+    [(file, size, last used, descriptions)]."""
     now, removed = time.time(), []
     files = cache_files()
     total = sum(size for _, size, _, _ in files)
@@ -1366,7 +1376,7 @@ def prune_cache(max_age, max_size, dry_run=False, grace=True):
         f, size, used, _ = item
         if grace and now - used < CACHE_GRACE:
             continue
-        if (max_age is not None and now - used > max_age * 86400) or \
+        if everything or (max_age is not None and now - used > max_age * 86400) or \
                 (max_size is not None and total > max_size):
             if not dry_run:
                 try:
@@ -1400,7 +1410,7 @@ def prune_cache(max_age, max_size, dry_run=False, grace=True):
         for f in (root / "local").glob("*") if (root / "local").is_dir() else []:
             try:
                 lines = f.read_text(encoding="utf-8", errors="replace").split("\n")
-                if max_size == 0 or len(lines) < 3 or not Path(lines[2]).is_file() or \
+                if everything or len(lines) < 3 or not Path(lines[2]).is_file() or \
                         ".tmp" in f.name and now - f.stat().st_mtime > 86400:
                     f.unlink()
             except OSError:
@@ -1918,8 +1928,18 @@ def used_filters(steps, filters, seen=None):
     return seen
 
 
+def step_parts(step):
+    """parse_step(), (None, []) for a step this version doesn't know or a
+    malformed one - for listing and finding filters, which must work with
+    such steps too (to see and fix them)."""
+    try:
+        return parse_step(step)
+    except FsError:
+        return None, []
+
+
 def runs_commands(steps):
-    return any(parse_step(s)[0] in COMMAND_STEPS for s in steps)
+    return any(step_parts(s)[0] in COMMAND_STEPS for s in steps)
 
 
 def trust_hash(name, filters, repo):
@@ -2165,7 +2185,7 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
             sub = args[0].strip("/") + "/"
             files = {r[len(sub):]: v for r, v in files.items() if r.startswith(sub)}
         elif name == "strip":
-            # files with no more than n directories are left out
+            # files with fewer than n directories are left out (as tar does)
             n, new = int(args[0]), {}
             for r, v in files.items():
                 parts = r.split("/")
@@ -2285,15 +2305,14 @@ class Repo:
 
     def __init__(self):
         # one git command for where everything is
-        p = git(["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-path", "objects",
-                 "--git-path", "index"], check=False)
+        p = git(["rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-path", "objects"],
+                check=False)
         lines = p.stdout.decode("utf-8", "replace").splitlines()
-        if p.returncode or len(lines) != 4:
+        if p.returncode or len(lines) != 3:
             raise FsError("not inside a Git working tree")
         self.top = Path(lines[0]).resolve()
         self.gitdir = Path(lines[1])
-        # relative to the current directory, where it ran
-        self.objects, self.index = (Path.cwd() / x for x in lines[2:])
+        self.objects = Path.cwd() / lines[2]      # relative to the current directory
         # shell aliases run in the top-level dir and pass the original
         # subdirectory in GIT_PREFIX
         prefix = os.environ.get("GIT_PREFIX")
@@ -2593,18 +2612,11 @@ class Repo:
                     os.environ[k] = v
             self.scratch_dir = td
 
-    def index_path(self):
-        return self.index
-
     @contextmanager
-    def temp_index(self, copy=False):
-        """Environment for git commands on a temporary index: empty, or with
-        copy a copy of the index (which stays as it is)."""
+    def temp_index(self):
+        """Environment for git commands on a temporary, empty index."""
         with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
-            index = Path(td) / "index"
-            if copy and self.index_path().exists():
-                shutil.copyfile(self.index_path(), index)
-            yield dict(os.environ, GIT_INDEX_FILE=str(index))
+            yield dict(os.environ, GIT_INDEX_FILE=str(Path(td) / "index"))
 
     def make_tree(self, entries):
         """Tree object with the given (mode, id, path) entries, via a
@@ -2661,6 +2673,9 @@ class Repo:
         """Mode of the file rel in HEAD, None if HEAD has none."""
         if self.modes is not None:
             return self.modes.get(rel)
+        head = self.heads.get(rel)        # prefetched for the entries
+        if head:
+            return head[0] if head[1] == "blob" else None
         parent, _, name = rel.rpartition("/")
         p = self.git(["ls-tree", "-z", f"HEAD:{parent}" if parent else "HEAD"], check=False)
         for item in p.stdout.decode("utf-8", "replace").split("\0"):
@@ -3164,7 +3179,7 @@ class Registry:
         """Entries using the named filter, and named filters with a 'filter'
         step using it."""
         def uses(steps):
-            return any(parse_step(s)[0] == "apply" and parse_step(s)[1][1] == name
+            return any(step_parts(s)[0] == "apply" and step_parts(s)[1][1] == name
                        for s in steps)
         return [f"{r}/" if self.kinds.get(r) == "dir" else r
                 for r in sorted(self.files) if self.files[r].get("filter") == name] + \
@@ -3178,7 +3193,7 @@ class Registry:
         def renamed(steps):
             result = []
             for step in steps:
-                kind, args = parse_step(step)
+                kind, args = step_parts(step)
                 result.append(shlex.join(["apply", args[0], new])
                               if kind == "apply" and args[1] == old else step)
             return result
@@ -3220,19 +3235,6 @@ class Registry:
                 self.repo.fix_eol(self.path)
         self.repo.git(["add", "-A", "--", REGISTRY])
 
-    def uncommitted(self):
-        """Entries that differ from the committed .git-assetsync in what they
-        record about the file. Which [source] they belong to doesn't count: a
-        changed source may go into any commit."""
-        p = self.repo.git(["config", "--blob", f"HEAD:{REGISTRY}", "--list", "-z"], check=False)
-        head, kinds = registry_entries(parse_registry(p.stdout)) if p.returncode == 0 else ({}, {})
-
-        def base(entry, kind):
-            return None if entry is None else \
-                (kind, {k: v for k, v in entry.items() if k != "source"})
-        return {rel for rel in set(head) | set(self.files)
-                if base(head.get(rel), kinds.get(rel)) !=
-                base(self.files.get(rel), self.kinds.get(rel))}
 
 
 class Entry:
@@ -5152,11 +5154,8 @@ def verify_compare(repo, entry, release, items, keeps):
         rel_items = [(m, o, path[len(entry.rel) + 1:]) for m, o, path in items]
         if repo.make_tree(rel_items) != entry.blob:
             return False, differs
-        try:
-            with repo.real():
-                repo.keep_tree(repo.make_tree(rel_items))
-        except FsError:
-            pass
+        with repo.real():     # its files are stored there (cmd_verify)
+            repo.keep_tree(repo.make_tree(rel_items))
         return verified
     if items_match_base(repo, st, items):
         return verified
@@ -5192,7 +5191,11 @@ def cmd_verify(ctx, repo, args):
             except FsError as e:
                 results.append((entry, e))
         todo = [r for _, r in results if isinstance(r, tuple) and len(r) == 3]
-        items = iter(stored_items(repo, [files for _, files, _ in todo]))
+        # a base to keep: its files stored in the repository, not in scratch()
+        with repo.real():
+            kept = iter(stored_items(repo, [files for _, files, keeps in todo if keeps]))
+        other = iter(stored_items(repo, [files for _, files, keeps in todo if not keeps]))
+        items = iter([next(kept) if keeps else next(other) for _, _, keeps in todo])
         for entry, result in results:
             if args.verbose:
                 print(f"{entry.shown}: {paint(origin_text(entry), 'dim')}", flush=True)
@@ -5237,13 +5240,13 @@ def cmd_cache(args):
         return EXIT_OK
     if action in ("prune", "clear"):
         if action == "clear":
-            removed = prune_cache(None, 0, args.dry_run, grace=False)
-        else:
+            removed = prune_cache(None, None, args.dry_run, grace=False, everything=True)
+        else:             # 0 (off): no limit, as in the configuration
             max_age, max_size = cache_limits()
             if args.older_than is not None:
-                max_age = args.older_than
+                max_age = age_limit(args.older_than, "--older-than")
             if args.max_size is not None:
-                max_size = parse_size(args.max_size)
+                max_size = size_limit(args.max_size)
             if max_age is None and max_size is None:
                 print("no limits set (assetsync.cacheMaxAge, assetsync.cacheMaxSize) - "
                       "nothing to do")
@@ -5454,8 +5457,10 @@ def cmd_unlink(ctx, repo, args):
 
 
 def changed_paths(repo, rels):
-    """Paths at or below these with uncommitted changes - untracked files
-    too, not ignored ones; a git status per 100 of them."""
+    """Paths at or below these with uncommitted changes that rm would lose -
+    untracked files too, not ignored ones; not a mere deletion (as git rm):
+    its content is still in the index or HEAD. A git status per 100 of
+    them."""
     result = set()
     rels = list(rels)
     for i in range(0, len(rels), 100):
@@ -5466,7 +5471,8 @@ def changed_paths(repo, rels):
             if skip or not item:
                 skip = False
                 continue
-            result.add(item[3:])
+            if item[:2] not in (" D", "D "):
+                result.add(item[3:])
             skip = item[0] in "RC"          # a rename: the old path follows
     return result
 
@@ -6361,10 +6367,11 @@ def run(argv):
     a = actions.add_parser("prune", parents=[colorp],
                            help="remove what wasn't used for a while (default: the configured "
                                 "limits, assetsync.cacheMaxAge / cacheMaxSize)")
-    a.add_argument("--older-than", type=int, metavar="DAYS",
-                   help="what wasn't used for DAYS days")
+    a.add_argument("--older-than", metavar="DAYS",
+                   help="what wasn't used for DAYS days (0 or off: no age limit)")
     a.add_argument("--max-size", metavar="SIZE",
-                   help="then the least recently used, down to SIZE (e.g. 500M, 2G)")
+                   help="then the least recently used, down to SIZE (e.g. 500M, 2G; 0 or "
+                        "off: no size limit)")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would be removed")
     a = actions.add_parser("clear", parents=[colorp], help="remove everything",
                            description="Remove everything from the download cache.")

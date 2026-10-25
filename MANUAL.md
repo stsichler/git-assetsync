@@ -198,9 +198,10 @@ A directory entry doesn't need a directory of its own: the files of the
 release can be next to files of yours – a `CMakeLists.txt`, a `README`,
 patches, build output. They are yours, tracked or not: `status`
 doesn't report them, `pull` and `restore` leave them alone, `pull`
-commits only the files of the release (other changes you staged there
-stay staged), `rm` removes only the release's files, and `mv` moves the
-directory with everything in it.
+stages only the files of the release (changes of yours there stay as they
+are – staged or not; what is staged goes into your next commit), `rm`
+removes only the release's files, and `mv` moves the directory with
+everything in it.
 
 A new release with a file where one of yours is – the same name, also in
 another case (`README.md` and `README.MD` are one file on Windows and
@@ -636,7 +637,8 @@ files its release gave; files of yours there stay (`rm` says how many).
 It refuses – for all paths given – if one of those files has uncommitted
 changes; `-f` removes them anyway (their content can be [got
 back](#commands) for a while). A committed
-modification doesn't count, and a file already deleted is fine. To keep the files and only
+modification doesn't count, and a file already deleted – the deletion
+committed or not – is fine, as with `git rm`. To keep the files and only
 remove the entries, use [`unlink`](#unlink).
 
 | Option | Meaning |
@@ -1024,7 +1026,7 @@ $ git assetsync cache list
 |---|---|
 | (none) | where the cache is, how big, and its limits |
 | `list` | its files, most recently used first: size, last used, where it came from (`+N more` if several assets have the same content) |
-| `prune` | remove what wasn't used for `assetsync.cacheMaxAge` days, then the least recently used beyond `assetsync.cacheMaxSize`; `--older-than DAYS` and `--max-size SIZE` (e.g. `500M`, `2G`) set other limits for this run; `-n` only shows what would be removed |
+| `prune` | remove what wasn't used for `assetsync.cacheMaxAge` days, then the least recently used beyond `assetsync.cacheMaxSize`; `--older-than DAYS` and `--max-size SIZE` (e.g. `500M`, `2G`) set other limits for this run (`0` or `off`: no limit, as in the configuration); `-n` only shows what would be removed |
 | `clear` | remove everything (`-n`: only show) |
 | `dir` | print the directory, e.g. for caching it between CI runs |
 
@@ -1184,7 +1186,7 @@ has the name of its step:
 |---|---|
 | `--extract [PATTERN…]` | unpack the matching files (without a pattern: all), which must be archives – a file that is none is an error, like a broken archive: ZIP, tar, tar.gz/.tgz, tar.bz2, tar.xz, single `.gz`/`.bz2`/`.xz` files (named without the suffix), and 7z with an external 7-Zip (see below). The type is recognized by the content, not the name. All archives go into one root; the files not matching stay as they are. With archives and other files among the assets, choose the archives: `--extract '*.zip'` |
 | `--subdir PATH` | only the files below `PATH`, which becomes the root |
-| `--strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive); files with no more than `N` directories are left out, as `tar` does |
+| `--strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive); files with fewer than `N` directories are left out, as `tar` does |
 | `--include PATTERN…` | only the files matching any of the patterns |
 | `--exclude PATTERN…` | not the files matching any of the patterns |
 | `--move PATTERN TARGET` | move what matches – files, or directories with all below them – to `TARGET`, see below |
@@ -1441,8 +1443,11 @@ no result, or writes links is an error; nothing is changed then. On Linux
 and macOS, the executable bit of what a command writes is kept.
 
 The result is recorded like any other (`blob` / `tree`), so commands only
-run on `pull`, `add` and `filter test` – never on `status`, and never on
-a clone: everyone else gets the committed files. Commands should be
+run when the assets are filtered: on `pull`, `add`, `filter test`, `diff`
+/ `difftool --upstream` and `verify`, and when the base of a directory is
+got again in a clone (see [Files of your own in a
+directory](#files-of-your-own-in-a-directory)) – never on `status`, and a
+plain clone gets the committed files without running anything. Commands should be
 deterministic, so that the same release gives the same result –
 [`verify`](#verify) checks it.
 
@@ -1680,8 +1685,8 @@ downloaded again.
 
 Commands that only look – `status`, `diff`, `difftool`, `verify` and the
 hooks – change nothing in the repository: the objects they need for
-comparing go to a temporary object directory, removed afterwards (only
-`verify` keeps a directory's base it got again). They read only the files
+comparing go to a temporary object directory, removed afterwards – only
+a directory's base got again (by `verify`, `diff` or `difftool`) is kept. They read only the files
 of the entries, not those of others in a directory, and only the ones
 that differ from what the release gave are looked at more closely.
 
