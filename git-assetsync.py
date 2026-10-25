@@ -367,7 +367,6 @@ import codecs
 import fnmatch
 import gzip
 import hashlib
-import inspect
 import json
 import lzma
 import os
@@ -390,9 +389,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from typing import Any, Optional
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlparse
-from urllib.request import urlopen
 
 __version__ = "0.22.1"
 REGISTRY = ".git-assetsync"
@@ -589,6 +586,18 @@ def config_bool_text(value):
 def config_bool(key, default):
     values = config_values(key)
     return config_bool_text(values[-1]) if values else default
+
+
+def ls_items(raw):
+    """[(fields, path)] of the output of ls-tree -z / ls-files -s -z."""
+    items = (item.partition("\t") for item in raw.decode("utf-8", "replace").split("\0"))
+    return [(info.split(" "), path) for info, _, path in items if path]
+
+
+def chunks(items, n=100):
+    """items in lists of n - for git commands with paths on the command line."""
+    items = list(items)
+    return (items[i:i + n] for i in range(0, len(items), n))
 
 
 def tree_path(path):
@@ -901,6 +910,8 @@ class GitLab(Platform):
 
 def http_download(url, dest, what):
     """Plain download of a URL elsewhere (no login: public files only)."""
+    from urllib.error import HTTPError, URLError    # here: slow to import
+    from urllib.request import urlopen
     scheme = urlparse(url).scheme
     if scheme not in ("https", "http"):
         raise FsError(f"{what}: cannot download '{url}'")
@@ -1638,7 +1649,7 @@ def extract_7z(path, name, files, work):
             raise FsError(f"{what}: unsafe path '{member}'")
         size += int(info.get("Size") or 0)
         count += 1
-        if size > MAX_EXTRACT_SIZE or work.size + size > MAX_EXTRACT_SIZE:
+        if work.size + size > MAX_EXTRACT_SIZE:
             raise FsError(f"{what}: more than {MAX_EXTRACT_SIZE >> 30} GiB unpacked")
         if work.count + count > MAX_EXTRACT_FILES:
             raise FsError(f"{what}: more than {MAX_EXTRACT_FILES} files")
@@ -1854,7 +1865,7 @@ def collect_dir(root, what, work):
                 raise FsError(f"{what}: more than {MAX_EXTRACT_SIZE >> 30} GiB or "
                               f"{MAX_EXTRACT_FILES} files")
             rel = safe_path(p.relative_to(root).as_posix(), what)
-            files[rel] = (p, os.name != "nt" and bool(st.st_mode & 0o111))
+            files[rel] = (p, exec_bit(st))
     return files
 
 
@@ -1938,6 +1949,11 @@ def step_parts(step):
         return None, []
 
 
+def named_steps(name):
+    """A named filter as steps: applied to all files."""
+    return [shlex.join(["apply", "*", name])]
+
+
 def runs_commands(steps):
     return any(step_parts(s)[0] in COMMAND_STEPS for s in steps)
 
@@ -1949,19 +1965,19 @@ def trust_hash(name, filters, repo):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def trusted_values(repo):
+def trusted_values():
     """['<hash> <name>'] in the repository's own config (never committed)."""
     return config_values("assetsync.trusted", "local")
 
 
 def is_trusted(repo, name, filters):
     h = trust_hash(name, filters, repo)
-    return any(v.split(" ", 1)[0] == h for v in trusted_values(repo))
+    return any(v.split(" ", 1)[0] == h for v in trusted_values())
 
 
 def set_trust(repo, name, filters, trust=True):
     """Trust (or no longer trust) the filter as it is now."""
-    values = [v for v in trusted_values(repo) if v.partition(" ")[2] != name]
+    values = [v for v in trusted_values() if v.partition(" ")[2] != name]
     if trust:
         values.append(f"{trust_hash(name, filters, repo)} {name}")
     repo.git(["config", "--local", "--unset-all", "assetsync.trusted"], check=False)
@@ -2061,7 +2077,7 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
             files = rest
         elif name == "apply":
             pattern, fname = args
-            if fname not in (filters or {}):
+            if fname not in filters:
                 raise FsError(f"{work.what}: unknown filter '{fname}'")
             if fname in chain:
                 raise FsError(f"{work.what}: filter '{fname}' uses itself")
@@ -2142,7 +2158,7 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
                     result = {f"{t}/{k}" if t else k: v
                               for k, v in collect_dir(outp, f"{what}: {r}", work).items()}
                 elif outp.is_file() and not outp.is_symlink():
-                    result = {t: (outp, os.name != "nt" and bool(outp.stat().st_mode & 0o111))}
+                    result = {t: (outp, exec_bit(outp.stat()))}
                 else:
                     raise FsError(f"{what}: {r}: the command wrote no file {{out}}")
                 for k, v in result.items():
@@ -2297,10 +2313,6 @@ OBJECT_VARS = ("GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES")
 
 class Repo:
     scratch_dir = None      # see scratch()
-    now = {}                # see items_match_base(): {(blob, path): stored_now()}
-    pointers = {}           # see lfs_pointers()
-    modes = None            # see head_modes()
-    index_all: Any = False  # see index_items()
     notes_limits = None     # see notes_limits()
 
     def __init__(self):
@@ -2323,9 +2335,9 @@ class Repo:
         self.heads = {}           # see head_entry(): {path: (mode, type, id) | None}
         self.diffs = None         # see prefetch(): (paths asked, files differing from HEAD)
         self.work = {}            # see worktree_items(): {path: (mode, id) | None}
-        self.now = {}
-        self.pointers = {}
-        self.missing = set()      # see lfs_pointers()
+        self.now = {}             # see items_match_base(): {(blob, path): stored_now()}
+        self.pointers = {}        # see lfs_pointers()
+        self.missing = set()
 
     def git(self, args, **kw):
         return git(args, cwd=self.top, **kw)
@@ -2350,14 +2362,12 @@ class Repo:
         if not rels:
             return
         self.heads.update(dict.fromkeys(rels))
-        for i in range(0, len(rels), 100):
-            p = self.git(["ls-tree", "-z", "HEAD", "--"] + [tree_path(r) for r in rels[i:i + 100]],
+        for part in chunks(rels):
+            p = self.git(["ls-tree", "-z", "HEAD", "--"] + [tree_path(r) for r in part],
                          check=False)
-            for item in p.stdout.decode("utf-8", "replace").split("\0"):
-                info, _, path = item.partition("\t")
+            for info, path in ls_items(p.stdout):
                 if path in self.heads:
-                    mode, kind, oid = info.split(" ")
-                    self.heads[path] = (mode, kind, oid)
+                    self.heads[path] = tuple(info)
         trees = list(dict.fromkeys(b for r in rels for d, b in [entries[r]] if d and b))
         if trees:
             p = self.git(["cat-file", "--batch-check=%(objecttype)"], check=False,
@@ -2366,9 +2376,9 @@ class Repo:
             if len(lines) == len(trees):
                 self.known_trees.update((t, kind == "tree") for t, kind in zip(trees, lines))
         changed = set()
-        for i in range(0, len(rels), 100):
+        for part in chunks(rels):
             p = self.git(["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"]
-                         + [lit(r) for r in rels[i:i + 100]], check=False)
+                         + [lit(r) for r in part], check=False)
             if p.returncode:
                 return
             changed.update(p.stdout.decode("utf-8", "replace").split("\0"))
@@ -2393,8 +2403,8 @@ class Repo:
         """(mode, type, id) of what HEAD has at rel, None if nothing."""
         if rel not in self.heads:
             p = self.git(["ls-tree", "-z", "HEAD", "--", tree_path(rel)], check=False)
-            info, _, path = p.stdout.decode("utf-8", "replace").rstrip("\0").partition("\t")
-            self.heads[rel] = tuple(info.split(" ")) if path == rel else None
+            self.heads[rel] = next((tuple(info) for info, path in ls_items(p.stdout)
+                                    if path == rel), None)
         return self.heads[rel]
 
     def worktree_blob(self, path):
@@ -2500,11 +2510,7 @@ class Repo:
                               "--pathspec-file-nul"], env=env,
                              data="\0".join(lit(p) for _, p in batch).encode("utf-8"))
                     listing = self.git(["ls-files", "-s", "-z"], env=env).stdout
-            ids = {}
-            for item in listing.decode("utf-8", "replace").split("\0"):
-                info, _, path = item.partition("\t")
-                if path:
-                    ids[path] = info.split(" ")[1]
+            ids = {path: info[1] for info, path in ls_items(listing)}
             for oid, path in batch:
                 result[(oid, path)] = ids[path]
         return result
@@ -2530,13 +2536,8 @@ class Repo:
             self.git(["--work-tree", td, "add", "-f", "--pathspec-from-file=-",
                       "--pathspec-file-nul"], env=env,
                      data="\0".join(lit(p) for p in sorted(files)).encode("utf-8"))
-            items = self.git(["ls-files", "-s", "-z"], env=env).stdout.decode("utf-8", "replace")
-        result = {}
-        for item in items.split("\0"):
-            info, _, path = item.partition("\t")
-            if path in files:
-                result[path] = info.split(" ")[1]
-        return result
+            listing = self.git(["ls-files", "-s", "-z"], env=env).stdout
+        return {path: info[1] for info, path in ls_items(listing) if path in files}
 
     def read_blob(self, oid):
         return self.git(["cat-file", "blob", oid]).stdout
@@ -2633,13 +2634,7 @@ class Repo:
         listed once: objects don't change)."""
         if tree not in self.trees:
             p = self.git(["ls-tree", "-r", "-z", tree])
-            result = []
-            for item in p.stdout.decode("utf-8", "replace").split("\0"):
-                if item:
-                    info, _, path = item.partition("\t")
-                    mode, kind, oid = info.split(" ")
-                    result.append((mode, kind, oid, path))
-            self.trees[tree] = result
+            self.trees[tree] = [(*info, path) for info, path in ls_items(p.stdout)]
         return self.trees[tree]
 
     def changed_files(self, rel):
@@ -2657,48 +2652,18 @@ class Repo:
             return oid
         return self.store(self.read_content(oid, rel))
 
-    def head_modes(self):
-        """{path: mode} of all files in HEAD - one git command, for commands
-        that need the modes of many (head_mode())."""
-        if self.modes is None:
-            p = self.git(["ls-tree", "-r", "-z", "--full-tree", "HEAD"], check=False)
-            self.modes = {}
-            for item in p.stdout.decode("utf-8", "replace").split("\0"):
-                info, _, path = item.partition("\t")
-                if info.split(" ")[1:2] == ["blob"]:
-                    self.modes[path] = info.split(" ")[0]
-        return self.modes
-
     def head_mode(self, rel):
         """Mode of the file rel in HEAD, None if HEAD has none."""
-        if self.modes is not None:
-            return self.modes.get(rel)
-        head = self.heads.get(rel)        # prefetched for the entries
-        if head:
-            return head[0] if head[1] == "blob" else None
-        parent, _, name = rel.rpartition("/")
-        p = self.git(["ls-tree", "-z", f"HEAD:{parent}" if parent else "HEAD"], check=False)
-        for item in p.stdout.decode("utf-8", "replace").split("\0"):
-            info, _, path = item.partition("\t")
-            if path == name and info.split(" ")[1:2] == ["blob"]:
-                return info.split(" ")[0]
-        return None
+        head = self.head_entry(rel)
+        return head[0] if head and head[1] == "blob" else None
 
-    def index_items(self, rel):
-        """[(mode, id, path)] of the files at rel in the index (with
-        index_all set: from one listing of the whole index, for many)."""
-        if self.index_all:
-            if not isinstance(self.index_all, list):
-                self.index_all = False
-                self.index_all = self.index_items(".")
-            return [i for i in self.index_all if i[2] == rel or i[2].startswith(rel + "/")]
-        p = self.git(["ls-files", "-s", "-z", "--", lit(rel)])
+    def index_items(self, *rels):
+        """[(mode, id, path)] of the files at or below these paths in the
+        index (a git command per 100 of them)."""
         items = []
-        for item in p.stdout.decode("utf-8", "replace").split("\0"):
-            if item:
-                info, _, path = item.partition("\t")
-                mode, oid, _ = info.split(" ")
-                items.append((mode, oid, path))
+        for part in chunks(rels):
+            p = self.git(["ls-files", "-s", "-z", "--"] + [lit(r) for r in part])
+            items += [(info[0], info[1], path) for info, path in ls_items(p.stdout)]
         return items
 
     def worktree_items(self, paths):
@@ -2718,10 +2683,10 @@ class Repo:
                          data="".join(f"{f}\n" for f in files).encode("utf-8"))
             ids = p.stdout.decode("utf-8", "replace").split()
             stat_bit = config_bool("core.filemode", True)
-            index = {} if stat_bit else {path: mode for mode, _, path in self.index_items(".")}
+            index = {} if stat_bit else {path: mode for mode, _, path in self.index_items(*files)}
             for f, oid in zip(files, ids):
                 if stat_bit:
-                    mode = "100755" if os.stat(self.top / f).st_mode & 0o100 else "100644"
+                    mode = git_mode(os.stat(self.top / f).st_mode & 0o100)
                 else:
                     mode = index.get(f, "100644")
                 self.work[f] = (mode, oid)
@@ -2748,9 +2713,9 @@ class Repo:
         tracked and untracked ones, not ignored ones (one git command per 100
         of them)."""
         names = {}
-        for i in range(0, len(rels), 100):
+        for part in chunks(rels):
             p = self.git(["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--"]
-                         + [lit(r) for r in rels[i:i + 100]])
+                         + [lit(r) for r in part])
             names.update(dict.fromkeys(n for n in p.stdout.decode("utf-8", "replace").split("\0") if n))
         return [n for n in names if (self.top / n).is_file()]
 
@@ -2968,7 +2933,7 @@ def edit_config(text, items, ops):
                         not lines[start].strip():
                     del lines[start]
             items = {k: v for k, v in items.items()
-                     if not k.startswith(op[1].split(".")[0] + "." + op[1].partition(".")[2] + ".")}
+                     if not k.startswith(op[1] + ".")}
             continue
         if op[0] == "--rename-section":
             found = blocks(op[1])
@@ -3251,8 +3216,7 @@ class Entry:
     shown = property(lambda self: self.rel + ("/" if self.is_dir else ""))
     filter = property(lambda self: self.v.get("filter") or None)   # name of its [filter]
     # its filter as steps: the named filter applied to all files
-    steps = property(lambda self: [shlex.join(["apply", "*", self.filter])] if self.filter
-                     else [])
+    steps = property(lambda self: named_steps(self.filter) if self.filter else [])
 
     @property
     def v(self):
@@ -3332,11 +3296,9 @@ class State:
     rel: str
     error: Optional[str] = None
     warnings: list = field(default_factory=list)
-    fetched: bool = False     # upstream checked
     origin: Any = None
     release: Any = None       # the release the entry selects now
     assets: list = field(default_factory=list)   # its assets the entry takes
-    asset: Optional[Asset] = None   # the first of them (the one of a file)
     committed: Optional[str] = None   # see evaluate()
     worktree: str = "clean"
     local: str = "clean"
@@ -3368,7 +3330,7 @@ def base_files(repo, entry):
     if not entry.blob:
         return []
     if not entry.is_dir:
-        return [(getattr(entry, "mode", None), entry.blob, entry.rel)]
+        return [(entry.mode, entry.blob, entry.rel)]
     if not repo.has_tree(entry.blob):
         return None
     return [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(entry.blob)
@@ -3551,8 +3513,6 @@ def evaluate(ctx, repo, entry):
         except FsError as e:
             st.error = str(e)
             return st
-        st.asset = st.assets[0]
-        st.fetched = True
         now = assets_digest([(a.name, a.digest) for a in st.assets])
         st.tag_changed = st.release.tag != entry.synced
         if now:
@@ -4160,7 +4120,6 @@ def diff_items(ctx, repo, reg, args):
     keep = ExitStack()        # with --upstream: the filtered files, stored for all at once
     entries = select_entries(repo, reg, args.paths, containing=True)
     prefetch_files(repo, entries)
-    repo.head_modes()
     for entry in entries:
         st = evaluate(ctx, repo, entry)
         if st.unchecked and not st.error:       # a directory: get its base first
@@ -4239,14 +4198,14 @@ def cmd_diff(ctx, repo, args):
     return rc
 
 
-def difftool_prompting(repo, args):
+def difftool_prompting(args):
     """Ask before each file like `git difftool` (also with paths given):
     -y/--no-prompt or --prompt, the last one given, else difftool.prompt
     (default: ask)."""
     return config_bool("difftool.prompt", True) if args.prompt is None else args.prompt
 
 
-def difftool_name(repo, extra):
+def difftool_name(extra):
     for i, a in enumerate(extra):              # -t TOOL / --tool=TOOL passed after --
         if a.startswith("--tool="):
             return a.split("=", 1)[1]
@@ -4288,8 +4247,8 @@ def cmd_difftool(ctx, repo, args):
             if old.get(path) != new.get(path):
                 pairs.append((st, path, (old.get(path) or (None, None))[1],
                               (new.get(path) or (None, None))[1]))
-    prompt = difftool_prompting(repo, args)
-    tool = difftool_name(repo, args.extra)
+    prompt = difftool_prompting(args)
+    tool = difftool_name(args.extra)
     with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
         for n, (st, path, base, other) in enumerate(pairs, 1):
             if prompt:
@@ -4373,16 +4332,12 @@ def save_discarded(repo, worktree, index=(), known=None):
         known.update(zip(rest, repo.git(["hash-object", "--stdin-paths"],
                                         data="\n".join(rest).encode("utf-8")).stdout.decode().split()))
     staged, head = {}, {}     # {path: blob}
-    for i in range(0, len(paths), 100):
-        part = paths[i:i + 100]
+    for part in chunks(paths):
         for found, at, args in ((staged, 1, ["ls-files", "-s", "-z", "--"] + [lit(p) for p in part]),
                                 (head, 2, ["ls-tree", "-z", "HEAD", "--"]
                                  + [tree_path(p) for p in part])):
             p = repo.git(args, check=False)
-            for item in p.stdout.decode("utf-8", "replace").split("\0"):
-                info, _, path = item.partition("\t")
-                if path:
-                    found[path] = info.split(" ")[at]
+            found.update((path, info[at]) for info, path in ls_items(p.stdout))
     lost = [p for p in files if p in worktree and known[p] != head.get(p)
             and not (p not in index and known[p] == staged.get(p))]
     # a staged version that is in the working tree stays there or is kept with it
@@ -4394,6 +4349,16 @@ def save_discarded(repo, worktree, index=(), known=None):
                    + [(p, ", as staged", staged[p]) for p in gone])
     for path, how, oid in named:
         print(f"{paint('discarded:', 'yellow')} {path}{how} (git show {oid[:12]} to get it back)")
+
+
+def git_mode(executable):
+    """The mode git stores a file with."""
+    return "100755" if executable else "100644"
+
+
+def exec_bit(st):
+    """Is a file (its os.stat()) executable - never on Windows."""
+    return os.name != "nt" and bool(st.st_mode & 0o111)
 
 
 def set_executable(path, executable):
@@ -4475,7 +4440,7 @@ def install_entries(repo, jobs):
         # a file in the way that is what the release gives - also its mode: the
         # entry's now
         others = [o for o in others if not (o in files and there.get(o) ==
-                                            ("100755" if files[o][1] else "100644", ids[o]))]
+                                            (git_mode(files[o][1]), ids[o]))]
         if len(others) == 1 and not overwrite:
             result[entry.rel] = FsError(f"'{others[0]}' is in the way of the release - use "
                                         "--overwrite to replace it")
@@ -4512,7 +4477,7 @@ def install_entries(repo, jobs):
     if gone_all:
         repo.git(["update-index", "-z", "--force-remove", "--stdin"],
                  data="\0".join(gone_all).encode("utf-8"))
-    items = sorted((("100755" if v[1] else "100644"), ids[p], p)
+    items = sorted((git_mode(v[1]), ids[p], p)
                    for _, files in jobs for p, v in files.items())
     for _, _, p in items:
         (repo.top / p).parent.mkdir(parents=True, exist_ok=True)
@@ -4565,7 +4530,7 @@ def pull_done(repo, reg, job, base):
     entry.set("filterhash", filter_hash(entry.steps, reg.filters, repo))
     entry.set(BASE_KEY[entry.kind], base)
     if not entry.is_dir:
-        entry.set("mode", "100755" if job.files[entry.rel][1] else "100644")
+        entry.set("mode", git_mode(job.files[entry.rel][1]))
     return msg, set(job.base) | set(job.files)
 
 
@@ -4801,15 +4766,11 @@ def filter_steps(args):
     the order given. None if none are given."""
     steps = []
     for kind, value in getattr(args, "steps", None) or []:
-        if kind == "extract":
-            steps.append(shlex.join(["extract"] + list(value)))
-        elif kind == "subdir":
-            steps.append(shlex.join(["subdir", value]))
-        elif kind == "strip":
+        if kind == "strip":
             if value < 1:
                 raise FsError("--strip needs a number of at least 1")
             steps.append(f"strip {value}")
-        else:       # include, exclude, move, copy, apply, changelog, convert, run
+        else:       # extract, subdir, include, exclude, move, copy, apply, changelog, ...
             steps.append(shlex.join([kind] + ([value] if isinstance(value, str) else list(value))))
     for step in steps:
         parse_step(step)
@@ -4846,7 +4807,7 @@ def cmd_add(ctx, repo, args):
     if args.filter and args.filter not in reg.filters:
         raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
                       f"'git assetsync filter add {args.filter} ...'")
-    steps = [shlex.join(["apply", "*", args.filter])] if args.filter else []
+    steps = named_steps(args.filter) if args.filter else []
     url, spec, named = given_source(reg, args)
     origin, release = ctx.release(url, spec)
     assets = select_assets(release, args.asset, origin.label, is_dir)
@@ -4891,7 +4852,7 @@ def cmd_add(ctx, repo, args):
     old_tree = old_blob if is_dir and base and repo.has_tree(old_blob or "") else None
     with ExitStack() as keep:
         digest, files = filtered_files(repo, reg, new, origin, release, assets, keep)
-        mode = None if is_dir else "100755" if files[rel][1] else "100644"
+        mode = None if is_dir else git_mode(files[rel][1])
         base = install_entries(repo, [(new, files, base, args.overwrite)])[rel]
     if isinstance(base, FsError):
         raise base
@@ -4941,7 +4902,7 @@ def registry_problems(reg):
             problems.append(f'[source "{name}"] is not used by any file')
     for name in sorted(reg.filters):
         try:
-            expand_steps([shlex.join(["apply", "*", name])], reg.filters)
+            expand_steps(named_steps(name), reg.filters)
         except FsError as e:
             problems.append(f'[filter "{name}"]: {e}')
     reported = set()
@@ -5111,7 +5072,7 @@ def stored_items(repo, groups):
     """[[(mode, id, path)]] of groups of files {path: (file, executable)}, as
     `git add` would store them - with one git add for all (add_files())."""
     ids = repo.add_files({path: src for files in groups for path, (src, _) in files.items()})
-    return [[("100755" if executable else "100644", ids[path], path)
+    return [[(git_mode(executable), ids[path], path)
              for path, (_, executable) in sorted(files.items())] for files in groups]
 
 
@@ -5341,14 +5302,15 @@ def write_files(repo, items):
         repo.git(["checkout-index", "-a", "-f"], env=env)
 
 
-def restore_plan(repo, entry, staged, worktree):
+def restore_plan(repo, entry, index, worktree):
     """What restore would do for an entry: (base items, {side: what it has
-    now}, the blobs to look at more closely - those differing)."""
+    now}, the blobs to look at more closely - those differing). index: the
+    items of the index, None to leave it alone."""
     base = base_files(repo, entry) or []
     paths = {path for _, _, path in base}
     sides = {}
-    if staged:
-        sides["index"] = [i for i in repo.index_items(entry.rel) if i[2] in paths]
+    if index is not None:
+        sides["index"] = [i for i in index if i[2] in paths]
     if worktree:              # its files - in a directory not those of others there
         sides["worktree"] = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
     have = {side: {p: (m, o) for m, o, p in items} for side, items in sides.items()}
@@ -5390,8 +5352,7 @@ def cmd_restore(ctx, repo, args):
     rc = EXIT_OK
     entries = select_entries(repo, reg, args.paths)
     prefetch_files(repo, entries)
-    repo.head_modes()
-    repo.index_all = True
+    index = repo.index_items(".") if args.staged else None
     plans = []
     for entry in entries:
         try:
@@ -5403,11 +5364,10 @@ def cmd_restore(ctx, repo, args):
                               f"{path_arg(repo, entry.shown)}'")
             if entry.is_dir:
                 ensure_base(repo, reg, entry)
-            plans.append((entry, restore_plan(repo, entry, args.staged, worktree)))
+            plans.append((entry, restore_plan(repo, entry, index, worktree)))
         except FsError as e:
             error(f"{entry.shown}: {e}")
             rc = EXIT_ERROR
-    repo.index_all = False
     try:
         now = repo.stored_now(set().union(*(plan[2] for _, plan in plans)))
     except FsError:           # one isn't available: which one, entry by entry
@@ -5462,10 +5422,9 @@ def changed_paths(repo, rels):
     its content is still in the index or HEAD. A git status per 100 of
     them."""
     result = set()
-    rels = list(rels)
-    for i in range(0, len(rels), 100):
+    for part in chunks(rels):
         p = repo.git(["status", "--porcelain", "-z", "--untracked-files=all", "--"]
-                     + [lit(r) for r in rels[i:i + 100]])
+                     + [lit(r) for r in part])
         skip = False
         for item in p.stdout.decode("utf-8", "replace").split("\0"):
             if skip or not item:
@@ -5604,7 +5563,6 @@ def cmd_source(ctx, repo, args):
     if args.name not in reg.sources:
         raise FsError(f"no source '{args.name}' in {REGISTRY}"
                       + (f" (known: {', '.join(sorted(reg.sources))})" if reg.sources else ""))
-    s = reg.sources[args.name]
     if action == "rename":
         new = args.value
         if not new or "\n" in new:
@@ -5707,7 +5665,7 @@ def filter_test(ctx, repo, reg, args):
     if out_dir and (out_dir.is_file() or out_dir.is_dir() and any(out_dir.iterdir())):
         raise FsError(f"'{args.output}' is not an empty directory")
     what = f"filter {args.name}"
-    trusted = ensure_trusted(repo, [shlex.join(["apply", "*", args.name])], reg.filters)
+    trusted = ensure_trusted(repo, named_steps(args.name), reg.filters)
     with Work(what, repo.top, {}, trusted) as work:
         files = {}
         if args.source:
@@ -5725,8 +5683,7 @@ def filter_test(ctx, repo, reg, args):
                 for p in sorted(path.rglob("*")):
                     if p.is_file():
                         rel = safe_path(p.relative_to(path).as_posix(), what)
-                        add_member(files, rel, (p, os.name != "nt" and
-                                                bool(p.stat().st_mode & 0o111)), what)
+                        add_member(files, rel, (p, exec_bit(p.stat())), what)
             elif path.is_file():
                 add_member(files, safe_path(path.name, what), (path, False), what)
             else:
@@ -5739,11 +5696,7 @@ def filter_test(ctx, repo, reg, args):
         result = checked_result(run_steps(files, steps, work, reg.filters, (args.name,),
                                           report), what)
         if out_dir:
-            for rel, (src, executable) in sorted(result.items()):
-                dest = out_dir / rel
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, dest)
-                set_executable(dest, executable)
+            materialize(result, out_dir)
             print(f"{paint(plural(len(result), 'file'), 'green')} written to {args.output}")
             return EXIT_OK
         width = max(len(human_size(src.stat().st_size)) for src, _ in result.values())
@@ -5782,7 +5735,7 @@ def cmd_trust(ctx, repo, args):
     if not commands:
         print("no filter runs commands")
         return EXIT_OK
-    names_trusted = {v.partition(" ")[2] for v in trusted_values(repo)}
+    names_trusted = {v.partition(" ")[2] for v in trusted_values()}
     missing = []
     for name in commands:
         if is_trusted(repo, name, reg.filters):
@@ -6080,6 +6033,7 @@ def run(argv):
     argv = list(sys.argv[1:] if argv is None else argv)
     # the help in colors (argparse: Python 3.14 and later) when the output would be
     color = {}
+    import inspect
     if "color" in inspect.signature(argparse.ArgumentParser).parameters:
         opts = argv[:argv.index("--")] if "--" in argv else argv
         color["color"] = ("-h" in opts or "--help" in opts) and \
