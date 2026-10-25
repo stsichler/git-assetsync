@@ -365,6 +365,7 @@ import argparse
 import bz2
 import codecs
 import fnmatch
+import functools
 import gzip
 import hashlib
 import json
@@ -393,6 +394,8 @@ from urllib.parse import quote, unquote, urlparse
 
 __version__ = "0.22.1"
 REGISTRY = ".git-assetsync"
+REGISTRY_STAGED = (f'{REGISTRY} staged (use "git assetsync status" to see what changes, '
+                   '"git assetsync pull <file>..." to update)')
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
 EXIT_PIPE = 141           # output into a closed pipe: like a program ended by SIGPIPE, as git
 EXIT_REFUSED = 3          # hook pre-push: refuse the push (assetsync.pushCheck = error)
@@ -1023,10 +1026,11 @@ class LocalFolder:
 
     def release(self, tag, files, d):
         """The release tag with these files as assets (none: dated by d)."""
-        mtime = max([f.stat().st_mtime for f in files] or [d.stat().st_mtime])
+        stats = [(f, f.stat()) for f in files]
+        mtime = max([st.st_mtime for _, st in stats] or [d.stat().st_mtime])
         date = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(mtime)) + \
             f".{int(mtime % 1 * 1e6):06d}Z"
-        assets = [LocalAsset(f.name, f.name, f.stat().st_size, url=str(f)) for f in files]
+        assets = [LocalAsset(f.name, f.name, st.st_size, url=str(f)) for f, st in stats]
         return Release(tag, tag, date, "", assets=assets, local=True,
                        sort_key=tag if self.by_name else "")
 
@@ -1577,6 +1581,7 @@ def extract_tar(path, name, files, work):
         raise FsError(f"{what}: cannot unpack: {e}")
 
 
+@functools.lru_cache(maxsize=None)
 def sevenzip_command():
     """7-Zip: ASSETSYNC_7Z (split like a shell would), else 7zz, 7z, 7za or
     7zr on the PATH, on Windows also in Program Files; None if not found."""
@@ -1808,6 +1813,7 @@ def target_path(template, rel, what, rest=None):
     return f"{result}/{rest}" if rest else result
 
 
+@functools.lru_cache(maxsize=None)
 def shell_command():
     """The shell for filter commands: ASSETSYNC_SH, sh on the PATH, or on
     Windows the sh of Git for Windows."""
@@ -2506,11 +2512,7 @@ class Repo:
                              data="".join(f"100644 {o}\t{p}\0" for o, p in batch).encode("utf-8"))
                     self.git(["--work-tree", td, "checkout-index", "-a", "-f"], env=env)
                 with self.temp_index() as env:      # a new one: all read again, not by stat
-                    self.git(["--work-tree", td, "add", "-f", "--pathspec-from-file=-",
-                              "--pathspec-file-nul"], env=env,
-                             data="\0".join(lit(p) for _, p in batch).encode("utf-8"))
-                    listing = self.git(["ls-files", "-s", "-z"], env=env).stdout
-            ids = {path: info[1] for info, path in ls_items(listing)}
+                    ids = self.add_in(td, env, [p for _, p in batch])
             for oid, path in batch:
                 result[(oid, path)] = ids[path]
         return result
@@ -2533,11 +2535,16 @@ class Repo:
                     os.link(src, dest)
                 except OSError:
                     shutil.copyfile(src, dest)
-            self.git(["--work-tree", td, "add", "-f", "--pathspec-from-file=-",
-                      "--pathspec-file-nul"], env=env,
-                     data="\0".join(lit(p) for p in sorted(files)).encode("utf-8"))
-            listing = self.git(["ls-files", "-s", "-z"], env=env).stdout
-        return {path: info[1] for info, path in ls_items(listing) if path in files}
+            return self.add_in(td, env, sorted(files))
+
+    def add_in(self, td, env, paths):
+        """{path: blob id} of these files of the temporary working tree td,
+        added to the temporary index of env (git add -f: ignored ones too)."""
+        self.git(["--work-tree", td, "add", "-f", "--pathspec-from-file=-",
+                  "--pathspec-file-nul"], env=env,
+                 data="\0".join(lit(p) for p in paths).encode("utf-8"))
+        listing = self.git(["ls-files", "-s", "-z"], env=env).stdout
+        return {path: info[1] for info, path in ls_items(listing)}
 
     def read_blob(self, oid):
         return self.git(["cat-file", "blob", oid]).stdout
@@ -3085,6 +3092,12 @@ class Registry:
             name, n = f"{base}-{n}", n + 1
         return name
 
+    def need_filter(self, name):
+        """An error if there is no filter name (None: none needed)."""
+        if name and name not in self.filters:
+            raise FsError(f"no filter '{name}' in {REGISTRY} - define it first with "
+                          f"'git assetsync filter add {name} ...'")
+
     def source_name(self, url):
         """Key of the [source] with url, or the key a new one would get."""
         return self.find_source(url) or self.new_source_name(url)
@@ -3399,16 +3412,18 @@ def rebuild_base(repo, reg, entry, what):
         raise FsError(f"{what}, and release {entry.synced} of {origin.label} no longer exists")
     assets = select_assets(release, entry.asset, origin.label, True)
     digest, items = filter_items(repo, reg, entry, origin, release, assets)
-    tree = repo.make_tree([(m, o, path[len(entry.rel) + 1:]) for m, o, path in items])
+    tree = release_tree(repo, entry.rel, items)
     if digest != (entry.digest or "").lower() or tree != entry.blob:
         raise FsError(f"{what}, and {release.tag} gives something else now")
     repo.keep_tree(tree)
     return base_paths(repo, entry)
 
 
-def release_tree(repo, rel, items, paths):
-    """Tree of those items (mode, id, path in the repository) at paths."""
-    return repo.make_tree([(m, o, p[len(rel) + 1:]) for m, o, p in items if p in paths])
+def release_tree(repo, rel, items, paths=None):
+    """Tree of the directory rel with these items (mode, id, path in the
+    repository) - with paths, only those at them."""
+    return repo.make_tree([(m, o, p[len(rel) + 1:]) for m, o, p in items
+                           if paths is None or p in paths])
 
 
 def local_state(repo, st):
@@ -3805,11 +3820,11 @@ def cmd_map(args, repo):
     print(f"{paint(f'[{name}]', 'cyan')} {url} -> {mapping_text(m)}")
     folder = LocalFolder(d, url, args.flat, args.pattern)
     only = f" matching {args.pattern}" if args.pattern else ""
-    if args.flat and not any(folder.matches(f.name) for f in folder.files_in(d)):
+    empty = not folder.list_releases()
+    if empty and args.flat:
         warn(f"{d} has no files{only} yet (flat: each file is an asset of the release named like "
              "the file without its extension)")
-    elif not args.flat and not any(c.is_dir() and not c.name.startswith(".") and folder.matches(c.name)
-                                   for c in d.iterdir()):
+    elif empty:
         warn(f"{d} has no release folders{only} yet (one subdirectory per release, named like its "
              "tag, with the assets; or use --flat)")
     if scope == "--global" and repo:
@@ -4004,11 +4019,13 @@ def releases_between(st):
     and those in between. Newest first; None if unknown."""
     entry, new = st.entry, st.release
     try:
-        old = st.origin.by_tag(entry.synced)
+        listed = st.origin.releases()
+        old = next((r for r in listed if r.tag == entry.synced and not r.draft), None) or \
+            st.origin.by_tag(entry.synced)
         if not old or not old.order or not new.order:
             return None
         rule, pre = entry.spec.get("release"), is_true(entry.spec.get("prerelease"))
-        others = [r for r in st.origin.releases() if r.tag not in (old.tag, new.tag)
+        others = [r for r in listed if r.tag not in (old.tag, new.tag)
                   and not r.draft and (pre or not r.prerelease)
                   and (not rule or not is_pattern(rule) or fnmatch.fnmatchcase(r.tag, rule))]
     except FsError:
@@ -4118,6 +4135,13 @@ def diff_items(ctx, repo, reg, args):
     (--upstream)."""
     rc, raw, upstream = EXIT_OK, [], []
     keep = ExitStack()        # with --upstream: the filtered files, stored for all at once
+
+    def differing(entry, st, other):
+        # files the same on both sides aren't shown: not read (LFS) at all
+        base = base_items(repo, entry)
+        same = set(base) & set(other)
+        raw.append((entry, st, [i for i in base if i not in same],
+                    [i for i in other if i not in same]))
     entries = select_entries(repo, reg, args.paths, containing=True)
     prefetch_files(repo, entries)
     for entry in entries:
@@ -4143,22 +4167,14 @@ def diff_items(ctx, repo, reg, args):
                 upstream.append((entry, st, files))
                 continue
             # its files (in a directory, not others'), as git add would store them
-            other = [(m, o, p) for p, (m, o)
-                     in repo.worktree_items(base_paths(repo, entry) or set()).items()]
-            # files the same on both sides aren't shown: not read (LFS) at all
-            base = base_items(repo, entry)
-            same = set(base) & set(other)
-            raw.append((entry, st, [i for i in base if i not in same],
-                        [i for i in other if i not in same]))
+            differing(entry, st, [(m, o, p) for p, (m, o)
+                                  in repo.worktree_items(base_paths(repo, entry) or set()).items()])
         except FsError as e:
             error(f"{entry.shown}: {e}")
             rc = EXIT_ERROR
     with keep:
         for (entry, st, _), other in zip(upstream, stored_items(repo, [f for _, _, f in upstream])):
-            base = base_items(repo, entry)
-            same = set(base) & set(other)
-            raw.append((entry, st, [i for i in base if i not in same],
-                        [i for i in other if i not in same]))
+            differing(entry, st, other)
     repo.lfs_pointers(o for _, _, b, other in raw for _, o, _ in b + other)   # all at once
     groups = []
     for entry, st, base, other in raw:
@@ -4499,13 +4515,12 @@ def install_entries(repo, jobs):
 
 def tree_stats(repo, old, new):
     """(added, removed, changed, total) files from tree old (None: none) to new."""
-    total = len(repo.tree_entries(new))
+    after = {p: (m, o) for m, _, o, p in repo.tree_entries(new)}
     if not old:
-        return total, 0, 0, total
-    p = repo.git(["diff-tree", "-r", "-z", "--no-renames", "--name-status", old, new])
-    status = [s for s in p.stdout.decode("utf-8", "replace").split("\0")[0::2] if s]
-    return status.count("A"), status.count("D"), \
-        len(status) - status.count("A") - status.count("D"), total
+        return len(after), 0, 0, len(after)
+    before = {p: (m, o) for m, _, o, p in repo.tree_entries(old)}
+    return len(after.keys() - before), len(before.keys() - after), \
+        sum(1 for p in after.keys() & before if after[p] != before[p]), len(after)
 
 
 def one_file(files, entry_shown, rel):
@@ -4804,9 +4819,7 @@ def cmd_add(ctx, repo, args):
         raise FsError(f"cannot add '{shown_rel}': '{parent}' is not a directory")
     if not target.parent.is_dir():
         raise FsError(f"directory '{parent}' does not exist")
-    if args.filter and args.filter not in reg.filters:
-        raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
-                      f"'git assetsync filter add {args.filter} ...'")
+    reg.need_filter(args.filter)
     steps = named_steps(args.filter) if args.filter else []
     url, spec, named = given_source(reg, args)
     origin, release = ctx.release(url, spec)
@@ -4957,8 +4970,7 @@ def cmd_edit(ctx, repo, args):
     for problem in registry_problems(reg):
         warn(f"{REGISTRY}: {problem}")
     reg.finish()
-    print(f'{REGISTRY} staged (use "git assetsync status" to see what changes, '
-          '"git assetsync pull <file>..." to update)')
+    print(REGISTRY_STAGED)
     return EXIT_OK
 
 
@@ -4975,9 +4987,7 @@ def cmd_set(ctx, repo, args):
         raise FsError("nothing to change: give --source, --release/--latest/--prerelease, "
                       "--asset/--no-asset or --filter/--no-filter")
     reg = Registry(repo)
-    if args.filter and args.filter not in reg.filters:
-        raise FsError(f"no filter '{args.filter}' in {REGISTRY} - define it first with "
-                      f"'git assetsync filter add {args.filter} ...'")
+    reg.need_filter(args.filter)
     reg.dry_run = args.dry_run
     entries = select_entries(repo, reg, args.paths)
     would = "would: " if args.dry_run else ""
@@ -5035,8 +5045,7 @@ def cmd_set(ctx, repo, args):
         print("nothing to change")
     elif not args.dry_run:
         reg.finish()
-        print(f'{REGISTRY} staged (use "git assetsync status" to see what changes, '
-              '"git assetsync pull <file>..." to update)')
+        print(REGISTRY_STAGED)
     return EXIT_OK
 
 
@@ -5112,11 +5121,10 @@ def verify_compare(repo, entry, release, items, keeps):
     st = State(entry=entry, rel=entry.rel)
     verified, differs = (True, f"verified ({release.tag})"), f"differs from what {release.tag} gives now"
     if keeps:                 # exactly the recorded tree: now it is here, kept
-        rel_items = [(m, o, path[len(entry.rel) + 1:]) for m, o, path in items]
-        if repo.make_tree(rel_items) != entry.blob:
+        if release_tree(repo, entry.rel, items) != entry.blob:
             return False, differs
         with repo.real():     # its files are stored there (cmd_verify)
-            repo.keep_tree(repo.make_tree(rel_items))
+            repo.keep_tree(release_tree(repo, entry.rel, items))
         return verified
     if items_match_base(repo, st, items):
         return verified
