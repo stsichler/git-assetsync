@@ -2238,12 +2238,15 @@ addc acme/dd d/ --release v1 --filter unzip
 quiet git assetsync set d --latest && git commit -qm latest -- .git-assetsync
 check "diff: nothing to show" "$(git assetsync diff)" ""
 check "diff: exit code 0" "$(rc git assetsync diff -- --exit-code)" "0"
+check "diff: --exit-code, nothing to show" "$(rc git assetsync diff --exit-code)" "0"
 # local changes: base -> working tree
 printf 'one\nmine\n' > f.txt
 check "diff: local change" "$(git assetsync diff | grep -E '^(---|\+\+\+|[-+][a-z])' | oneline)" \
   "--- synced/f.txt +++ local/f.txt -two changed +mine "
 check "diff: options after --" "$(git assetsync diff -- --stat | head -1 | tr -s ' ')" " f.txt | 2 +-"
 check "diff: --exit-code" "$(rc git assetsync diff -- --exit-code)" "1"
+check "diff: --exit-code before --" "$(rc git assetsync diff --exit-code)" "1"
+check "diff: --quiet" "$(git assetsync diff --quiet; echo $?)" "1"
 check "diff: status hints at it" \
   "$(git assetsync status | grep -c 'git assetsync diff <file>')" "1"
 git commit -qam "by hand"

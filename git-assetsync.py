@@ -145,6 +145,8 @@ Basic commands - what you need day to day:
         --release TAG|PATTERN   with --upstream: what pull --release would
                                 bring (as with pull: replace `pull` by
                                 `diff --upstream` to see what it would do)
+        --exit-code             exit 1 if there are differences (as git diff)
+        --quiet                 show nothing, exit 1 if there are differences
 
     difftool [PATH...] [-- OPTS]  the same in the difftool (diff.tool), file by
                                 file (asks before each, like git difftool); OPTS go
@@ -4207,11 +4209,13 @@ def cmd_diff(ctx, repo, args):
     color = {"always": ["--color=always"], "never": ["--no-color"]}.get(args.color, [])
     prefixes = ["--src-prefix=synced/", "--dst-prefix=" + (
         "upstream/" if args.upstream else "local/")]
-    p = subprocess.run(["git", "diff"] + color + prefixes + args.extra
+    # --exit-code, --quiet: given to git diff, also before '--' (as for status)
+    own = [o for o, given in (("--exit-code", args.exit_code), ("--quiet", args.quiet)) if given]
+    p = subprocess.run(["git", "diff"] + color + prefixes + own + args.extra
                        + [repo.make_tree(left), repo.make_tree(right)], cwd=repo.top)
     if p.returncode > 1:
         rc = EXIT_ERROR
-    elif p.returncode == 1 and ("--exit-code" in args.extra or "--quiet" in args.extra):
+    elif p.returncode == 1 and {"--exit-code", "--quiet"} & set(own + args.extra):
         rc = max(rc, EXIT_PENDING)      # like `git diff --exit-code`: 1 = differences
     return rc
 
@@ -6104,6 +6108,11 @@ def run(argv):
             p.add_argument("--prompt", dest="prompt", action="store_const", const=True,
                            help="ask before each file (the default, unless difftool.prompt "
                                 "= false); the last of -y and --prompt counts")
+        else:
+            p.add_argument("--exit-code", action="store_true",
+                           help="exit with 1 if there are differences, like git diff")
+            p.add_argument("--quiet", action="store_true",
+                           help="show nothing; exit with 1 if there are differences")
 
     filterp = argparse.ArgumentParser(add_help=False)
     g = filterp.add_argument_group("filter steps (applied in the order given)")

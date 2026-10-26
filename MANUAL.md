@@ -434,7 +434,7 @@ shows beforehand what `pull --release` would bring.
 ### `diff`
 
 ```
-git assetsync diff [PATH…] [--upstream [--release TAG|PATTERN]] [-- OPTS]
+git assetsync diff [PATH…] [--upstream [--release TAG|PATTERN]] [--exit-code | --quiet] [-- OPTS]
 ```
 
 Shows the local modifications of the entries (default: all) – the
@@ -449,6 +449,8 @@ it works offline.
 | (none) | the local modifications: synced -> working tree |
 | `--upstream` | what `pull` would bring: synced -> what the selected release gives now, after the filter (also after the filter was changed) |
 | `--upstream --release TAG\|PATTERN` | what `pull --release` would bring; `--release` requires `--upstream` |
+| `--exit-code` | exit with 1 if there are differences, like `git diff --exit-code` (and `status --exit-code`) |
+| `--quiet` | the same without showing anything |
 
 ```sh
 git assetsync diff                      # local changes: synced -> working tree (local/)
@@ -466,8 +468,8 @@ cache](#download-cache) if possible – and `pull` then needs no new
 download; filters that run commands must be [trusted](#filter-trust). To see
 what a `pull` command line would do, replace `pull` by `diff --upstream`
 (with the same `--release` and paths), as in git-filesync. With
-`--exit-code` or `--quiet` after `--`, the exit code is 1 if there are
-differences, like `git diff`; otherwise 0, or 2 on errors.
+`--exit-code` or `--quiet` (also after `--`), the exit code is 1 if there
+are differences, like `git diff`; otherwise 0, or 2 on errors.
 
 ### `difftool`
 
