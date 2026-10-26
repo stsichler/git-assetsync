@@ -243,7 +243,7 @@ Advanced commands:
 | `edit` | open `.git-assetsync` in the editor, then check and stage it |
 | `source [ACTION …]` | list sources; rename them, change URL or type |
 | `source map [URL\|SOURCE [DIR]]` | take releases from a local folder, to test a build before publishing it |
-| `source releases SOURCE\|URL` | list the releases of a project, with their assets |
+| `source releases URL\|SOURCE` | list the releases of a project, with their assets |
 | `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
 | `filter trust [NAME…]` | list the filters that run commands; trust them in this repository |
 | `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |

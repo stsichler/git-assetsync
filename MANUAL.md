@@ -249,7 +249,7 @@ Basic commands – what you need day to day:
 | [`edit`](#edit) | open `.git-assetsync` in the editor, then check and stage it |
 | [`source [ACTION …]`](#source) | list sources; rename them, change URL or type |
 | [`source map [URL\|SOURCE [DIR]]`](#source-map) | take the releases of a source from a local folder (local development, tests) |
-| [`source releases SOURCE\|URL`](#source-releases) | list the releases of a project, with their assets |
+| [`source releases URL\|SOURCE`](#source-releases) | list the releases of a project, with their assets |
 | [`filter [ACTION …]`](#filter) | list filters; show, test, add, set, rename or remove them |
 | [`filter trust [NAME…]`](#filter-trust) | list the filters that run commands; trust them in this repository |
 | [`verify [PATH…]`](#verify) | filter the synced assets again: is the committed state reproducible? |
@@ -408,7 +408,7 @@ if it is the same, else only with `--overwrite`.
 | Option | Meaning |
 |---|---|
 | `--all` | all entries with something to pull (with `--overwrite` also modified ones; missing ones are left out, with a warning); not with paths |
-| `--release TAG\|PATTERN` | this release instead of the one the entry selects, once – see below; a pattern takes the newest matching release; also with `--all`: an entry whose project has no such release is an error |
+| `--release TAG\|PATTERN` | this release instead of the one the entry selects, once – see below; a pattern takes the newest matching release, prereleases only if the entry takes them (`prerelease = true`), a tag that release also if it is a prerelease; also with `--all`: an entry whose project has no such release is an error |
 | `--overwrite` | discard local modifications: restore or update the file (directory) anyway; in a directory also replace files of yours in the way of the release's |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` shows it (assets, source, release selection, filter, the release synced) |
 | `-n`, `--dry-run` | only report what would happen; nothing is downloaded or changed |
@@ -597,7 +597,7 @@ commit --no-edit` takes it as it is).
 | `--prerelease` | prereleases count too (with a pattern, or instead of the latest release) |
 | `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
 | `--filter NAME` | the named [filter](#filters) to apply to the assets |
-| `--force` | replace an existing entry for `PATH` (its file or directory too, unless it has local modifications) |
+| `--force` | replace an existing entry for `PATH` (its file or directory too, unless it has local modifications); a file entry stays a file, a directory entry a directory – to change that, `unlink` it first |
 | `--overwrite` | replace files in the way of the release's that differ from them (an existing file; in a directory, files of yours); with `--force` also local modifications of the entry replaced |
 | `-n`, `--dry-run` | only show which release, assets and filter would be taken; nothing is downloaded |
 
@@ -873,7 +873,7 @@ git assetsync source map acme/tool --unset                # remove it again
 ### `source releases`
 
 ```
-git assetsync source releases SOURCE|URL [--assets] [-n N | --all] [--type github|gitlab]
+git assetsync source releases URL|SOURCE [--assets] [-n N | --all] [--type github|gitlab]
 ```
 
 Lists the releases of a project, newest first: tag, date and title (if it
@@ -891,8 +891,8 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
     tool-1.1-rc1-linux-x64  14.5 MiB
 ```
 
-`SOURCE` is the name of a `[source]` or a URL (`owner/repo`: github.com),
-as for `add`; with a URL it also works outside a repository.
+`URL|SOURCE` is a URL (`owner/repo`: github.com) or the name of a
+`[source]`, as for `add`; with a URL it also works outside a repository.
 
 | Option | Meaning |
 |---|---|
@@ -1735,7 +1735,7 @@ them. For GitLab sources, install `glab` in the job (and give
 | Code | Meaning |
 |---|---|
 | `0` | ok |
-| `1` | something to do: `status --exit-code` with something to pull or a modified file; `verify` or `diff --exit-code` found a difference |
+| `1` | something to do: `status --exit-code` with something to pull or a modified or missing file; `verify` or `diff --exit-code` found a difference |
 | `2` | error (also: `pull` refused a modified file) |
 | `141` | the output went into a pipe that was closed early (e.g. `\| head`), as with git: a command that only looks (`status`, `diff`, `difftool`, `verify`, and those that list or show, like `source releases`, `filter show` or `cache list`) stops there; one that changes something finishes its work first – never only half of it |
 

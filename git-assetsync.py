@@ -129,7 +129,8 @@ Basic commands - what you need day to day:
                                 pattern: the newest matching), once: the
                                 selection stays, status shows the selected
                                 one as pending (to stay: set --release); also
-                                with --all
+                                with --all; prereleases only if the entry
+                                takes them, a tag also if it is one
         --overwrite             discard local modifications
         -v, --verbose           first name where each entry comes from: its
                                 asset(s), source, release selection, filter,
@@ -191,7 +192,8 @@ Basic commands - what you need day to day:
         --type github|gitlab    platform of the URL's host, for a new source
                                 (default: derived from it: github.com,
                                 gitlab.com, gitlab.*)
-        --force                 replace an existing entry (unless modified)
+        --force                 replace an existing entry (unless modified;
+                                a file stays a file, a directory a directory)
         --overwrite             replace an existing file, or files in an
                                 existing directory (they become the
                                 entry's), or local modifications of an
@@ -258,7 +260,7 @@ Advanced commands - change entries, sources and filters; set up:
                                 (rel20261022; compared character by character)
         --global                for all repositories (default: this one)
         --unset                 remove the mapping
-    source releases SOURCE|URL  list the releases, newest first, marked:
+    source releases URL|SOURCE  list the releases, newest first, marked:
                                 latest, prerelease (GitLab: upcoming), draft,
                                 selected by which entries; also outside a
                                 repository (with a URL)
@@ -6269,7 +6271,7 @@ def run(argv):
     a = actions.add_parser("releases", parents=[colorp],
                            help="list the releases of a source or project (and their assets)",
                            description="List the releases of a source or project, newest first (and their assets) - also outside a repository, with a URL.")
-    a.add_argument("source", metavar="SOURCE|URL",
+    a.add_argument("source", metavar="URL|SOURCE",
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
     a.add_argument("--assets", action="store_true", help="also list the assets")
     g = a.add_mutually_exclusive_group()
