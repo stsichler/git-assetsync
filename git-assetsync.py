@@ -379,7 +379,6 @@ import fnmatch
 import functools
 import gzip
 import hashlib
-import io
 import json
 import lzma
 import os
@@ -747,6 +746,7 @@ class Platform:
     def __init__(self, host, project, label):
         self.host, self.project, self.label = host, project, label
         self.answers = {}         # see json(): each asked once per run
+        self.listed = None        # see releases(): all of them, once per run
 
     where = property(lambda self: self.label)    # for messages
 
@@ -818,6 +818,8 @@ class Platform:
         """All releases (page by page, independent of the CLI's paging); with
         limit, at least that many (if there are) - the platforms list the
         newest first, by their own order."""
+        if self.listed is not None:
+            return self.listed
         result, page = [], 1
         while True:
             try:
@@ -827,7 +829,10 @@ class Platform:
             if not isinstance(items, list):
                 raise FsError(f"{self.label}: unexpected answer listing the releases")
             result += [self.release(d) for d in items]
-            if len(items) < self.PER_PAGE or limit and len(result) >= limit:
+            if len(items) < self.PER_PAGE:
+                self.listed = result
+                return result
+            if limit and len(result) >= limit:
                 return result
             page += 1
 
@@ -1502,6 +1507,14 @@ class Work:
         self.trusted = set(trusted)           # filters whose commands may run
         self.changelog = []                   # [(path, text)] the changelog steps read
 
+    def replace(self, data):
+        """A new file with this content, replacing one of the stage: not
+        counted again for the limits."""
+        self.n += 1
+        dest = self.dir / str(self.n)
+        dest.write_bytes(data)
+        return dest
+
     def new_dir(self):
         self.n += 1
         d = self.dir / f"d{self.n}"
@@ -1569,7 +1582,7 @@ def extract_zip(path, name, files, work):
                 rel = safe_path(info.filename, what)
                 if rel:
                     with z.open(info) as src:
-                        add_member(files, rel, (work.copy(src), bool(mode & 0o111)), what)
+                        add_member(files, rel, (work.copy(src), bool(mode & 0o100)), what)
     except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, OSError) as e:
         raise FsError(f"{what}: cannot unpack: {e}")
 
@@ -1588,7 +1601,7 @@ def extract_tar(path, name, files, work):
                     raise FsError(f"{what}: '{m.name}' is no regular file")
                 rel = safe_path(m.name, what)
                 if rel:
-                    add_member(files, rel, (work.copy(t.extractfile(m)), bool(m.mode & 0o111)),
+                    add_member(files, rel, (work.copy(t.extractfile(m)), bool(m.mode & 0o100)),
                                what)
     except (tarfile.TarError, EOFError, OSError, zlib.error) as e:
         raise FsError(f"{what}: cannot unpack: {e}")
@@ -2068,13 +2081,18 @@ def changelog_text(data):
         return data.decode("cp1252", "replace")
 
 
+# all bytes but the non-printable ones of git's text detection (deleted
+# with bytes.translate to count those)
+PRINTABLE = bytes(c for c in range(256)
+                  if not (c < 32 and c not in (8, 9, 10, 12, 13, 27) or c == 127))
+
+
 def looks_binary(data):
     """Is this not text - as git decides for text=auto: a NUL, a CR not
     before an LF, or more than one non-printable byte in 128."""
     if b"\0" in data or data.count(b"\r") != data.count(b"\r\n"):
         return True
-    nonprintable = sum(data.count(bytes([c])) for c in range(1, 32)
-                       if c not in (8, 9, 10, 12, 13, 27)) + data.count(b"\x7f")
+    nonprintable = len(data.translate(None, PRINTABLE))
     if data.endswith(b"\x1a"):         # a DOS end of file
         nonprintable -= 1
     printable = len(data) - nonprintable - data.count(b"\n") - data.count(b"\r")
@@ -2268,7 +2286,7 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
                 if to == "crlf":
                     new = new.replace(b"\n", b"\r\n")
                 if new != data:
-                    files[r] = (work.copy(io.BytesIO(new)), executable)
+                    files[r] = (work.replace(new), executable)
                     changed += 1
             info = (f"{changed} of {plural(len(matched), 'file')} to {to.upper()}"
                     + (f", {binary} binary left as is" if binary else "")
@@ -2743,7 +2761,7 @@ class Repo:
                          data="".join(f"{f}\n" for f in files).encode("utf-8"))
             ids = p.stdout.decode("utf-8", "replace").split()
             stat_bit = config_bool("core.filemode", True)
-            index = {} if stat_bit else {path: mode for mode, _, path in self.index_items(*files)}
+            index = {} if stat_bit else {path: mode for mode, _, path in self.index_items(".")}
             for f, oid in zip(files, ids):
                 if stat_bit:
                     mode = git_mode(os.stat(self.top / f).st_mode & 0o100)
@@ -3873,11 +3891,11 @@ def cmd_map(args, repo):
     print(f"{paint(f'[{name}]', 'cyan')} {url} -> {mapping_text(m)}")
     folder = LocalFolder(d, url, args.flat, args.pattern)
     only = f" matching {args.pattern}" if args.pattern else ""
-    empty = not folder.list_releases()
-    if empty and args.flat:
+    if args.flat and not any(folder.matches(f.name) for f in folder.files_in(d)):
         warn(f"{d} has no files{only} yet (flat: each file is an asset of the release named like "
              "the file without its extension)")
-    elif empty:
+    elif not args.flat and not any(c.is_dir() and not c.name.startswith(".")
+                                   and folder.matches(c.name) for c in d.iterdir()):
         warn(f"{d} has no release folders{only} yet (one subdirectory per release, named like its "
              "tag, with the assets; or use --flat)")
     if scope == "--global" and repo:
@@ -4028,11 +4046,16 @@ def cmd_hook(ctx, repo, args):
     return EXIT_OK
 
 
+def release_day(release):
+    """'2026-10-11': the date of a release (UTC, as the platform says), ''
+    if unknown."""
+    return (release.date or "")[:10]
+
+
 def dated(release, more=""):
     """'v1.1 (2026-10-11)', with more 'v1.1 (2026-10-11, more)': a tag in a
-    commit message, with the release's date (None: no release, no date)."""
-    day = ((release.date if release else "") or "")[:10]
-    inside = ", ".join(x for x in (day, more) if x)
+    commit message, with the release's date."""
+    inside = ", ".join(x for x in (release_day(release), more) if x)
     return f"{release.tag} ({inside})" if inside else release.tag
 
 
@@ -4147,7 +4170,7 @@ def build_message(st, discarded, unchanged=False, stats=None, between=None,
         subject = f"Add {rel} from {name} {dated(release)}"
     elif tag != old:
         was = synced_release(st)
-        day = ((was.date if was else "") or "")[:10]
+        day = release_day(was) if was else ""
         subject = f"Update {rel} to {name} " \
                   f"{dated(release, f'was {old}' + (f' of {day}' if day else ''))}"
     elif st.digest_changed:
@@ -4450,8 +4473,9 @@ def git_mode(executable):
 
 
 def exec_bit(st):
-    """Is a file (its os.stat()) executable - never on Windows."""
-    return os.name != "nt" and bool(st.st_mode & 0o111)
+    """Is a file (its os.stat()) executable as git add takes it - the
+    owner's bit; never on Windows."""
+    return os.name != "nt" and bool(st.st_mode & 0o100)
 
 
 def set_executable(path, executable):

@@ -3114,6 +3114,13 @@ check "... pulled: executable" "$(git ls-tree HEAD bin/plain | cut -d' ' -f1) $(
 quiet asd filter add exe2 --executable 'nothing*'
 check "filter test: executable" "$(asd filter test exe "$F/prog" 2>/dev/null) | $(asd filter test exe2 "$F/prog" 2>/dev/null)" \
   "10 bytes  prog  (executable) | 10 bytes  prog"
+if ! command -v cygpath >/dev/null; then    # Windows: no executable bit
+  # executable as git add takes it: the owner's bit only
+  mkdir -p "$T/xbits" && printf 'g\n' > "$T/xbits/g" && printf 'o\n' > "$T/xbits/o"
+  chmod 654 "$T/xbits/g"; chmod 744 "$T/xbits/o"
+  check "executable: the owner's bit, as git" "$(asd filter test exe2 "$T/xbits" 2>/dev/null | oneline)" \
+    "2 bytes  g 2 bytes  o  (executable) "
+fi
 check "filter step executable: needs a pattern" "$(asd filter add exe3 --executable 2>&1 | tail -1)" \
   "git assetsync filter add: error: argument --executable: expected at least one argument"
 
