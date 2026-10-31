@@ -171,7 +171,7 @@ with `git assetsync --version`. To update, download the script again; the
 changes of each version.
 
 You can also clone the repository and point the alias at the script in
-it: `main` is the current development state, a tag like `v0.23.1` a
+it: `main` is the current development state, a tag like `v0.23.2` a
 release. Or let git-assetsync keep a copy of itself in your project, so
 everyone has the same version – see
 [Shipping git-assetsync with your repository](MANUAL.md#shipping-git-assetsync-with-your-repository).
