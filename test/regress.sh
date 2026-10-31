@@ -2391,6 +2391,17 @@ check "--remote: status against the server" "$(git assetsync status --remote | g
 check "--remote: source releases" "$(git assetsync source releases --remote acme/loc | cut -c1-2 | oneline)" "v2 "
 check "--remote: pull" "$(git assetsync pull -n --remote t.bin)" "would: Update t.bin to acme/loc v2 (2026-10-15, was v3)"
 check "--remote: the mapping stays" "$(git assetsync status -s) $(git assetsync source map | grep -c acme/loc)" " 1"
+# synced from the server, a release the local folder doesn't have: the folder
+# may only be behind - left as it is, with a warning
+asset t.bin "server four"; release acme/loc v4 16 "$F/t.bin"
+pullc --remote t.bin
+check "synced release not in the folder: status warns, nothing to pull" \
+  "$(git assetsync status -s) | $(git assetsync status | grep -c 'synced from v4, which is not in the local folder')" " | 1"
+check "... pull leaves it" "$(git assetsync pull t.bin 2>&1 | oneline) $(reg file.t.bin.synced)" \
+  "warning: t.bin: synced from v4, which is not in the local folder - left as it is (--remote: the releases of the server) t.bin: up to date  v4"
+check "... pull --release takes one anyway" "$(git assetsync pull -n --release v3 t.bin 2>&1 | tail -1 | sed 's/([0-9-]*,/(DAY,/')" \
+  "would: Update t.bin to acme/loc v3 (DAY, was v4)"
+pullc --release v3 t.bin          # back to the folder's release, for what follows
 # a source given by name
 quiet git assetsync source rename acme/loc loc && git commit -qm rename -- .git-assetsync
 check "map: --unset by source name" "$(git assetsync source map loc --unset)" \

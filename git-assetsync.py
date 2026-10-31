@@ -3607,6 +3607,13 @@ def evaluate(ctx, repo, entry):
             st.digest_changed = bool(entry.assetid and assets_id(st.assets) != entry.assetid)
         st.filter_changed = filter_hash(entry.steps, entry.reg.filters, repo) != entry.filterhash
         st.changed = st.tag_changed or st.digest_changed or st.filter_changed
+        # a local folder without the synced release may only be behind (synced
+        # later from the server): left as it is, unless pull --release says
+        if st.tag_changed and entry.synced and isinstance(st.origin, LocalFolder) and \
+                not ctx.override and not st.origin.by_tag(entry.synced):
+            st.changed = st.tag_changed = st.digest_changed = st.filter_changed = False
+            st.warnings.append(f"synced from {entry.synced}, which is not in the local folder "
+                               "- left as it is (--remote: the releases of the server)")
     st.pending = st.changed or (not entry.blob and st.worktree == "missing")
     if st.pending:
         for name in untrusted(repo, entry.steps, entry.reg.filters):
@@ -4678,6 +4685,8 @@ def pull_one(ctx, repo, reg, st, args, keep):
                       f"'git assetsync restore {path_arg(repo, rel)}', or remove the entry "
                       f"with 'git assetsync unlink {path_arg(repo, rel)}'")
     if not st.pending and not st.modified:
+        for w in st.warnings:
+            warn(f"{rel}: {w}")
         print(f"{rel}: {paint('up to date', 'green')}")
         return None
     # like `git pull` with no merge possible: local modifications are never

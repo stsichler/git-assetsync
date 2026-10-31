@@ -870,6 +870,9 @@ git assetsync source map acme/tool --unset                # remove it again
   `verify` always read what they take. `status` names the folder, `source
   releases` lists the folders; `--remote` asks the platform this once
   (e.g. `status --remote`), `source map … --unset` for good.
+- An entry synced from a release the folder doesn't have – e.g. synced
+  later from the server – is left as it is: `status` warns, `pull` doesn't
+  go back to a release of the folder (`pull --release` does).
 - Before pushing, the [push check](#hooks) warns
   about entries whose release isn't published yet.
 
