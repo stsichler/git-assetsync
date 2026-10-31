@@ -229,7 +229,8 @@ Two options mean the same everywhere (also in git-filesync):
 **`--overwrite`** replaces local content – files of yours, local
 modifications – with what the release gives; **`--force`** does something
 refused by default without losing local content (replace an entry, add
-lines to the hooks of other tools).
+lines to the hooks of other tools; `rm -f` removes uncommitted changes, but
+keeps them as below).
 
 **Discarded content can be got back.** Before `restore`, `rm -f` or
 `--overwrite` replace or delete content that isn't committed, they keep
