@@ -67,7 +67,7 @@ into TARGET/ under its name, else to the path TARGET with {path} {dir}
 matching files only), executable PATTERN... (the matching files become
 executable - assets themselves never are), eol PATTERN lf|crlf|native
 (line endings of the matching text files; binary ones stay, as for git's
-text=auto; native: as git checks out text files here), changelog PATTERN... (reads
+text=auto; native: CRLF on Windows, else LF), changelog PATTERN... (reads
 only: the text of the
 matching files goes with the release notes into pull's commit message,
 shortened like them), convert PATTERN TARGET COMMAND (each matching file:
@@ -2081,18 +2081,6 @@ def looks_binary(data):
     return (printable >> 7) < nonprintable
 
 
-def native_eol():
-    """The line ending git checks out a text file with that has no eol
-    attribute: core.autocrlf, else core.eol (native: CRLF on Windows)."""
-    autocrlf = (config_get("core.autocrlf") or "").strip().lower()
-    if autocrlf in ("true", "yes", "on", "1"):
-        return "crlf"
-    if autocrlf == "input":
-        return "lf"
-    eol = (config_get("core.eol") or "").strip().lower()
-    return eol if eol in ("lf", "crlf") else "crlf" if os.name == "nt" else "lf"
-
-
 def run_steps(files, steps, work, filters=None, chain=(), report=None):
     """Apply the filter steps to {path: (file, executable)}; filters: the
     named filters {name: steps}, for 'apply' steps. A step that matches no
@@ -2263,8 +2251,10 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
             info = f"{plural(len(matched), 'file')} executable" if matched else "no files match"
         elif name == "eol":
             # line endings of the matching text files (binary ones stay, as
-            # for git's text=auto); native: as git checks out a text file
-            rx, to = glob_regex(args[0]), native_eol() if args[1] == "native" else args[1]
+            # for git's text=auto); native: those of the platform, whatever
+            # git's settings - for the steps after it
+            native = "crlf" if os.name == "nt" else "lf"
+            rx, to = glob_regex(args[0]), native if args[1] == "native" else args[1]
             matched = sorted(r for r in files if rx.match(r))
             changed = binary = 0
             files = dict(files)
@@ -6223,7 +6213,7 @@ def run(argv):
                    help="make the matching files executable (an asset itself never is)")
     g.add_argument("--eol", action=StepOption, nargs=2, metavar=("PATTERN", "lf|crlf|native"),
                    help="line endings of the matching text files (binary ones stay, as for "
-                        "git's text=auto); native: as git checks out text files here")
+                        "git's text=auto); native: CRLF on Windows, else LF")
     g.add_argument("--changelog", action=StepOption, nargs="+", metavar="PATTERN",
                    help="add the text of the matching files to the release notes in pull's "
                         "commit message (the files stay)")

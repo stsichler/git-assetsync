@@ -3208,13 +3208,14 @@ filt e2 --eol '*.txt' crlf
 quiet git assetsync filter test e2 in -o o2
 check "eol crlf: no CR CR LF" "$(bytes o2/mixed.txt)|$(bytes o2/unix.txt)" " a \r \n b \r \n c \r \n | a \r \n b \r \n "
 filt e3 --eol '*.txt' native
-quiet git -c core.autocrlf=true assetsync filter test e3 in -o o3
-quiet git -c core.autocrlf=input -c core.eol=crlf assetsync filter test e3 in -o o4
-quiet git -c core.autocrlf=false -c core.eol=crlf assetsync filter test e3 in -o o5
-quiet git -c core.autocrlf=false -c core.eol=lf assetsync filter test e3 in -o o6
-check "eol native: as git checks out (autocrlf, then core.eol)" \
-  "$(bytes o3/unix.txt)|$(bytes o4/mixed.txt)|$(bytes o5/unix.txt)|$(bytes o6/mixed.txt)" \
-  " a \r \n b \r \n | a \n b \n c \n | a \r \n b \r \n | a \n b \n c \n "
+quiet git -c core.autocrlf=true -c core.eol=crlf assetsync filter test e3 in -o o3
+quiet git -c core.autocrlf=input -c core.eol=lf assetsync filter test e3 in -o o4
+case $("$PYTHON" -c 'import os; print(os.name)') in
+  nt) NATIVE=" a \r \n b \r \n " ;;
+  *) NATIVE=" a \n b \n " ;;
+esac
+check "eol native: the platform's, whatever git's settings" \
+  "$(bytes o3/unix.txt)|$(bytes o4/unix.txt)" "$NATIVE|$NATIVE"
 check "eol: another mode" "$(git assetsync filter add e4 --eol '*' cr 2>&1)" \
   "error: filter step 'eol '*' cr': eol takes lf, crlf, native"
 check "eol: needs a pattern and a mode" "$(rc git assetsync filter add e4 --eol lf)" "2"
