@@ -1,7 +1,7 @@
 # git-assetsync manual
 
-Detailed description of the concepts, commands and options of
-git-assetsync. For motivation and installation see the [README](README.md).
+The concepts, commands and options of git-assetsync in detail. For
+motivation and installation see the [README](README.md).
 
 ## Contents
 
@@ -29,43 +29,35 @@ git-assetsync. For motivation and installation see the [README](README.md).
 
 A **source** is a project that publishes releases: a repository on GitHub
 (also GitHub Enterprise) or a project on GitLab (gitlab.com or
-self-managed), alike. A **release** is identified by its **tag**
-(e.g. `v1.3.1` or `tool-20261016`); its title is only shown. Each release
-has **assets**: the files attached to it.
+self-managed). A **release** is identified by its **tag** (e.g. `v1.3.1`
+or `tool-20261016`); its title is only shown. Its **assets** are the files
+attached to it.
 
-git-assetsync takes a file or a directory of your repository from assets:
-it downloads them, optionally unpacks and selects files from them with a
-[filter](#filters), writes the result to the path and records in
-`.git-assetsync` which release and assets it comes from. Both are the
-entry's: which release – the latest, the newest one whose tag matches a
-pattern, or one fixed release (see [Selecting the
-release](#selecting-the-release)) – and which assets of it: a glob pattern
-for the asset names – they usually contain the version, so the pattern
-stays the same across releases while the path in your repository doesn't
-change.
+git-assetsync takes a file or directory of your repository from assets:
+it downloads them, optionally unpacks and selects files with a
+[filter](#filters), writes the result and records in `.git-assetsync`
+where it came from. Each entry selects its release – the latest, the
+newest whose tag matches a pattern, or a fixed one (see [Selecting the
+release](#selecting-the-release)) – and its assets by a glob pattern, which
+stays valid when the asset names change with the version.
 
-Updates are never applied automatically: `status` shows that a new release
-is out, `pull` updates the file (directory) and stages it with a proposed
-commit message naming the release; you commit. All commands run inside your repository.
+Nothing updates automatically: `status` shows that a new release is out,
+`pull` updates and stages, you commit.
 
 ### Files and directories
 
-An entry is one of two kinds; [`add`](#add) decides by the form of the
-path:
+[`add`](#add) decides the kind of an entry by the path:
 
-- **A file** (`add bin/tool …`): exactly one file – one asset as it is, or
-  the one file a filter leaves of it (e.g. one file from a ZIP). Files
-  next to it are not concerned.
-- **A directory** (`add third_party/zlib/ …`, with a trailing `/`, or an
-  existing directory): any number of files – all assets of the release (or
-  those matching `--asset`), as they are or after the filter. The entry
-  has **the files its release gave**: `pull` replaces them with those of
-  the new release, and deletes those it no longer has. Files of your own
-  in the directory are left alone – see [Files of your own in a
-  directory](#files-of-your-own-in-a-directory).
+- **A file** (`add … bin/tool`): exactly one file – an asset as it is, or
+  the one file a filter leaves (e.g. one file from a ZIP).
+- **A directory** (`add … third_party/zlib/`, with a trailing `/`, or an
+  existing directory): any number of files – all assets (or those
+  matching `--asset`), as they are or filtered. The entry has **the files
+  its release gave**: `pull` replaces them and deletes those the new
+  release no longer has. Files of your own there stay – see [Files of
+  your own in a directory](#files-of-your-own-in-a-directory).
 
-Entries must not overlap: no entry inside a directory entry, no directory
-entry around another entry.
+Entries must not overlap.
 
 ### The `.git-assetsync` file
 
@@ -77,153 +69,112 @@ Git-config format:
 	url = https://github.com/acme/tool
 [file "bin/tool"]
 	source = acme/tool
-	asset = tool-*-linux-x64     # asset of the release: glob, exactly one match
-	                             # (optional: without, the release's only asset)
+	asset = tool-*-linux-x64     # glob, exactly one match (without: the only asset)
 	synced = v1.1                # tag of the release the file comes from
 	digest = sha256:5b2c…        # SHA-256 of that asset
 	blob = 8d01b7aa…             # the file as committed (git's blob id)
-	mode = 100755                # its mode: 100644, or 100755 (executable)
+	mode = 100755                # 100644, or 100755 (executable)
 [source "acme/multi"]
 	url = https://github.com/acme/multi
 [file "firmware/fw.bin"]
 	source = acme/multi
 	release = toolA-*            # newest release whose tag matches
-	prerelease = true            # optional: prereleases count too
+	prerelease = true            # prereleases count too
 	asset = fw-*.bin
 	synced = toolA-20261016
 	digest = sha256:…
 	blob = …
 [source "madler/zlib"]
 	url = https://github.com/madler/zlib
-[filter "zlib-headers"]          # a named filter: steps, in this order
+[filter "zlib-headers"]          # a named filter: its steps, in order
 	step = extract
 	step = strip 1
 	step = include '*.h' LICENSE
 [dir "third_party/zlib"]
 	source = madler/zlib
-	asset = zlib-*.tar.gz        # optional: without, all assets of the release
-	filter = zlib-headers        # optional: the filter applied to the assets
+	asset = zlib-*.tar.gz        # without: all assets
+	filter = zlib-headers
 	synced = v1.3.2
 	digest = sha256:…
 	filterhash = 3f9a…           # of the filter it was synced with
 	tree = …                     # the directory as committed (git's tree id)
 ```
 
-- **`[source "NAME"]`** – a project, like a Git remote: `url` is its web
-  address, one source per URL. `type` (`github` or `gitlab`) names the
-  platform; it is only needed for hosts other than github.com, gitlab.com
-  and those whose name starts with `gitlab` (like `gitlab.example.com`).
-  `add` names new sources `owner/repo` after the URL, with a number
-  appended if that name belongs to another URL.
-- **`[file "PATH"]`** – a file of the repository (path relative to the
-  root) and the asset it comes from: `source` (name of its `[source]`),
-  which release – without `release`, the latest; `release` is a tag (the
-  file is pinned to that release) or a pattern with `*`, `?` or `[…]`
-  (the newest release whose tag matches); `prerelease = true` lets
-  prereleases count – and `asset` (glob pattern; without it, the
-  release's only asset) say what to take. `synced`, `digest`, `blob` and
-  `mode` are written by git-assetsync and record what the committed file
-  is based on: the release tag, the asset's SHA-256, the id of the file
-  as `git add` stores it (after line-ending conversion and Git LFS), and
-  its mode as the filter gave it – `100755` for an executable (taken out
-  of an archive, or made one with [`--executable`](#executables)), else
-  `100644`. With `blob` and `mode`,
-  `status` knows offline whether the committed file and the working tree
-  file are still the asset – a lost executable bit too (where the system
-  has one; with `core.filemode = false`, as on Windows, git takes modes
-  from the index); `restore` brings it back. Entries synced before 0.21.0
-  have no `mode`: there it doesn't count until their next `pull`. Where the platform reports no
-  digests, `assetid` records which uploads they were (see
-  [Integrity](#integrity)).
-- **`[dir "PATH"]`** – a directory and the assets it comes from: like
-  `[file]`, but `asset` may match several assets (without it: all), and
-  the base is `tree`, the id of the directory as committed.
-- **`[filter "NAME"]`** – a [named filter](#filters): its steps, one
-  `step` key per step, in order. An entry uses it with `filter = NAME` (in
-  `[file]` and `[dir]`); `filterhash` records the filter the entry was
-  synced with, so a changed filter shows up as pending. Like sources,
-  filters are referred to by name – but they are never created or removed
-  automatically.
+- **`[source "NAME"]`** – a project, like a Git remote, one per URL. `type`
+  (`github` or `gitlab`) is only needed for hosts other than github.com,
+  gitlab.com and `gitlab.*`. `add` names new sources `owner/repo`, with a
+  number appended if that name is taken.
+- **`[file "PATH"]`** – a file (path relative to the root) and what to
+  take: `source`, the release (`release`: a tag pins it, a pattern with
+  `*`, `?` or `[…]` takes the newest match, none the latest;
+  `prerelease = true` lets prereleases count) and `asset`. git-assetsync
+  writes the rest, the **base** the file is compared with: `synced` (the
+  tag), `digest` (the asset's SHA-256), `blob` (the file as `git add`
+  stores it, after line endings and Git LFS) and `mode` (`100755` if the
+  filter made it executable, see [Executables](#executables)). So
+  `status` knows offline whether the file is still what the release gave.
+  Where the platform reports no digests, `assetid` records the uploads
+  (see [Integrity](#integrity)).
+- **`[dir "PATH"]`** – like `[file]`, but `asset` may match several assets
+  (without it: all), and the base is `tree`.
+- **`[filter "NAME"]`** – a [named filter](#filters), one `step` per step.
+  Entries use it with `filter = NAME`; `filterhash` records the filter an
+  entry was synced with, so a changed filter shows up as pending.
 
-There is one `[source]` per URL; each entry selects its release itself
-(`release`, `prerelease`), so the entries of one project can follow
-different releases – e.g. two tools released from one repository under
-different tag prefixes.
+Entries select their releases themselves, so entries of one project can
+follow different releases – e.g. two tools released under different tag
+prefixes.
 
-The commands maintain the file: `add`, `set`, `unlink` and `mv` for the
-`[file]` and `[dir]` entries, [`source`](#source) for the `[source]`
-sections. It can also be edited by hand – with [`edit`](#edit), which
-checks and stages it afterwards, or with `git config -f .git-assetsync
-…` – but that is never needed; `synced`, `digest`,
-`filterhash`, `blob`, `mode` and `tree` should be left to git-assetsync.
-An entry written by hand without them is fetched by the next `pull`
-(files already at its paths only go with `--overwrite`, unless they are
-what the release gives). Changes to
-the file are committed along with what the next `pull` stages, or on
-their own.
+The commands maintain the file; comments and your own layout stay. To
+edit it by hand, use [`edit`](#edit), which checks and stages it. Leave
+the base keys to git-assetsync: an entry without them counts as not
+synced yet, and the next `pull` fetches it.
 
 ### No local modifications
 
 A file taken from an asset must stay exactly what the release gives – a
-binary or a generated file can't be merged with local changes. A file that
-differs – committed or not – is reported by `status` as **NOT ALLOWED**,
-`status --exit-code` exits with 1, and `pull` refuses to update it.
-[`diff`](#diff) shows the modification; [`restore`](#restore) discards it
-and brings back what the release gave, `pull --overwrite` discards it and
-updates to what the selected release gives (with a warning, and a note in
-the commit message).
+binary or generated file can't be merged. A file that differs, committed
+or not, is **NOT ALLOWED**: `status` reports it, `status --exit-code`
+exits with 1, `pull` refuses to update it. [`diff`](#diff) shows the
+modification, [`restore`](#restore) brings back what the release gave,
+and `pull --overwrite` updates anyway (with a note in the commit message).
 
-A file that is gone – deleted, the deletion committed or not – is
-**missing**, not allowed either while it is an entry: whether a file may
-be absent depends only on whether the entry has a base (`blob`/`tree`).
-`pull` refuses it, also with `--overwrite`, and `pull --all` leaves it
-out; only `restore` gets it back (making missing directories too) – or
-`unlink`/`rm` remove the entry. An entry without a base, not synced yet,
-is `new` instead: `pull` takes its release.
+A file that is gone – deleted, committed or not – is **missing**, also
+not allowed while it is an entry. `pull` refuses it, also with
+`--overwrite`, and `pull --all` leaves it out; `restore` gets it back, or
+`unlink`/`rm` remove the entry. An entry not synced yet is **new**
+instead: `pull` takes its release.
 
-In a directory entry, only the files of the release count: one of them
-changed or deleted is a modification, all of them gone is missing; other
-files there are not the entry's (see below). Files an entry gets – the file of a file entry, the
-files of a directory entry – are always staged and committed, also if
-`.gitignore` would ignore them (e.g. `*.lib`), and written as `git
-checkout` writes them (line endings, filters of `.gitattributes`).
+In a directory, only the files of the release count: one changed or
+deleted is a modification, all of them gone is missing.
 
-What counts is the content, not how it is stored: a file that is
-re-stored differently after `.gitattributes` changed (moved to Git LFS,
-line endings normalized) is still unmodified.
+Files an entry gets are staged even if `.gitignore` ignores them (e.g.
+`*.lib`), and written as `git checkout` writes them. What counts is the
+content: a file stored differently after `.gitattributes` changed (moved
+to Git LFS, line endings normalized) is still unmodified.
 
 ### Files of your own in a directory
 
-A directory entry doesn't need a directory of its own: the files of the
-release can be next to files of yours – a `CMakeLists.txt`, a `README`,
-patches, build output. They are yours, tracked or not: `status`
-doesn't report them, `pull` and `restore` leave them alone, `pull`
-stages only the files of the release (changes of yours there stay as they
-are – staged or not; what is staged goes into your next commit), `rm`
-removes only the release's files, and `mv` moves the directory with
-everything in it.
+The files of a release can sit next to files of yours – a
+`CMakeLists.txt`, patches, build output. `status` doesn't report them,
+`pull` and `restore` leave them alone and stage only the release's files,
+`rm` removes only those, and `mv` moves everything.
 
 A new release with a file where one of yours is – the same name, also in
-another case (`README.md` and `README.MD` are one file on Windows and
-macOS), or a file of yours where the release has a directory – is
-refused, by `add` and by `pull`, naming the files in the way. With
-`--overwrite` the release's files replace them and become the entry's. A
-file of yours that is just what the release gives (the same path,
-content and mode) is not in the way: it becomes the entry's without `--overwrite`,
-as for a file entry (`add` onto an existing file of the same content).
+another case, or a file where the release has a directory – is refused by
+`add` and `pull`, naming the files. With `--overwrite` the release's files
+replace them. A file that is just what the release gives (same content
+and mode) isn't in the way: it becomes the entry's.
 
-Which files are the release's comes from the recorded `tree`: what the
-release gave, after the filter. When files of yours are committed in the
-directory, that tree isn't committed itself, so a fresh clone doesn't
-have it. There, `status` says so and doesn't check the directory for
-local modifications; `verify` gets the tree again – filtering the assets
-of the release it was synced with, from the download cache or the
-platform – and so do `pull`, `restore`, `rm`, `diff` and `difftool`
-when they need it. It is then kept in the clone (as
-`refs/assetsync/base/<tree>`, never pushed). If that is no longer
-possible – the release is gone or its assets were re-uploaded, or the
-filter was changed without a `pull` – `pull` refuses; with `--overwrite`
-it adds the files of the new release and deletes none.
+Which files are the release's comes from the recorded `tree`. When files
+of yours are committed in the directory, that tree isn't committed
+itself, so a fresh clone lacks it: `status` says so and doesn't check
+the directory. `verify` gets it again – filtering the synced assets, from
+the download cache or the platform – and so do `pull`, `restore`, `rm`,
+`diff` and `difftool` when they need it; it is then kept in the clone
+(`refs/assetsync/base/<tree>`, never pushed). If that fails – the release
+is gone, its assets were re-uploaded, or the filter changed – `pull`
+refuses; with `--overwrite` it adds the new files and deletes none.
 
 ## Commands
 
@@ -232,14 +183,14 @@ Basic commands – what you need day to day:
 | Command | Purpose |
 |---|---|
 | [`status [PATH…]`](#status) | state of the entries, like `git status` |
-| [`pull PATH…`, `pull --all`](#pull) | update files and directories to the selected release (or once another one) and stage them, with a proposed commit message |
-| [`diff [PATH…]`](#diff) | local modifications against what the release gave; what `pull` would bring |
-| [`difftool [PATH…]`](#difftool) | the same in your difftool, file by file or (`-d`) as two directories |
-| [`restore PATH…`](#restore) | discard local modifications: back to what the release gave, without pulling |
+| [`pull PATH…`, `pull --all`](#pull) | update to the selected release (or once another one) and stage, with a proposed commit message |
+| [`diff [PATH…]`](#diff) | local modifications; what `pull` would bring |
+| [`difftool [PATH…]`](#difftool) | the same in your difftool, file by file or as two directories |
+| [`restore PATH…`](#restore) | discard local modifications: back to what the release gave |
 | [`add SOURCE PATH`](#add) | take a file or directory from release assets |
 | [`rm PATH…`](#rm) | remove entries and their files, like `git rm` |
-| [`unlink PATH…`](#unlink) | remove entries (the files are kept) |
-| [`mv OLD NEW`](#mv) | move a file or directory, keeping its entry |
+| [`unlink PATH…`](#unlink) | remove entries, keep the files |
+| [`mv OLD NEW`](#mv) | move a file or directory with its entry |
 
 [Advanced commands](#advanced-commands) – to change entries, sources and filters, and for setup:
 
@@ -248,65 +199,57 @@ Basic commands – what you need day to day:
 | [`set PATH… OPTIONS`](#set) | change entries: source, release selection, asset, filter |
 | [`edit`](#edit) | open `.git-assetsync` in the editor, then check and stage it |
 | [`source [ACTION …]`](#source) | list sources; rename them, change URL or type |
-| [`source map [URL\|SOURCE [DIR]]`](#source-map) | take the releases of a source from a local folder (local development, tests) |
+| [`source map [URL\|SOURCE [DIR]]`](#source-map) | take the releases of a source from a local folder |
 | [`source releases URL\|SOURCE`](#source-releases) | list the releases of a project, with their assets |
 | [`filter [ACTION …]`](#filter) | list filters; show, test, add, set, rename or remove them |
 | [`filter trust [NAME…]`](#filter-trust) | list the filters that run commands; trust them in this repository |
 | [`verify [PATH…]`](#verify) | filter the synced assets again: is the committed state reproducible? |
 | [`cache [ACTION]`](#cache) | the download cache: show, list, prune, clear |
-| [`hooks [install\|uninstall]`](#hooks) | hooks: reminders, push check – their state, install, remove |
+| [`hooks [install\|uninstall]`](#hooks) | reminder hooks and the push check |
 
-Commands named like a Git command behave like it (`status`, `pull`, `diff`,
-`difftool`, `restore`, `add`, `rm`, `mv`; `source` like `git remote`): same
-kind of output, same exit codes, same caution with uncommitted changes.
+Commands named like a Git command behave like it (`status`, `pull`,
+`diff`, `difftool`, `restore`, `add`, `rm`, `mv`; `source` like `git
+remote`): the same kind of output and exit codes, the same caution with
+uncommitted changes.
 
-**No command commits.** Like `git add`, `git rm`, `git mv`, `git restore`
-– and `pull` like `git merge --squash` – they only change the working tree
-or stage, and you commit, when and with what you like: `pull`, `add`, `rm`,
-`mv`, `set`, `unlink`, `edit`, `source` and `filter` stage, `restore`
-(without `-S`) leaves the index alone. `pull` and `add` prepare a proposed
-commit message that a plain `git commit` offers (see [Proposed commit
-messages](#proposed-commit-messages)) – for `pull` it names the release,
-its notes and those of releases skipped. What else is staged then goes
-into the same commit; that's up to you.
+**No command commits.** They change the working tree or stage, like `git
+add` – `pull` like `git merge --squash` – and you commit. `pull` and
+`add` prepare a [proposed commit message](#proposed-commit-messages) that
+a plain `git commit` offers. Whatever else is staged goes into the same
+commit.
 
-Without a command, `status` runs. `PATH` may be a file or a directory (all
-entries below it) and is relative to the current directory. A path inside
-a directory entry (`third_party/zlib/zlib.h`) stands for that entry in
-`status`, `diff`, `difftool`, `verify` and `pull`; commands that change
-entries (`set`, `restore`, `rm`, `unlink`) refuse it – an entry is only
-changed as a whole. Options follow the command; `git assetsync <command>
--h` lists them.
+Without a command, `status` runs. `PATH` is a file or a directory (all
+entries below it), relative to the current directory. A path inside a
+directory entry (`third_party/zlib/zlib.h`) stands for that entry in
+`status`, `pull`, `diff`, `difftool` and `verify`; `set`, `restore`, `rm`
+and `unlink` refuse it – they act on whole entries. Options follow the
+command; `git assetsync <command> -h` lists them.
 
-Two options mean the same in all commands (and in git-filesync):
-**`--overwrite`** lets a command replace local content – a file of yours,
-local modifications – with what the release gives; **`--force`** lets it
-do something it refuses by default, without losing local content (replace
-an entry, add the lines to hooks of other tools).
+Two options mean the same everywhere (also in git-filesync):
+**`--overwrite`** replaces local content – files of yours, local
+modifications – with what the release gives; **`--force`** does something
+refused by default without losing local content (replace an entry, add
+lines to the hooks of other tools).
 
-**Discarded content can be got back.** When `restore`, `rm -f` or
-`--overwrite` replace or delete a file whose content isn't committed –
-nor staged, where the index stays as it is (`restore` without `-S`) –
-they keep that content as a Git object first and say how to get it back:
+**Discarded content can be got back.** Before `restore`, `rm -f` or
+`--overwrite` replace or delete content that isn't committed, they keep
+it as a Git object and say so:
 
 ```
 discarded: lib/data.bin (git show 1a2b3c4d5e6f to get it back)
 ```
 
-`git show 1a2b3c4d5e6f > lib/data.bin` writes it back exactly as it was.
-Where the index goes too (`rm -f`, `--overwrite`, `restore -S`), a staged
-version that is neither committed nor what the working tree has is named
-as well: `discarded: lib/data.bin, as staged (git show … to get it
-back)` – as git stores it (e.g. line endings normalized).
-Nothing refers to the object, so `git gc` removes it after a while
-(normally two weeks).
+`git show 1a2b3c4d5e6f > lib/data.bin` writes it back exactly. Where the
+index goes too (`rm -f`, `--overwrite`, `restore -S`), a staged version is
+kept as well (`discarded: lib/data.bin, as staged …`). `git gc` removes
+such objects after a while (normally two weeks).
 
 ### Common options
 
 | Option | Meaning |
 |---|---|
 | `--color[=WHEN]`, `--no-color` | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
-| `--remote` | ignore [mappings](#source-map) this once: work against the upstream URL, the mapping stays (`status`, `pull`, `diff`, `difftool`, `add`, `verify`, `source releases`, `filter test`) |
+| `--remote` | ignore [mappings](#source-map) this once and use the upstream URL (`status`, `pull`, `diff`, `difftool`, `add`, `verify`, `source releases`, `filter test`) |
 
 ### `status`
 
@@ -314,15 +257,15 @@ Nothing refers to the object, so `git gc` removes it after a while
 git assetsync status [PATH…] [-s] [-v] [--exit-code] [--no-fetch]
 ```
 
-Shows the state of the files and directories (default: all) in sections
-like `git status`; directories are shown with a trailing `/`:
+Shows the state of the entries (default: all) in sections like `git
+status`; directories have a trailing `/`:
 
 ```
 Upstream changes to pull:
   (use "git assetsync diff --upstream <file>..." to see what pull would bring)
   (use "git assetsync pull <file>..." to update)
 	pending:    bin/tool  (v1.0 -> v1.1)
-	new:        firmware/fw.bin  (release toolA-20261016)
+	new:        firmware/fw.bin  (not synced yet, release toolA-20261016)
 
 Locally modified files:
   (use "git assetsync diff <file>..." to see the modifications)
@@ -340,37 +283,28 @@ Not committed yet:
 ```
 
 - **Upstream changes to pull** – `pending`: the entry selects another
-  release than the one it comes from (`v1.0 -> v1.1`), the asset of
-  that release was replaced (re-uploaded with other content), or the
-  filter was changed (`filter changed`). `new`: an entry not synced yet
-  (`not synced yet, release v1.1`) – e.g. written by hand with
-  [`edit`](#edit), with just its source and asset: `pull` takes the
-  release, as `add` would.
-- **Locally modified files** – the file (directory) differs from what the
-  release gave: in the working tree or committed – both are not allowed,
-  and `restore -SW` (then a commit) brings it back either way.
-- **Missing files** – what an entry got is gone: its file, or all files of
-  its release in a directory – deleted, also with the deletion committed.
-  Not allowed while it is an entry: `restore` gets it back, `unlink` (or
-  `rm`) removes the entry.
-- **Not committed yet** – an entry added or pulled and staged, not
-  committed yet.
+  release (`v1.0 -> v1.1`), its asset was re-uploaded with other content,
+  or its filter changed. `new`: an entry not synced yet, e.g. written
+  with [`edit`](#edit).
+- **Locally modified files** – differs from what the release gave, in
+  the working tree or committed; `restore -SW` and a commit bring it back.
+- **Missing files** – the file, or all files of a directory's release,
+  deleted (also committed).
+- **Not committed yet** – added or pulled and staged.
 
-With nothing to report: `nothing to pull, all N files unmodified` (or
-directories). Errors
-(no release found, the asset pattern matches no or several assets, broken
-entries) are printed on stderr for the file concerned; the other files are
-shown as usual. The hints in parentheses follow `advice.statusHints`.
+With nothing to report it says `nothing to pull, all N files
+unmodified`. Errors (no release found, no or several matching assets,
+broken entries) go to stderr for the entry concerned; the others are shown
+as usual. The hints follow `advice.statusHints`.
 
 | Option | Meaning |
 |---|---|
-| `-s`, `--short` | one line per file with something to report, two columns like `git status -s`: upstream (`P` pending, `N` new, `E` error) and local (`M` modified, committed or not; `D` missing; `?` not committed yet) |
-| `-v`, `--verbose` | also list all files with asset, source, release selection and synced release |
-| `--exit-code` | exit with 1 if something is to pull or a file is modified or missing |
-| `--no-fetch` | don't ask GitHub or GitLab for new releases: only local modifications are shown, see [Offline operation](#offline-operation) |
+| `-s`, `--short` | one line per entry with something to report, two columns like `git status -s`: upstream (`P` pending, `N` new, `E` error) and local (`M` modified, `D` missing, `?` not committed yet) |
+| `-v`, `--verbose` | also list all entries with asset, source, release selection and synced release |
+| `--exit-code` | exit with 1 if something is to pull, modified or missing |
+| `--no-fetch` | don't ask GitHub or GitLab for new releases, see [Offline operation](#offline-operation) |
 
-Like `git status`, it exits with 0 unless `--exit-code` is given; errors
-exit with 2.
+It exits with 0 unless `--exit-code` is given, and with 2 on errors.
 
 ### `pull`
 
@@ -378,47 +312,38 @@ exit with 2.
 git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [-v] [-n]
 ```
 
-Updates each given file or directory to what the release its entry
-selects gives (after the filter) and stages them together with their
-entries in `.git-assetsync` – like `git merge --squash`, without
-committing. A plain `git commit` then offers the [proposed
-message](#proposed-commit-messages), one for all entries, with a part for
-each (with one entry, just that); `git commit --no-edit` takes it as it
-is:
+Updates the entries to what their selected release gives (after the
+filter) and stages them with their entries in `.git-assetsync`, like `git
+merge --squash`. A plain `git commit` offers the [proposed
+message](#proposed-commit-messages), one for all entries; `git commit
+--no-edit` takes it as it is:
 
 ```sh
 git assetsync pull --all
 git commit --no-edit
 ```
 
-In a directory, the files of the release are replaced: those the new
-release no longer has are removed, new ones added; files of others there
-stay as they are. An entry that is up to date is reported as such; one
-whose filter was changed (with [`set`](#set)) is filtered again, from the
-[download cache](#download-cache) if possible. If `pull --overwrite` only
-brought back what is committed, there is nothing to commit, and it says
-so.
+In a directory, the release's files are replaced, added or removed;
+files of yours stay. An entry whose filter changed is filtered again,
+from the [download cache](#download-cache) if possible.
 
-`pull` refuses a file with local modifications, committed or not, and a
-missing one (see [No local modifications](#no-local-modifications)); the
-other files are pulled anyway, and the exit code is 2. An entry not synced
-yet is taken as `add` would: a file of the release already there is taken
-if it is the same, else only with `--overwrite`.
-
+`pull` refuses an entry with local modifications or a missing one (see
+[No local modifications](#no-local-modifications)); the others are pulled
+anyway, and the exit code is 2. An entry not synced yet is taken as `add`
+would.
 
 | Option | Meaning |
 |---|---|
-| `--all` | all entries with something to pull (with `--overwrite` also modified ones; missing ones are left out, with a warning); not with paths |
-| `--release TAG\|PATTERN` | this release instead of the one the entry selects, once – see below; a pattern takes the newest matching release, prereleases only if the entry takes them (`prerelease = true`), a tag that release also if it is a prerelease; also with `--all`: an entry whose project has no such release is an error |
-| `--overwrite` | discard local modifications: restore or update the file (directory) anyway; in a directory also replace files of yours in the way of the release's |
-| `-v`, `--verbose` | first name where each entry comes from, as `status -v` shows it (assets, source, release selection, filter, the release synced) |
-| `-n`, `--dry-run` | only report what would happen; nothing is downloaded or changed |
+| `--all` | all entries with something to pull (with `--overwrite` also modified ones; missing ones are left out); not with paths |
+| `--release TAG\|PATTERN` | this release instead of the selected one, once – see below; prereleases count for a pattern only if the entry takes them |
+| `--overwrite` | discard local modifications and files of yours in the way |
+| `-v`, `--verbose` | first name where each entry comes from, as `status -v` does |
+| `-n`, `--dry-run` | only report what would happen |
 
-**Another release, once:** `pull --release TAG PATH…` updates the files to
-that release instead of the selected one – also an older one, e.g. to go
-back after a broken update. The release selection of the entries stays
-as it is, so `status` then shows the selected release as pending, and a plain
-`pull` (or `pull --all`) goes back to it; `pull --release` says so:
+**Another release, once:** `pull --release TAG PATH…` takes that release
+instead of the selected one – also an older one, to go back after a
+broken update. The selection stays, so `status` then shows it as pending
+and a plain `pull` goes back; `pull --release` says so:
 
 ```console
 $ git assetsync pull --release v1.0 bin/tool
@@ -428,9 +353,9 @@ bin/tool: updated and staged. Commit with:
 note: bin/tool: it still selects v1.1 - 'git assetsync pull bin/tool' goes back to it; to stay on v1.0: 'git assetsync set bin/tool --release v1.0'
 ```
 
-To keep the files on that release, pin them instead with [`set
---release`](#set). [`diff --upstream --release TAG PATH…`](#diff)
-shows beforehand what `pull --release` would bring.
+To stay on a release, pin it with [`set --release`](#set). [`diff
+--upstream --release TAG PATH…`](#diff) shows beforehand what `pull
+--release` would bring.
 
 ### `diff`
 
@@ -438,39 +363,31 @@ shows beforehand what `pull --release` would bring.
 git assetsync diff [PATH…] [--upstream [--release TAG|PATTERN]] [--exit-code | --quiet] [-- OPTS]
 ```
 
-Shows the local modifications of the entries (default: all) – the
-difference between what their release gave when they were synced (the
-recorded `blob` / `tree`) and the working tree, which [should be
-none](#no-local-modifications). In a directory only the files of the
-release are compared – files of yours there aren't shown. Like `status`,
-it works offline.
+Shows the local modifications of the entries (default: all): what the
+release gave (the recorded `blob` / `tree`) against the working tree. In
+a directory only the release's files are compared. Works offline.
 
 | Option | Shows |
 |---|---|
 | (none) | the local modifications: synced -> working tree |
-| `--upstream` | what `pull` would bring: synced -> what the selected release gives now, after the filter (also after the filter was changed) |
-| `--upstream --release TAG\|PATTERN` | what `pull --release` would bring; `--release` requires `--upstream` |
-| `--exit-code` | exit with 1 if there are differences, like `git diff --exit-code` (and `status --exit-code`) |
-| `--quiet` | the same without showing anything |
+| `--upstream` | what `pull` would bring: synced -> what the selected release gives now |
+| `--upstream --release TAG\|PATTERN` | what `pull --release` would bring |
+| `--exit-code` | exit with 1 if there are differences, like `git diff` |
+| `--quiet` | the same, showing nothing |
 
 ```sh
-git assetsync diff                      # local changes: synced -> working tree (local/)
-git assetsync diff --upstream           # what `pull` would bring (upstream/)
-git assetsync diff --upstream --release v1.0 bin/  # what `pull --release v1.0 bin/` would bring
-git assetsync diff --upstream -- --stat # anything after `--` goes to `git diff`
+git assetsync diff                      # local changes (synced/ -> local/)
+git assetsync diff --upstream           # what pull would bring (synced/ -> upstream/)
+git assetsync diff --upstream -- --stat # anything after -- goes to git diff
 ```
 
-`diff` runs a single `git diff` over all entries that differ, with their
-paths in the repository: pager, colors, diff drivers and options (after
-`--`, e.g. `--stat`, `--name-status`, `--word-diff`) work as usual. The
-old side is named `synced/`, the new one `local/` or `upstream/`. Files in Git LFS are compared by their content, not their
-pointers. With `--upstream`, the assets come from the [download
-cache](#download-cache) if possible – and `pull` then needs no new
-download; filters that run commands must be [trusted](#filter-trust). To see
-what a `pull` command line would do, replace `pull` by `diff --upstream`
-(with the same `--release` and paths), as in git-filesync. With
-`--exit-code` or `--quiet` (also after `--`), the exit code is 1 if there
-are differences, like `git diff`; otherwise 0, or 2 on errors.
+`diff` runs one `git diff` over all entries that differ: pager, colors,
+diff drivers and options after `--` work as usual. Files in Git LFS are
+compared by their content. With `--upstream`, the assets come from the
+[download cache](#download-cache) if possible, and filters that run
+commands must be [trusted](#filter-trust). To see what a `pull` command
+line would do, replace `pull` by `diff --upstream`. Exit codes: 1 for
+differences with `--exit-code` or `--quiet`, else 0; 2 on errors.
 
 ### `difftool`
 
@@ -489,32 +406,22 @@ The same as [`diff`](#diff), in your difftool (`diff.tool`, e.g. Meld);
 | `-y`, `--no-prompt` | don't ask before each file |
 | `--prompt` | ask before each file (the default, unless `difftool.prompt = false`); the last of `-y` and `--prompt` counts |
 
-**File by file** (the default), like `git difftool`: the left side is a
-temporary copy of what the release gave, in a directory named after it
-(`synced-v1.0/`); the right side is the working file itself – so edits
-made in the tool are kept – or with `--upstream` a temporary copy
-(`upstream-v1.1/`). A file that is
-missing on one side is compared with an empty file. Like `git
-difftool`, it asks before each file – also with paths given (`Viewing
-(1/3): 'third_party/zlib/zlib.h'` / `Launch 'meld' [Y/n/q]?`; Enter =
-yes, `q` = stop); `-y` / `--no-prompt` or `difftool.prompt = false` skip
-the questions, `--prompt` asks anyway; of `-y` and `--prompt`, the last
-one given counts.
+**File by file** (the default), as `git difftool` does, asking before
+each: the left side is a temporary copy of what the release gave
+(`synced-v1.0/`), the right side the working file itself – so edits in the
+tool are kept – or with `--upstream` a temporary copy (`upstream-v1.1/`).
+A file missing on one side is compared with an empty file.
 
-**As two directories** (`-d`), with `git difftool --dir-diff`: one call of
-the tool for all files that differ – useful for directory entries, e.g.
-to see in Meld which files a new release adds, removes or changes before
-pulling it:
+**As two directories** (`-d`): one call of the tool for all files – e.g.
+to see which files a new release adds, removes or changes:
 
 ```sh
 git assetsync difftool -d --upstream third_party/zlib
 ```
 
-The directories are temporary copies; files that are the same as in the
-working tree are linked to it (as `git difftool -d` does), so edits to
-them are kept – except on Windows, where they are copies (symbolic links
-need a privilege there; `-- --symlinks` to use them anyway). Binary files can only be shown as
-different by most tools.
+Files that are the same as in the working tree are linked to it, as `git
+difftool -d` does, so edits are kept – except on Windows, where they are
+copies (`-- --symlinks` to link anyway).
 
 ### `restore`
 
@@ -522,12 +429,10 @@ different by most tools.
 git assetsync restore PATH… [-S] [-W]
 ```
 
-Like `git restore`, but brings back what the entries were synced with –
-what the release gave, after the filter – instead of what is committed:
-it discards local modifications without pulling a newer release (that
-does `pull --overwrite`). Without options it restores the working tree;
-`-S` (`--staged`) restores the index instead, `-S -W` (short `-SW`) both.
-Nothing is committed and `.git-assetsync` doesn't change. A committed
+Like `git restore`, but brings back what the entries were synced with
+instead of what is committed – without pulling a newer release (that does
+`pull --overwrite`). It restores the working tree; `-S` (`--staged`) the
+index instead, `-SW` both. `.git-assetsync` doesn't change. A committed
 modification is gone with `restore -SW` and a commit:
 
 ```sh
@@ -535,15 +440,11 @@ git assetsync restore -SW lib/data.bin
 git commit -m "Restore lib/data.bin"
 ```
 
-The files are written back with their executable bits as synced (a file
-entry's recorded `mode`, a directory entry's `tree`); in a directory, files
-of yours stay. Files are written
-as the current `.gitattributes` say (line endings, Git LFS). `restore`
-works offline: what an entry was synced with is in the repository
-(`blob`/`tree`) – for a directory that may have to be got again in a
-fresh clone (see [Files of your own in a
-directory](#files-of-your-own-in-a-directory)); if that isn't possible,
-`restore` says so, and `pull --overwrite` gets the release again.
+Files get their executable bits as synced and are written as the current
+`.gitattributes` say; files of yours in a directory stay. `restore` works
+offline – except when a fresh clone has to get a directory's base again
+(see [Files of your own in a
+directory](#files-of-your-own-in-a-directory)).
 
 | Option | Meaning |
 |---|---|
@@ -557,65 +458,43 @@ git assetsync add SOURCE PATH [--asset PATTERN] [--release TAG|PATTERN] [--prere
                   [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-n]
 ```
 
-First the source, then the path – as for `git submodule add URL PATH`,
-[`source map`](#source-map) and `git filesync add`. Takes the
-file or directory `PATH` from assets of the release `SOURCE` selects:
-downloads them, applies the filter, writes the result to `PATH`, records
-the entry in `.git-assetsync` and stages both – like `git add`, without
-committing. A plain `git commit` then offers the proposed message (`git
-commit --no-edit` takes it as it is).
+Takes the file or directory `PATH` from assets of the release `SOURCE`
+selects: downloads them, applies the filter, writes the result, records
+the entry in `.git-assetsync` and stages both, like `git add`. A plain
+`git commit` offers the proposed message. First the source, then the path
+– as for `git submodule add URL PATH`.
 
-- **`SOURCE`** is the name of a `[source]` in `.git-assetsync`, or a URL
+- **`SOURCE`** is the name of a `[source]`, or a URL
   (`https://github.com/owner/repo`, `https://gitlab.com/group/project`,
-  also with subgroups; the URL of any page of the project works as well);
-  `owner/repo` is short for a repository on github.com. A URL takes the
-  source with that URL, or creates one (with `--type`, if given). The
-  release selection – `--release`, `--prerelease` – is the entry's.
-- **`PATH`** is the file or directory in your repository, relative to the
-  current directory. With a trailing `/` (or if it is an existing
-  directory) it becomes a [directory entry](#files-and-directories), else
-  a file. The name doesn't have to be the asset's, and stays the same when
-  later assets are named differently. Like `cp`, `add` makes no
-  directories: the directory a file goes into must exist (else `error:
-  directory 'src/new' does not exist`); a directory entry's own directory
-  may be new, the one above it must exist. `pull` and `restore` make
-  directories that are missing again, as `git checkout` does.
-- **`--asset PATTERN`** selects the assets: a glob pattern (`*`, `?`,
-  `[…]`), e.g. `--asset 'tool-*-linux-x64.tar.gz'`. Quote it, so the
-  shell doesn't expand it. The pattern is recorded and used for later
-  releases, too. For a file it must match exactly one asset; without
-  `--asset` the release must have exactly one asset, which is taken – no
-  pattern is recorded, and a later release with more than one asset is an
-  error until you choose one (`git assetsync set PATH --asset PATTERN`).
-  For a directory, all matching assets are taken; without `--asset` all
-  assets of the release – they are listed first.
-- **`--filter NAME`** applies the named [filter](#filters) `NAME` to the
-  assets – to unpack them, select and move files. Define it first with
-  [`filter add`](#filter).
+  also with subgroups or of any page of the project); `owner/repo` is
+  short for github.com. A URL takes the source with that URL, or creates
+  one.
+- **`PATH`**, relative to the current directory, becomes a [directory
+  entry](#files-and-directories) with a trailing `/` (or if it is an
+  existing directory), else a file. Its name needn't be the asset's. Like
+  `cp`, `add` makes no directories: the one `PATH` goes into must exist.
+- **`--asset PATTERN`** selects the assets by a glob (quote it), recorded
+  for later releases too. A file needs exactly one match; without
+  `--asset` the release must have exactly one asset. A directory takes all
+  matching assets – without `--asset` all of them, listed first.
 
 | Option | Meaning |
 |---|---|
-| `--asset PATTERN` | the assets to take (glob; a file: exactly one match, default the release's only asset; a directory: all matching, default all) |
-| `--release TAG\|PATTERN` | release to take: a tag pins the entry to that release, a pattern takes the newest release whose tag matches (default: the latest release) |
-| `--prerelease` | prereleases count too (with a pattern, or instead of the latest release) |
+| `--asset PATTERN` | the assets to take, see above |
+| `--release TAG\|PATTERN` | a tag pins the entry, a pattern takes the newest matching release (default: the latest) |
+| `--prerelease` | prereleases count too |
 | `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
-| `--filter NAME` | the named [filter](#filters) to apply to the assets |
-| `--force` | replace an existing entry for `PATH` (its file or directory too, unless it has local modifications); a file entry stays a file, a directory entry a directory – to change that, `unlink` it first |
-| `--overwrite` | replace files in the way of the release's that differ from them (an existing file; in a directory, files of yours); with `--force` also local modifications of the entry replaced |
-| `-n`, `--dry-run` | only show which release, assets and filter would be taken; nothing is downloaded |
+| `--filter NAME` | apply the named [filter](#filters) (define it first with [`filter add`](#filter)) |
+| `--force` | replace an existing entry, with its file or directory; a file stays a file, a directory a directory |
+| `--overwrite` | replace files in the way that differ from the release's; with `--force` also local modifications of the entry |
+| `-n`, `--dry-run` | only show which release, assets and filter would be taken |
 
-An existing file at `PATH` is only replaced with `--overwrite`, unless it
-is already what the release gives. In an existing directory, the files of
-the release go next to those there; files of yours in their way are only
-replaced with `--overwrite` (see [Files of your own in a
-directory](#files-of-your-own-in-a-directory)). An entry that exists
-already is replaced only with `--force` – like `unlink` and then `add`:
-the new entry has only the keys given now (release selection, asset,
-filter); its file (directory) is replaced as well, as long as it is what
-its release gave – local modifications need `--overwrite` too. For big binary files
-(1 MiB or more) that are not stored in Git LFS, `add` warns and suggests
-`git lfs track`: each update adds another copy to the repository's
-history.
+An existing file at `PATH`, or a file of yours in a directory, is only
+replaced with `--overwrite` – unless it already is what the release
+gives. An existing entry is only replaced with `--force`, like `unlink`
+then `add`: the new entry has only the options given now. For big binary
+files (1 MiB or more) not in Git LFS, `add` suggests `git lfs track`,
+since each update adds another copy to the history.
 
 ```sh
 git assetsync add acme/tool bin/tool --asset 'tool-*-linux-x64'
@@ -634,19 +513,16 @@ git assetsync add madler/zlib third_party/zlib/ --asset 'zlib-*.tar.gz' --filter
 git assetsync rm PATH… [-f] [-n]
 ```
 
-Like `git rm`: removes the entries from `.git-assetsync` together with
-their files and stages both (commit when you like) – of a directory, the
-files its release gave; files of yours there stay (`rm` says how many).
-It refuses – for all paths given – if one of those files has uncommitted
-changes; `-f` removes them anyway (their content can be [got
-back](#commands) for a while). A committed
-modification doesn't count, and a file already deleted – the deletion
-committed or not – is fine, as with `git rm`. To keep the files and only
-remove the entries, use [`unlink`](#unlink).
+Like `git rm`: removes the entries and their files and stages that – of a
+directory only the release's files (`rm` says how many of yours stay). It
+refuses all paths if one of those files has uncommitted changes; `-f`
+removes them anyway (the content can be [got back](#commands)). Committed
+modifications and files already deleted don't count. To keep the files,
+use [`unlink`](#unlink).
 
 | Option | Meaning |
 |---|---|
-| `-f`, `--force` | remove them anyway, also with uncommitted changes |
+| `-f`, `--force` | also with uncommitted changes |
 | `-n`, `--dry-run` | only show what would be removed |
 
 ### `unlink`
@@ -655,11 +531,9 @@ remove the entries, use [`unlink`](#unlink).
 git assetsync unlink PATH… [-n]
 ```
 
-Removes the entries (and sources no longer used) from `.git-assetsync`
-and stages it; the files themselves are kept as ordinary files. Commit
-when you like. A broken entry that `status` reports as unsafe (e.g. a path
-outside the working tree) is removed by giving its name as it is in the
-file.
+Removes the entries, and sources no longer used, from `.git-assetsync` and
+stages it; the files stay as ordinary files. A broken entry (e.g. a path
+outside the working tree) is removed by its name as written in the file.
 
 ### `mv`
 
@@ -667,13 +541,11 @@ file.
 git assetsync mv OLD NEW [-n]
 ```
 
-Moves a file or directory (with `git mv`) and its entry, and stages both.
+Moves a file or directory with `git mv`, with its entry, and stages both.
 `NEW` may be an existing directory – with a trailing `/` it must be one;
-like `git mv`, `mv` makes no directories – the one `NEW` goes into must
-exist. A directory moves with everything in
-it, files of yours too (`mv` says how many). `OLD` may also be an ordinary
-directory with entries in it (e.g. `bin/` with several synced tools): it
-moves like with `git mv`, and all entries in it follow.
+like `git mv`, `mv` makes no directories. A directory moves with
+everything in it. `OLD` may also be an ordinary directory with entries in
+it (e.g. `bin/`): all of them follow.
 
 ## Advanced commands
 
@@ -685,36 +557,32 @@ git assetsync set PATH… [--source URL|SOURCE [--type github|gitlab]] [--releas
                         [--asset PATTERN | --no-asset] [--filter NAME | --no-filter] [-n]
 ```
 
-Changes the entries of files and directories – their source, release
-selection, asset or filter – where `add` would need `--force`. Only
-`.git-assetsync` is changed (and staged); `status` then shows what
-changes, and `pull` updates the files and stages them, for one commit with the change.
+Changes entries – source, release selection, asset or filter – where `add`
+would need `--force`. Only `.git-assetsync` changes (staged); `status`
+then shows what changes, and `pull` updates the files, for one commit
+with the change.
 
 | Option | Effect |
 |---|---|
-| `--source URL\|SOURCE` | take the files from another project – a fork, a moved project – or another `[source]`, as for [`add`](#add); a source left without files is removed |
-| `--release TAG\|PATTERN`, `--latest` | another release selection for these files: a tag pins them, a pattern takes the newest matching release, `--latest` follows the latest release |
-| `--prerelease`, `--no-prerelease` | let prereleases count for these files, or not |
-| `--type github\|gitlab` | with `--source` a URL of a new source: the platform of its host |
-| `--asset PATTERN`, `--no-asset` | another asset of the release; `--no-asset`: the release's only asset (a directory: all) |
-| `--filter NAME`, `--no-filter` | use another named [filter](#filters), or none |
+| `--source URL\|SOURCE` | another project – a fork, a moved project – or another `[source]`; a source left unused is removed |
+| `--release TAG\|PATTERN`, `--latest` | another release selection: a tag pins, a pattern takes the newest match, `--latest` the latest |
+| `--prerelease`, `--no-prerelease` | let prereleases count, or not |
+| `--type github\|gitlab` | with `--source` a new URL: the platform of its host |
+| `--asset PATTERN`, `--no-asset` | another asset; `--no-asset`: the only one (a directory: all) |
+| `--filter NAME`, `--no-filter` | another named [filter](#filters), or none |
 | `-n`, `--dry-run` | only show what would change |
 
-The base the files are compared with (`blob`, `digest`) is kept, so local
-modifications stay modifications. With another URL or asset, which release
-asset a file comes from is unknown until the next `pull`: `status` shows it
-as pending (`entry changed`), and `pull` fetches it – if it is the same file,
-the commit only records that (`Record … (…, file unchanged)`). Another filter
-(or a changed one) shows as pending (`filter changed`); `pull` filters
-the assets again, from the [download cache](#download-cache). A
-file can't become a directory or the other way round: `unlink` it and
-`add` it again.
+The base (`blob`, `digest`) stays, so local modifications stay
+modifications. After another source or asset, `status` shows the entry as
+pending (`entry changed`); if `pull` gets the same file, the commit only
+records that (`Record … (…, file unchanged)`). A file can't become a
+directory or the other way round: `unlink` it and `add` it again.
 
 ```sh
-git assetsync set bin/tool --release 'v2.*'           # this file only: newest 2.x
+git assetsync set bin/tool --release 'v2.*'           # newest 2.x
 git assetsync set firmware/ --source https://gitlab.com/me/fw-fork
 git assetsync set bin/tool --asset 'tool-*-linux-arm64'
-git assetsync set third_party/zlib --filter zlib-all       # another named filter
+git assetsync set third_party/zlib --filter zlib-all
 ```
 
 ### `edit`
@@ -723,11 +591,10 @@ git assetsync set third_party/zlib --filter zlib-all       # another named filte
 git assetsync edit
 ```
 
-Opens `.git-assetsync` in your editor – the one Git uses (`GIT_EDITOR`,
-`core.editor`, `VISUAL`, `EDITOR`), like `git config --edit` – and
-afterwards checks and stages it. A file that can't be parsed is not
-staged (`… - not staged; fix it with 'git assetsync edit'`); gaps that
-`status` would report are shown as warnings, e.g.:
+Opens `.git-assetsync` in the editor Git uses (`GIT_EDITOR`,
+`core.editor`, `VISUAL`, `EDITOR`), like `git config --edit`, then checks
+and stages it. A file that can't be parsed is not staged; gaps that
+`status` would report are shown as warnings:
 
 ```
 warning: .git-assetsync: [source "acme/old"] is not used by any file
@@ -735,16 +602,12 @@ warning: .git-assetsync: [file "bin/tool"]: no [source "acme/tol"]
 warning: .git-assetsync: [file "lib/x.bin"] has synced but no blob (what it was synced with) - pull takes the release again
 ```
 
-An entry with just its source (and asset, release selection, filter) is
-no gap but one not synced yet – e.g. many written at once by copy and
-paste: `pull --all` takes their releases. Unchanged, nothing happens; if
-the editor fails, nothing is staged; an emptied file is removed (and that
-staged). For the usual changes the
-dedicated commands are safer – [`set`](#set), [`source`](#source),
-[`filter`](#filter), [`unlink`](#unlink), [`mv`](#mv) – since `edit` keeps
-whatever you write: a changed `blob` or `tree` changes what counts as a
-local modification, a removed `synced` makes `pull` take the release
-again.
+An entry with only source, asset, release selection and filter is not a
+gap but not synced yet – handy to write many at once; `pull --all` takes
+their releases. An emptied file is removed. For the usual changes,
+[`set`](#set), [`source`](#source), [`filter`](#filter),
+[`unlink`](#unlink) and [`mv`](#mv) are safer: `edit` keeps whatever you
+write, also a changed base.
 
 ### `source`
 
@@ -755,23 +618,21 @@ git assetsync source set-url NAME URL
 git assetsync source set-type NAME (github|gitlab | --unset)
 ```
 
-Lists and changes the `[source]` sections, like `git remote` does for
-remotes. The changing actions only change `.git-assetsync` and stage it;
-`status` then shows what changes for the files of the source, and `pull`
-updates and stages them, for one commit with the change of the source.
+Lists and changes the `[source]` sections, like `git remote`. The changes
+are staged; `status` then shows what changes for the entries, and `pull`
+updates them, for one commit.
 
 | Action | Meaning |
 |---|---|
-| (none) | list the sources; `-v`: with URL, type and file count |
+| (none) | list the sources; `-v`: with URL, type and number of entries |
 | `rename OLD NEW` | rename a source and all references to it |
 | `set-url NAME URL` | change the URL, e.g. after the project moved |
 | `set-type NAME github\|gitlab` | the platform of the host; `--unset`: derived from the host again |
 
 There is one source per URL: `set-url` to the URL of another source is
-refused, with a hint to move the files to that one (`set <file>...
---source <source>`). Which release a file takes is its own (see
-[Selecting the release](#selecting-the-release)): to change it, use
-[`set`](#set), e.g. `git assetsync set lib/x.h --release v2.0`.
+refused, with a hint to move the entries there (`set <file>... --source
+<source>`). The release selection is the entries' own: change it with
+[`set`](#set).
 
 ### `source map`
 
@@ -781,13 +642,11 @@ git assetsync source map [URL|SOURCE [DIR]] [--flat] [--pattern PATTERN] [--sort
 ```
 
 Takes the releases of a source from the local folder `DIR` instead of
-GitHub or GitLab – to try a new build "the proper way" in another local
-repository before publishing it. The source is given by its URL or the
-name of a `[source]`; the mapping applies to every source with that URL.
-It is kept in this repository's `.git/config`
-(`assetsync.<url>.localpath`), with `--global` in your global Git config
-for all repositories without a mapping of their own – never in
-`.git-assetsync`, which keeps the real URL.
+GitHub or GitLab – to try a new build in another repository before
+publishing it. The mapping applies to every source with that URL and is
+kept in `.git/config` (`assetsync.<url>.localpath`), with `--global` in
+your global Git config – never in `.git-assetsync`, which keeps the real
+URL.
 
 ```
 ~/build/tool-releases/
@@ -796,85 +655,48 @@ for all repositories without a mapping of their own – never in
 ```
 
 ```sh
-git assetsync source map acme/tool ~/build/tool-releases  # by the name of the [source] (or its URL)
+git assetsync source map acme/tool ~/build/tool-releases  # by [source] name or URL
 git assetsync status                                      # pending: bin/tool (v1.2 -> v1.3-rc1, local folder)
 git assetsync pull bin/tool                               # takes v1.3-rc1 from the folder
-git assetsync source map                                  # list the mappings (scope, overridden ones marked)
+git assetsync source map                                  # list the mappings
 git assetsync source map acme/tool --unset                # remove it again
 ```
 
-- Each **subdirectory** is a release, named like its tag; its files are
-  the assets (hidden files are ignored).
-- With **`--flat`**, the folder itself holds the assets of all releases
-  as files – e.g. a build's output folder. A file belongs to the release
-  named like the file without its extension (`.tar.gz`, `.tar.xz` and
-  the like count as one); the asset keeps the full file name, so
-  `--asset '*.xml'` chooses as usual. Subdirectories are ignored.
+- Each **subdirectory** is a release named like its tag; its files are the
+  assets (hidden files are ignored).
+- With **`--flat`**, the folder itself holds the assets of all releases –
+  e.g. a build's output folder. A file belongs to the release named like
+  the file without its extension (`.tar.gz` and the like count as one);
+  subdirectories are ignored.
 
   ```
   ~/build/fw-out/
     rel20260213.7z  rel20260213.xml     -> release rel20260213 (2 assets)
     rel20260410.7z  rel20260410.xml     -> release rel20260410 (2 assets)
   ```
-
-  ```sh
-  git assetsync source map --flat acme/fw ~/build/fw-out
-  ```
-
-  The layout is kept with the mapping (`assetsync.<url>.layout = flat`);
-  `source map` without `--flat` switches back to subdirectories.
-- With **`--pattern PATTERN`**, only the subdirectories – with `--flat`,
-  the files – whose names match it count, so several sources can share
-  one folder, e.g. the output folder of a build that makes the releases of
-  several projects:
-
-  ```
-  ~/build/out/
-    tool-1.2/  tool-1.3/      <- acme/tool
-    lib-0.9/                  <- acme/lib
-  ```
-
-  ```sh
-  git assetsync source map acme/tool ~/build/out --pattern 'tool-*'
-  git assetsync source map acme/lib  ~/build/out --pattern 'lib-*'
-  ```
-
-  The pattern is matched case-sensitively against the whole name (`*`,
-  `?`, `[…]`). Releases of other sources aren't seen at all, not even as
-  a pinned tag, so their names must differ. It is kept with the mapping
-  (`assetsync.<url>.pattern`); `source map` without `--pattern` takes all
-  again.
-- A release is dated by its **newest file**: the latest release is the one
-  built last, also when a build overwrites the files of an existing
-  folder (then `status` shows its assets as replaced).
-- With **`--sort name`**, the release with the greatest name is the
-  newest instead – for names that tell the order, like `rel20261022`.
-  File dates don't matter then, so building an older release again (or
-  copying the folder, which may change the dates) doesn't make it the
-  latest. Names are compared character by character, not as versions:
-  `v1.10` comes before `v1.9`, so they need a fixed width (dates, leading
-  zeros). It decides everything that asks which release is newer: the
-  latest, the newest matching a pattern, the releases skipped by an
-  update, the order of `source releases`. Kept as `assetsync.<url>.sort
-  = name`; `source map` without it sorts by date again. The [release
-  selection](#selecting-the-release) applies as usual – a pattern takes
-  the newest matching folder, a pinned tag that folder; prereleases and
-  drafts don't exist here, and there are no release notes.
-- The commit message says where it came from: `Release: v1.3-rc1 (from a
-  local folder, not published)`.
-- Everything works offline; the assets are read from the folder, not
-  copied into the [download cache](#download-cache). Only their SHA-256
-  is remembered there, with each file's size and modification time, so
-  that `status` doesn't read big assets again on every call (e.g. from a
-  network share); a file that changes is read again, and `pull` and
-  `verify` always read what they take. `status` names the folder, `source
-  releases` lists the folders; `--remote` asks the platform this once
-  (e.g. `status --remote`), `source map … --unset` for good.
+- With **`--pattern PATTERN`**, only the matching subdirectories (with
+  `--flat`: files) count, so several sources can share a folder:
+  `source map acme/tool ~/build/out --pattern 'tool-*'`. The pattern
+  matches the whole name, case-sensitively; other releases aren't seen at
+  all.
+- A release is dated by its **newest file**, so the latest is the one
+  built last. With **`--sort name`** the greatest name is the newest
+  instead – for names like `rel20261022`; they are compared character by
+  character (`v1.10` comes before `v1.9`).
+- `--flat`, `--pattern` and `--sort` are kept with the mapping; `source
+  map` without them goes back to the defaults.
+- There are no prereleases, drafts or release notes; the commit message
+  says `Release: v1.3-rc1 (from a local folder, not published)`.
+- Everything works offline; the assets are read from the folder. Their
+  SHA-256 is remembered in the [download cache](#download-cache), so
+  `status` doesn't read big files on every call.
+- `--remote` asks the platform once (e.g. `status --remote`), `--unset`
+  for good.
 - An entry synced from a release the folder doesn't have – e.g. synced
-  later from the server – is left as it is: `status` warns, `pull` doesn't
-  go back to a release of the folder (`pull --release` does).
-- Before pushing, the [push check](#hooks) warns
-  about entries whose release isn't published yet.
+  later from the server – is left as it is: `status` warns, and `pull`
+  doesn't go back to a release of the folder (`pull --release` does).
+- The [push check](#hooks) warns about entries whose release isn't
+  published yet.
 
 ### `source releases`
 
@@ -882,11 +704,10 @@ git assetsync source map acme/tool --unset                # remove it again
 git assetsync source releases URL|SOURCE [--assets] [-n N | --all] [--type github|gitlab]
 ```
 
-Lists the releases of a project, newest first: tag, date and title (if it
-differs from the tag), marked `latest` (as the platform defines it),
-`prerelease` (GitLab: `upcoming`), `draft`, and `selected by …` with the
-entries of this repository that select it now. A help for choosing
-`--release` and `--asset` for [`add`](#add) and [`set`](#set):
+Lists the releases of a project, newest first: tag, date and title,
+marked `latest`, `prerelease` (GitLab: `upcoming`), `draft`, and `selected
+by …` with the entries that select it – a help for choosing `--release`
+and `--asset`. With a URL it also works outside a repository.
 
 ```console
 $ git assetsync source releases acme/tool --assets -n 2
@@ -897,46 +718,41 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
     tool-1.1-rc1-linux-x64  14.5 MiB
 ```
 
-`URL|SOURCE` is a URL (`owner/repo`: github.com) or the name of a
-`[source]`, as for `add`; with a URL it also works outside a repository.
-
 | Option | Meaning |
 |---|---|
-| `--assets` | also list the assets of each release, with their sizes (GitLab reports none) |
+| `--assets` | also list the assets, with their sizes (GitLab reports none) |
 | `-n`, `--max-count N` | the newest N releases (default: 10) |
 | `--all` | all releases |
-| `--type github\|gitlab` | platform of the URL's host, as for `add` |
+| `--type github\|gitlab` | platform of the URL's host |
 
 ### `filter`
 
 ```
 git assetsync filter
 git assetsync filter show NAME
-git assetsync filter test NAME (FILE… | --source SOURCE [--release …] [--prerelease] [--asset PATTERN]) [-o DIR]
+git assetsync filter test NAME (FILE… | --source SOURCE [--release …] [--prerelease] [--type …] [--asset PATTERN]) [-o DIR]
 git assetsync filter add NAME STEP-OPTIONS…
 git assetsync filter set NAME STEP-OPTIONS…
 git assetsync filter rename OLD NEW
 git assetsync filter remove NAME
 ```
 
-Lists and changes the [filters](#filters). The changing actions only
-change `.git-assetsync` and stage it; entries using a changed filter show
-as pending in `status`, and `pull` updates them.
+Lists and changes the [filters](#filters). Changes are staged; entries
+using a changed filter show as pending.
 
 | Action | Meaning |
 |---|---|
-| (none) | list the filters, with their number of steps and the entries and filters using them |
+| (none) | list the filters, with their steps and users |
 | `show NAME` | the steps of a filter, and who uses it |
-| `test NAME FILE…` | apply a filter to local files, as if they were the assets (a directory: its files, with their paths below it), and list the result – or write it to a new or empty directory with `-o DIR` |
-| `test NAME --source SOURCE` | the same with the assets of the release `SOURCE` selects (`--release`, `--prerelease`, `--type` as for [`add`](#add); `--asset PATTERN`: only the matching ones) – to try a filter on the real thing before an entry uses it |
-| `add NAME STEP-OPTIONS…` | define a new filter with the [step options](#filters) (`--extract`, `--include`, `--move`, `--apply`, …), in the order given. Names consist of letters, digits, `.`, `+`, `-` and `_` |
-| `set NAME STEP-OPTIONS…` | replace the steps of an existing filter |
-| `rename OLD NEW` | rename a filter, and the entries and `apply` steps that use it |
-| `remove NAME` | remove a filter that nothing uses |
+| `test NAME FILE…` | apply a filter to local files as if they were the assets (a directory: its files) and list the result, or write it to an empty directory with `-o DIR` |
+| `test NAME --source SOURCE` | the same with the assets of a release (`--release`, `--prerelease`, `--type` as for [`add`](#add); `--asset`: only the matching ones) |
+| `add NAME STEP-OPTIONS…` | define a filter with the [step options](#filters), in the order given; names consist of letters, digits, `.`, `+`, `-` and `_` |
+| `set NAME STEP-OPTIONS…` | replace the steps of a filter |
+| `rename OLD NEW` | rename a filter and its references |
+| `remove NAME` | remove a filter nothing uses |
 
-`filter test` changes nothing in the repository; errors are the ones
-`pull` would report. It shows what each step did (on stderr), then the
-result:
+`filter test` changes nothing; it shows what each step did (on stderr),
+then the result:
 
 ```console
 $ git assetsync filter test zlib-headers --source madler/zlib --asset 'zlib-*.tar.gz'
@@ -959,13 +775,12 @@ git assetsync filter trust --revoke NAME…
 ```
 
 Filters that run [commands](#commands-in-filters) run only if trusted in
-this repository. Without arguments, `filter trust` lists them with their state –
-`trusted`, `not trusted`, or `changed since trusted` – and their commands,
-naming the scripts of the repository they run; on a terminal it asks for
-each one that isn't trusted. `filter trust NAME…` trusts the filters as they are
-now, `--all` all filters that run commands, `--revoke` takes the trust
-back. Trusts are kept in the repository's own config (`.git/config`,
-`assetsync.trusted`), never committed – each clone decides for itself.
+this repository. Without arguments, `filter trust` lists them – `trusted`,
+`not trusted` or `changed since trusted` – with their commands and the
+scripts of the repository they run; on a terminal it asks for each one
+not trusted. `NAME…` trusts filters as they are now, `--all` all of them,
+`--revoke` takes the trust back. Trusts are kept in `.git/config`
+(`assetsync.trusted`), never committed: each clone decides.
 
 ```console
 $ git assetsync filter trust
@@ -983,15 +798,11 @@ git assetsync verify [PATH…] [-v]
 ```
 
 Checks that the committed state is reproducible: for each entry (default:
-all), `verify` takes the assets of the release it was synced with (not
-the newest one) from the [download cache](#download-cache) or the
-platform, applies its filter again, and compares the result with the
-recorded base (`blob` / `tree`) – as `git add` would store it, so files
-stored differently since (moved to Git LFS, line endings normalized) still
-count as the same. The working tree, the index and the branches are not
-touched; only in a clone that lacks the base of a directory entry is it
-kept, once verified (see [Files of your own in a
-directory](#files-of-your-own-in-a-directory)).
+all) it filters the assets of the release it was synced with again – from
+the [download cache](#download-cache) or the platform – and compares the
+result with the recorded base, as `git add` would store it. Nothing
+changes, except that a directory's base missing in a clone is kept once
+verified.
 
 ```console
 $ git assetsync verify
@@ -1000,15 +811,12 @@ src/fw/: differs from what v2.1 gives now:
 	M	gen/fw.c
 ```
 
-It also reports when the assets of the release differ from those the entry
-was synced with (re-uploaded), when the release no longer exists, and when
-the filter changed since the sync (`pull` first). Filters that run
-commands must be [trusted](#filter-trust). The exit code is 0 if everything is
-verified, 1 if something differs, 2 on errors – so a CI job can check that
-nobody changed a file by hand and that the filters are deterministic.
-With `-v` (`--verbose`), each entry is first named with where it comes
-from, as `status -v` shows it: its assets, source, release selection,
-filter and the release it was synced with.
+It also reports re-uploaded assets, a release that no longer exists and a
+filter changed since the sync. Filters that run commands must be
+[trusted](#filter-trust). Exit code 0 if all is verified, 1 if something
+differs, 2 on errors – so CI can check that nobody changed a file by hand
+and that filters are deterministic. `-v` first names where each entry
+comes from, as `status -v` does.
 
 ### `cache`
 
@@ -1016,8 +824,7 @@ filter and the release it was synced with.
 git assetsync cache [list | prune [--older-than DAYS] [--max-size SIZE] [-n] | clear [-n] | dir]
 ```
 
-The [download cache](#download-cache), shared by all repositories of your
-user account:
+The [download cache](#download-cache), shared by all your repositories:
 
 ```console
 $ git assetsync cache
@@ -1031,31 +838,26 @@ $ git assetsync cache list
 | Action | Effect |
 |---|---|
 | (none) | where the cache is, how big, and its limits |
-| `list` | its files, most recently used first: size, last used, where it came from (`+N more` if several assets have the same content) |
-| `prune` | remove what wasn't used for `assetsync.cacheMaxAge` days, then the least recently used beyond `assetsync.cacheMaxSize`; `--older-than DAYS` and `--max-size SIZE` (e.g. `500M`, `2G`) set other limits for this run (`0` or `off`: no limit, as in the configuration); `-n` only shows what would be removed |
+| `list` | its files, most recently used first |
+| `prune` | remove what is beyond the limits; `--older-than DAYS` and `--max-size SIZE` (e.g. `500M`) set others for this run (`0` or `off`: none); `-n` only shows |
 | `clear` | remove everything (`-n`: only show) |
-| `dir` | print the directory, e.g. for caching it between CI runs |
+| `dir` | print the directory, e.g. to cache it between CI runs |
 
-What counts is when a file was **last used**, not when it was
-downloaded. Files used in the last ten minutes are never removed by
-`prune`, so that another git-assetsync running at the same time keeps
-them; leftovers of interrupted downloads go too. Nothing is lost by
-removing: a file needed again is downloaded again.
+What counts is when a file was last used. Files used in the last ten
+minutes are never pruned, for another git-assetsync running at the same
+time. A removed file is simply downloaded again when needed.
 
-**Automatically**, after a download and at most once a day, the cache is
-cleaned up by the limits:
+After a download, at most once a day, the cache is cleaned up by these
+settings:
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `assetsync.cacheMaxAge` | `90` | remove files unused for that many days; `0` or `off`: never |
-| `assetsync.cacheMaxSize` | (none) | then remove the least recently used files until the cache is at most this big, e.g. `2G`; `0` or `off`: no limit |
+| `assetsync.cacheMaxSize` | (none) | then the least recently used, down to this size, e.g. `2G`; `0` or `off`: no limit |
 
 ```sh
 git config --global assetsync.cacheMaxSize 5G
-git config --global assetsync.cacheMaxAge off
 ```
-
-Commands that download nothing (like `status`) never remove anything.
 
 ### `hooks`
 
@@ -1065,10 +867,9 @@ git assetsync hooks install [--force]
 git assetsync hooks uninstall
 ```
 
-`hooks` shows the state of the two hooks – `installed`, `outdated` (from an
-older version: update with `hooks install`), `not installed`, or a hook of
-another tool without our lines – and the directory, if `core.hooksPath`
-sets it:
+`hooks` shows the state of the two hooks – `installed`, `outdated`
+(update with `hooks install`), `not installed`, or a hook of another tool
+without our lines:
 
 ```console
 $ git assetsync hooks
@@ -1076,35 +877,32 @@ pre-push: installed
 post-merge: hook of another tool, without our lines (add them with 'git assetsync hooks install --force')
 ```
 
-`hooks install` installs (or updates) two hooks that report on stderr:
+`hooks install` installs or updates two hooks that report on stderr:
 
 - `pre-push` – reminds of new releases, local modifications, missing
   files and errors before pushing
-- `post-merge` – reminds of local modifications and missing files after `git pull`/`git
-  merge`, without asking GitHub or GitLab
+- `post-merge` – reminds of local modifications and missing files after
+  `git pull` / `git merge`, offline
 
 ```
 assetsync: bin/tool: upstream pending (v1.0 -> v1.1)
 assetsync: run 'git assetsync pull <file>' to update
 ```
 
-**Push check:** the `pre-push` hook also looks at the commits being pushed:
-an entry synced from a release that isn't on GitHub or GitLab – typically
-pulled from a [local folder](#source-map) – or whose assets differ from those of
-the release there is reported:
+**Push check:** `pre-push` also reports pushed entries synced from a
+release that isn't on GitHub or GitLab – typically pulled from a [local
+folder](#source-map) – or whose assets differ from the release there:
 
 ```
 assetsync: bin/tool: synced from release v1.3-rc1, which is not on the server (https://github.com/acme/tool) - publish it there first
 assetsync: bin/tool: synced from assets of release v1.3 that differ from those on the server (https://github.com/acme/tool) - publish them there first
 ```
 
-Others couldn't pull or verify that state. The check always asks the
-platform (mappings don't count), only for entries the remote doesn't have
-yet (in the pushed-over commit or its remote-tracking branches), so usually
-no request at all is needed. Once the tested build is published as that
-release, the warning is gone – no new `pull` needed. GitLab reports no
-digests: there, only the tag is checked. Like Git with submodules, it only
-warns by default; `assetsync.pushCheck` sets what happens:
+Others couldn't pull or verify that state. The check ignores mappings and
+only asks for entries the remote doesn't have yet, so usually no request
+is needed. GitLab reports no digests; there only the tag is checked. Like
+Git with submodules, it only warns by default; `assetsync.pushCheck` sets
+what happens:
 
 | `assetsync.pushCheck` | Effect |
 |---|---|
@@ -1112,107 +910,86 @@ warns by default; `assetsync.pushCheck` sets what happens:
 | `error` | report and refuse the push (`git push --no-verify` skips it) |
 | `off` | no check |
 
-```sh
-git config assetsync.pushCheck error            # this repository
-git config --global assetsync.pushCheck error   # all repositories
-```
-
-A platform that can't be asked is reported, but never refuses the push.
 Apart from `error`, the hooks never block – not even if git-assetsync
-itself fails or is missing. The hooks run `git assetsync hook pre-push` /
-`hook post-merge` (like `git lfs pre-push`), so later versions can change
-what the hooks do without reinstalling them; only exit code 3 of `hook
-pre-push` refuses a push, as in git-filesync. They are not meant to be run
-by hand (from a terminal, `hook pre-push` checks `HEAD`).
+fails or is missing, or the platform can't be asked. The hooks run `git
+assetsync hook pre-push` / `hook post-merge` (like `git lfs pre-push`), so
+new versions change what they do without reinstalling.
 
-Existing hooks of others are not changed; `hooks install` prints the lines
-to add instead – or, with `--force`, adds them right after the `#!` line,
-before the hook's own commands (also before an `exec` or `exit` at its
-end). In a `pre-push` hook, they must come first: git passes the
-pushed refs on stdin, which the push check reads – the lines keep them for
-the commands after them (such as `git lfs pre-push`), but a command before
-them that reads stdin leaves nothing for the check. Hooks installed by an
-older version are updated in place (`updated`). `hooks uninstall` removes the hooks, or only its lines from
-hooks that contain other commands as well. Until 0.15, the commands were
-`install-hooks` and `uninstall-hooks`; hooks installed by them keep
-working. With `core.hooksPath` set, the
-hooks go there (with a warning, since other repositories may use it).
+Hooks of other tools aren't changed: `hooks install` prints the lines to
+add, or with `--force` adds them right after the `#!` line. In a
+`pre-push` hook they must come first, since the push check reads the
+pushed refs from stdin; they pass them on to the commands after them
+(such as `git lfs pre-push`). `hooks uninstall` removes the hooks, or only
+our lines. With `core.hooksPath` set, the hooks go there (with a warning:
+other repositories may use it).
 
 ## Further topics
 
 ### Selecting the release
 
 The `release` key of an entry (`add --release`, `set --release`) decides
-which release its file or directory takes:
+which release it takes:
 
 | `release` | Release taken |
 |---|---|
-| (none) | the **latest** release, as the platform defines it – GitHub: the one marked as latest, otherwise the newest that is neither a prerelease nor a draft; GitLab: the newest by release date |
-| a tag, e.g. `v1.0` | exactly that release (**pinned**); also if it is a prerelease |
-| a pattern, e.g. `tool-*` | the **newest release by publication date** whose tag matches |
+| (none) | the **latest**, as the platform defines it – GitHub: the one marked latest, else the newest that is no prerelease or draft; GitLab: the newest by release date |
+| a tag, e.g. `v1.0` | exactly that release (**pinned**), also a prerelease |
+| a pattern, e.g. `tool-*` | the **newest by date** whose tag matches |
 
-Tags are taken as opaque strings: there is no versioning scheme, and they
-are never compared or sorted by name. "Newest" always means the date the
-platform reports (GitLab: the release date) – so a pattern works for tags like `v1.2.3`, date tags like
-`tool-20261016`, and repositories that release several tools under
-different tag prefixes. A pattern without wildcard characters is an exact
-tag. There is no reserved value like `latest`: a tag could be called that.
+Tags are opaque strings: no versioning scheme, never sorted by name.
+"Newest" is the date the platform reports – so a pattern works for
+`v1.2.3`, date tags like `tool-20261016`, and several tools released from
+one repository under different prefixes. There is no reserved value like
+`latest`.
 
-Drafts never count. Prereleases count only with `prerelease = true`
-(`add --prerelease`): with a pattern, the newest matching release including
-prereleases; without one, the newest release including prereleases.
+Drafts never count; prereleases only with `prerelease = true` (`add
+--prerelease`).
 
-If the selected release has no asset matching the entry's pattern, or more
-than one, that is an error – also when an older release would have one, so
-a renamed asset doesn't go unnoticed. Change the pattern with
-`git assetsync set PATH --asset 'NEW-*'` and pull.
+If the selected release has no asset matching the entry's pattern, or
+several, that is an error – also when an older release would match, so a
+renamed asset doesn't go unnoticed: `git assetsync set PATH --asset
+'NEW-*'`, then `pull`.
 
-To switch entries to another release selection, use [`set
---release`](#set) (e.g. `git assetsync set bin/tool --release v2.0`, or
-for several, `set lib/ bin/ --latest`) and pull them; the change is
-committed with them. To take another release only once (the selection
-stays), use [`pull --release`](#pull).
+To change the selection, use [`set --release`](#set) (e.g. `set lib/ bin/
+--latest`) and `pull`; to take another release once, [`pull
+--release`](#pull).
 
 ### Filters
 
 A filter turns the downloaded assets into the files of an entry, without
-running any code. Filters are **named**: defined once with
-[`filter add`](#filter) – in `.git-assetsync` as `[filter "NAME"]` – and
-used by any number of entries (`add --filter NAME`, `set --filter NAME`),
-also of different sources. Like sources, they are never created or
-removed automatically.
+running any code. Filters are **named**: defined with [`filter
+add`](#filter) and used by any number of entries (`add --filter`, `set
+--filter`).
 
-A filter is a list of steps, applied in order to the files so far; files a
-step doesn't concern pass unchanged. At the start, the files are the
-assets, named as they are. `filter add` and `filter set` build the steps
-from their options, **in the order the options are given**; each option
-has the name of its step:
+A filter is a list of steps, applied in order; files a step doesn't
+concern pass unchanged. At the start, the files are the assets. `filter
+add` and `filter set` build the steps from their options, **in the order
+given**; each option is one step:
 
 | Option (step) | Effect |
 |---|---|
-| `--extract [PATTERN…]` | unpack the matching files (without a pattern: all), which must be archives – a file that is none is an error, like a broken archive: ZIP, tar, tar.gz/.tgz, tar.bz2, tar.xz, single `.gz`/`.bz2`/`.xz` files (named without the suffix), and 7z with an external 7-Zip (see below). The type is recognized by the content, not the name. All archives go into one root; the files not matching stay as they are. With archives and other files among the assets, choose the archives: `--extract '*.zip'` |
+| `--extract [PATTERN…]` | unpack the matching files (default: all), which must be archives: ZIP, tar (also .gz, .bz2, .xz), single `.gz`/`.bz2`/`.xz` files, and 7z with an external 7-Zip; recognized by content. All go into one root; with other files among the assets, choose the archives: `--extract '*.zip'` |
 | `--subdir PATH` | only the files below `PATH`, which becomes the root |
-| `--strip N` | remove `N` leading directories from all paths, like `tar --strip-components` (e.g. the `zlib-1.3.2/` of an archive); files with fewer than `N` directories are left out, as `tar` does |
+| `--strip N` | remove `N` leading directories, like `tar --strip-components`; files with fewer are left out |
 | `--include PATTERN…` | only the files matching any of the patterns |
 | `--exclude PATTERN…` | not the files matching any of the patterns |
-| `--move PATTERN TARGET` | move what matches – files, or directories with all below them – to `TARGET`, see below |
-| `--copy PATTERN TARGET` | the same, but the files also stay where they are |
+| `--move PATTERN TARGET` | move what matches – files, or directories with all below them – see below |
+| `--copy PATTERN TARGET` | the same, keeping the originals |
 | `--apply PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
-| `--executable PATTERN…` | make the matching files executable – an asset itself never is, see [Executables](#executables) |
+| `--executable PATTERN…` | make the matching files executable, see [Executables](#executables) |
 | `--eol PATTERN lf\|crlf\|native` | line endings of the matching text files, see [Line endings in filters](#line-endings-in-filters) |
-| `--changelog PATTERN…` | reads only: the text of the matching files goes with the release notes into the commit message of `pull`, see [Changelogs from the assets](#changelogs-from-the-assets) |
+| `--changelog PATTERN…` | put the text of the matching files into the commit message of `pull`, see [Changelogs from the assets](#changelogs-from-the-assets) |
 | `--convert PATTERN TARGET COMMAND` | convert each matching file with a command of your own (e.g. bin2c), see [Commands in filters](#commands-in-filters) |
-| `--run PATTERN COMMAND` | run a command on the matching files at once (`'*'`: all), see [Commands in filters](#commands-in-filters) |
+| `--run PATTERN COMMAND` | run a command on all matching files at once, see [Commands in filters](#commands-in-filters) |
 
-Each option is one step. **The patterns of one option** count together:
-`--include` keeps the files matching *any* of them, `--exclude` removes
-the files matching any of them. So
+**The patterns of one option** count together: `--include '/*.h' LICENSE`
+keeps the headers *and* the license. Two options are two steps: `--include
+'/*.h' --include LICENSE` keeps the headers, then of those only `LICENSE`
+– nothing.
 
 ```sh
 git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' LICENSE
 ```
-
-keeps the headers *and* the license:
 
 ```ini
 [filter "zlib-headers"]
@@ -1221,25 +998,17 @@ keeps the headers *and* the license:
 	step = include '/*.h' LICENSE
 ```
 
-Two options are two steps, applied one after the other: `--include
-'/*.h' --include LICENSE` would keep the headers first and then, of
-those, only `LICENSE` – nothing. `filter show` lists the steps.
+Patterns work like in `.gitignore`, relative to the root after the
+previous steps: without a `/` a pattern matches a name at any depth
+(`*.h`), a leading or inner `/` anchors it (`/*.h`, `include/*.h`), a
+trailing `/` matches a directory with everything below it, and `**/`
+matches any number of directories.
 
-Patterns are like in `.gitignore` (and `git filesync add --include`),
-relative to the root after the previous steps: without a `/` a pattern
-matches a name at any depth (`*.h`; `*` matches every file), a leading or
-inner `/` anchors it to the root (`/*.h`, `include/*.h` – but not
-`x/include/a.h`), a trailing `/` matches a directory and everything below
-it; `**/` matches any number of directories (`**/include/*.h`).
-
-**`TARGET` of `move` and `copy`**: what the pattern matches moves – a
-file, or a directory with everything below it (where a pattern matches
-directories inside each other, the outermost). With a trailing `/`,
-`TARGET` is the directory it goes into, under its name – e.g. to gather
-files spread over several directories (`--move '*.h' include/`; `./` is
-the root), or `--move include/ api/`, which gives `api/include/…`. Else
-`TARGET` is its new path, with placeholders for parts of its old path –
-for `images/boardA/app.bin`:
+**`TARGET` of `move` and `copy`**: what matches moves – a file, or a
+directory with everything below it. With a trailing `/`, `TARGET` is the
+directory it goes into, under its name (`--move '*.h' include/`; `./` is
+the root). Else `TARGET` is its new path, with placeholders for parts of
+the old one – for `images/boardA/app.bin`:
 
 | Placeholder | Value |
 |---|---|
@@ -1251,45 +1020,31 @@ for `images/boardA/app.bin`:
 | `{ext}` | `.bin` |
 
 So `--move 'images/*/app.bin' 'firmware/{parent}.bin'` makes
-`firmware/boardA.bin`, `firmware/boardB.bin`, …; `--move include/ api`
-renames the directory `include` to `api`, with everything below it
-(`include/sub/a.h` → `api/sub/a.h`); for a directory the placeholders are
-its own (`{name}` = `include`). Two files with the same target, or a
-target that is another file, are an error.
+`firmware/boardA.bin`, `firmware/boardB.bin`, …, and `--move include/ api`
+renames the directory `include` to `api`.
 
-A step whose pattern matches no files changes no file – a filter stays
-valid for a release that happens to have none of them (e.g. no headers).
-Only `include` and `subdir` then leave nothing, which is what they are
-for: they keep the matching files only.
-Only grave problems are errors: a file that `extract` can't unpack,
-results that would replace each other (two files with the same target,
-a target that is another file), and a filter that leaves no files at all
-for an entry – a filter applied with `apply` may leave nothing of its
-part. A file entry must end up with exactly one file. In `pull` and
+A step whose pattern matches nothing changes nothing, so a filter stays
+valid for a release that lacks some files. Errors are only: a file
+`extract` can't unpack, results that would replace each other, and no
+files left at all (a file entry needs exactly one). In `pull` and
 `verify` filters are silent; [`filter test`](#filter) shows what each
 step did.
 
 #### Executables
 
-An asset itself is never executable: a downloaded file is just data. A
-file is executable when an archive marks it so (tar, ZIP and 7z made on
-Unix keep the executable bit) or a [command](#commands-in-filters) makes
-it. **`--executable PATTERN…`** makes the matching files executable –
-e.g. a program that is an asset as it is:
+A downloaded asset is never executable. A file is executable when an
+archive marks it so or a [command](#commands-in-filters) makes it, or by
+**`--executable PATTERN…`** – e.g. a program that is an asset as it is:
 
 ```sh
 git assetsync filter add exe --executable '*'
 git assetsync add acme/tool bin/tool --asset 'tool-*-linux-x64' --filter exe
 ```
 
-In a directory, a pattern chooses them (`--extract --executable 'bin/*'`).
-The executable bit is part of what an entry gets, like its content: a
-file entry records it in `mode`, a directory entry in its `tree`;
-`status` counts a lost (or added) bit as a local modification, `pull` and
-`restore` set it – so don't make such a file executable by hand, but
-with the filter (`git assetsync set bin/tool --filter exe`). On Windows
-(`core.filemode = false`) the bit is kept in the repository for the
-other platforms.
+The executable bit is part of what an entry gets: `status` counts a lost
+or added bit as a local modification, `pull` and `restore` set it. So
+make such a file executable with the filter, not by hand. On Windows
+(`core.filemode = false`) the bit is still kept in the repository.
 
 #### Line endings in filters
 
@@ -1301,33 +1056,23 @@ whose `.gitattributes` say nothing about them:
 git assetsync filter add sdk --extract --eol '*.h' lf --eol '*.bat' crlf
 ```
 
-- Binary files stay as they are, decided as git does for `text=auto`: a
-  NUL byte (also UTF-16), a CR not before an LF, or too many control
-  characters. `filter test` says how many.
+- Binary files stay as they are, decided as git does for `text=auto`
+  (a NUL byte, a lone CR, many control characters).
 - `native` is CRLF on Windows, LF elsewhere – so the result depends on
   the platform: `verify` on another one may find it differs.
-- The step gives the content; the repository's `.gitattributes` still
-  decide how it is stored and checked out (see [Line endings](#line-endings)):
-  with `text` or `text=auto`, git stores LF anyway.
+- The repository's `.gitattributes` still decide how files are stored and
+  checked out (see [Line endings](#line-endings)).
 
 #### Filters using filters
 
-Most steps take a pattern and leave the other files alone, so files of
-different kinds can usually be treated in one filter. Some steps act on
-all files, though – `strip`, `subdir`, and `include`, which keeps only
-the matching ones – and `extract` unpacks all archives into one root. When
-that must not touch the other files, the step **`apply PATTERN NAME`**
-lets another, named filter treat some of them on their own:
+Some steps act on all files – `strip`, `subdir`, `include` – and `extract`
+unpacks all archives into one root. When that must not touch the other
+files, **`apply PATTERN NAME`** lets another named filter treat some files
+on their own: the matching files are set aside, `NAME` runs on them alone,
+and its result joins the others again (a path that collides is an error).
 
-1. The files matching `PATTERN` are set aside – at the first step of the
-   filter, these are the assets, named as they are.
-2. The filter `NAME` runs on those files alone, as if they were all the
-   files there are; the other files don't take part.
-3. What it gives joins the other files again (a path that collides with
-   one of them is an error). If nothing matches, `apply` does nothing.
-
-For example, a release of `acme/sdk` with three assets – two ZIPs of the
-same layout, and a firmware image:
+For example, a release of `acme/sdk` with two ZIPs of the same layout and
+a firmware image:
 
 ```
 sdk-2.1-headers.zip    sdk-2.1/include/sdk.h, sdk-2.1/README.md
@@ -1335,10 +1080,9 @@ sdk-2.1-libs.zip       sdk-2.1/lib/libsdk.a,  sdk-2.1/README.md
 fw-boardA.bin
 ```
 
-In one go, `--extract 'sdk-*.zip' --strip 1` fails: both ZIPs have
-`sdk-2.1/README.md`, and `--strip 1` would also drop `fw-boardA.bin`,
-which is in no directory. With a filter `unpack` applied to each ZIP on
-its own:
+`--extract 'sdk-*.zip' --strip 1` fails: both ZIPs have
+`sdk-2.1/README.md`, and `--strip 1` would drop `fw-boardA.bin`. With a
+filter `unpack` applied to each ZIP on its own:
 
 ```sh
 git assetsync filter add unpack --extract --strip 1 --exclude README.md
@@ -1354,41 +1098,32 @@ vendor/sdk/
   firmware/fw-boardA.bin   <- moved by the last step
 ```
 
-```ini
-[filter "unpack"]
-	step = extract
-	step = strip 1
-	step = exclude README.md
-[filter "sdk"]
-	step = apply 'sdk-*-headers.zip' unpack
-	step = apply 'sdk-*-libs.zip' unpack
-	step = move 'fw-*.bin' firmware/
-[dir "vendor/sdk"]
-	source = acme/sdk
-	filter = sdk
-	...
-```
+`unpack` is a filter like any other: entries can use it directly, and
+`filter test unpack sdk-2.1-libs.zip` tries it. A filter may use other
+filters, but not itself. A changed filter makes all entries using it
+pending, also through other filters.
 
-The two `apply` steps are two runs of `unpack`, one per ZIP. That is also
-the second use of `apply`: a filter written once serves several
-filters and assets. `unpack` is a filter like any other – other entries
-can use it directly, and `filter test unpack sdk-2.1-libs.zip` tries it on
-its own.
+#### Archives
 
-A filter may use other filters, but not itself (also not through others).
-A changed filter changes all entries that use it, directly or through
-other filters: `status` shows them as pending (`filter changed`), `pull`
-applies it. Renaming one changes nothing else.
+Archives are unpacked safely: members outside the target (`..`, absolute
+paths, drive letters), in a `.git` directory, links and special files are
+refused, as are names that aren't valid on every platform (e.g. `con.txt`
+on Windows), duplicate paths and paths that differ only in case. At most
+2 GiB and 100 000 files are unpacked per entry.
+
+**7z archives** need 7-Zip: `7zz`, `7z`, `7za` or `7zr` on the `PATH`, on
+Windows also in `Program Files\7-Zip`; `ASSETSYNC_7Z` sets another
+command. git-assetsync checks the listing first (encrypted members are
+refused), lets 7-Zip unpack into an empty directory and checks the result
+again. A `.7z` asset taken as it is needs no 7-Zip.
 
 #### Changelogs from the assets
 
-The step `changelog PATTERN…` reads the files matching any of the
-patterns and adds their text to the [release
-notes](#proposed-commit-messages) in the commit message of `pull`; the
-files themselves stay (remove them with a later `--exclude` if they
-shouldn't be in the repository). This helps where the release page tells
-little or nothing – above all with a [local folder](#source-map), which
-has no release notes at all:
+**`--changelog PATTERN…`** adds the text of the matching files to the
+[release notes](#proposed-commit-messages) in the commit message of
+`pull`; the files themselves stay (remove them with a later `--exclude`).
+This helps where the release page says little – above all with a [local
+folder](#source-map), which has no notes at all:
 
 ```sh
 git assetsync filter add fw --extract --changelog CHANGELOG.txt --exclude CHANGELOG.txt
@@ -1406,42 +1141,27 @@ Changelog (CHANGELOG.txt):
   2026-02-13: first release
 ```
 
-- The text is that of the release pulled, shortened like the notes (by
-  default its first 20 lines – for a changelog with the newest entries
-  on top, those are the new ones), within the limit of all notes; a cut
-  text ends with `[... more in CHANGELOG.txt]`. The text is read as
-  UTF-8 (with or without a BOM); what isn't valid UTF-8 as Windows-1252,
-  as older Windows tools write it; UTF-16 if it starts with a BOM. Other
-  files with a NUL byte aren't text and are skipped – `filter test` says
-  so.
-- It comes with an update to another release, like the release notes,
-  and also when the assets of the same release were replaced (e.g. a
-  local build made again): then it is read anew from them – not for a new
-  entry or going back to an older one.
-- No matching file (e.g. a later release has none) means no text, as
-  with any step.
+- The text is shortened like the notes (by default its first 20 lines –
+  the new entries, in a changelog with the newest on top).
+- It is read as UTF-8, else as Windows-1252; UTF-16 with a BOM. Other
+  files with a NUL byte are skipped.
+- It comes with an update to another release, and when the assets of the
+  same release were replaced (a local build made again) – not for a new
+  entry or going back.
 
 #### Commands in filters
 
-Two steps run commands, to convert files with tools of your own:
+Two steps run commands of your own:
 
-- **`convert PATTERN TARGET COMMAND`** runs `COMMAND` once for each file
-  matching `PATTERN` (also each one below a matching directory): `{in}` is
-  the file, `{out}` where the command writes the result. The result
-  replaces the file, under
-  the path `TARGET` – with the placeholders of `move` (`{path}`, `{dir}`,
-  `{parent}`, `{name}`, `{stem}`, `{ext}`) of that file, e.g.
-  `'gen/{stem}.c'`. Unlike for `move`, a trailing `/` doesn't mean "into,
-  under its name" here (a converted file named like its input would be of
-  little use): `TARGET` is a directory and `{out}` an empty directory: all
-  files the command writes there go into it (e.g. a `.c` and a `.h`). To
-  keep the original as well, `--copy` it first.
-- **`run PATTERN COMMAND`** runs `COMMAND` once for all files matching
-  `PATTERN` (`'*'`: all files so far): `{in}` is a directory with them, at
-  their paths, `{out}` an empty directory; the files the command writes
-  there replace them, the other files stay. A result at the path of one
-  of the other files is an error. Until 0.18, `run` had no pattern and
-  took all files: write `run '*' COMMAND` for that now.
+- **`convert PATTERN TARGET COMMAND`** runs `COMMAND` for each matching
+  file: `{in}` is the file, `{out}` the result, which replaces it at
+  `TARGET` – with the placeholders of `move`, e.g. `'gen/{stem}.c'`. A
+  `TARGET/` with a trailing `/` is a directory: `{out}` is then an empty
+  directory, and all files the command writes there go into it (e.g. a
+  `.c` and a `.h`). To keep the original, `--copy` it first.
+- **`run PATTERN COMMAND`** runs `COMMAND` once for all matching files
+  (`'*'`: all): `{in}` is a directory with them, `{out}` an empty
+  directory; what the command writes there replaces them.
 
 ```sh
 git assetsync filter add firmware --extract --include '*.bin' '*.hex' \
@@ -1450,61 +1170,29 @@ git assetsync filter add firmware --extract --include '*.bin' '*.hex' \
 ```
 
 The commands run with `sh -c` (on Windows the `sh` of Git for Windows;
-`ASSETSYNC_SH` sets another one), so redirections like `> {out}` work. They
-run in a temporary working directory where `{in}` and `{out}` are **short
-relative names**: for `convert`, `{in}` is the file's name (`fw.bin`) and
-`{out}` the name of `TARGET` (`fw.c`; if both are the same – also when
-they differ only in case, as disks on Windows and macOS don't – `out/fw.c`; for
-a `TARGET/`, the directory `out`); for `run`, `in` and `out`. So tools that
-derive names from them – like `xxd -i`, which makes `fw_bin` of `fw.bin` –
-give the same result everywhere. `{root}` is the root of the repository,
-for its scripts: `python3 {root}/tools/hex2c.py {in} {out}`.
+`ASSETSYNC_SH` sets another), in a temporary directory where `{in}` and
+`{out}` are **short relative names** – for `convert` the file names
+(`fw.bin`, `fw.c`), for `run` `in` and `out` – so tools that derive names
+from them (like `xxd -i`) give the same result everywhere. `{root}` is
+the repository's root, for its scripts. The placeholders are filled in
+quoted, and are in the environment too (`ASSETSYNC_IN`, `ASSETSYNC_OUT`,
+`ASSETSYNC_ROOT`, …), with `ASSETSYNC_RELEASE`, `ASSETSYNC_SOURCE` and
+`ASSETSYNC_ENTRY`. A command that fails, writes no result or writes links
+is an error.
 
-The placeholders are filled in quoted; other `{…}` in a command (like
-`${VAR}`) stay as they are. In the environment, the placeholders are
-`ASSETSYNC_IN`, `ASSETSYNC_OUT`, `ASSETSYNC_ROOT`, `ASSETSYNC_NAME`, … too,
-and `ASSETSYNC_RELEASE` (the tag), `ASSETSYNC_SOURCE` and `ASSETSYNC_ENTRY`
-(the path of the entry). A command that fails (exit code not 0), writes
-no result, or writes links is an error; nothing is changed then. On Linux
-and macOS, the executable bit of what a command writes is kept.
-
-The result is recorded like any other (`blob` / `tree`), so commands only
-run when the assets are filtered: on `pull`, `add`, `filter test`, `diff`
-/ `difftool --upstream` and `verify`, and when the base of a directory is
-got again in a clone (see [Files of your own in a
-directory](#files-of-your-own-in-a-directory)) – never on `status`, and a
-plain clone gets the committed files without running anything. Commands should be
-deterministic, so that the same release gives the same result –
-[`verify`](#verify) checks it.
+Commands run only when assets are filtered – on `pull`, `add`, `filter
+test`, `diff --upstream`, `verify`, and when a directory's base is got
+again – never on `status`, and a clone gets the committed files without
+running anything. They should be deterministic; [`verify`](#verify)
+checks it.
 
 **Trust.** The commands come from `.git-assetsync`, a committed file:
 whoever can change it could run commands on every machine that pulls. So
-a filter with commands runs only if it is **trusted in your repository**
-– recorded in its own config (`.git/config`, never committed), with
-[`filter trust`](#filter-trust). A trust is for the filter as it is: a changed filter,
-or a changed script of the repository its commands run (named as
-`{root}/tools/hex2c.py` or `$ASSETSYNC_ROOT/tools/hex2c.py`), needs a new one – and makes the entries using it
-pending, so they are converted again. On a terminal, `pull` and `add` ask;
-otherwise they refuse with a hint. In CI, set `ASSETSYNC_TRUST=all`.
-
-Archives are unpacked safely: members with paths outside the target
-(`..`, absolute, drive letters), in a `.git` directory, symbolic or hard
-links and special files are refused, as are names that are no valid file
-names on every platform (on Windows: `con.txt`, `a:b`, trailing dots or
-blanks), two members with the same path, and paths that differ only in
-case. At most 2 GiB and 100 000 files are unpacked per entry. The
-executable bit of archive members is kept (git knows only executable or
-not).
-
-**7z archives** are unpacked with 7-Zip, which is only needed for them:
-`7zz` (7-Zip for Linux and macOS), `7z` (7-Zip for Windows, or p7zip),
-`7za` or `7zr` on the `PATH`, on Windows also in `Program Files\7-Zip`;
-`ASSETSYNC_7Z` sets another command. Without it, `extract` on a 7z
-archive is an error that says so; taking a `.7z` asset as it is needs no
-7-Zip. The same safety rules apply: git-assetsync checks the archive's
-listing first (encrypted members are refused, too), lets 7-Zip unpack it
-into an empty temporary directory and checks the result again before
-using it. All methods 7-Zip knows work (LZMA, LZMA2, PPMd, BCJ2, …).
+a filter with commands runs only if it is **trusted in your clone**, with
+[`filter trust`](#filter-trust). A changed filter, or a changed script of
+the repository it runs (`{root}/tools/hex2c.py`), needs a new trust and
+makes the entries pending. On a terminal, `pull` and `add` ask; otherwise
+they refuse with a hint. In CI, set `ASSETSYNC_TRUST=all`.
 
 ### Proposed commit messages
 
@@ -1523,18 +1211,14 @@ Release notes:
   **Full Changelog**: https://github.com/acme/tool/compare/v1.0...v1.1
 ```
 
-The subject starts with `[assetsync] `, so the commits git-assetsync
-proposed are easy to tell apart (`git log --grep='^\[assetsync\]'`;
-git-filesync's start with `[filesync] `). It names the file (directory),
-the source and the release –
-`Add …` for a new entry, `Update … to … (…, was …)` for another release,
-`Update … (asset replaced)` when the asset of the same release changed,
-`Update … (filter changed)` after another filter, `Restore …` when `pull
---overwrite` brought back what the release gives after local modifications.
-The body links the release page and names its title (if it differs from
-the tag), the assets and the filter; for a directory it adds what changes
-in it. Each release named has its date (`YYYY-MM-DD`, UTC, as `source
-releases` shows it; for a local folder its newest file):
+The subject starts with `[assetsync] ` (`git log --grep='^\[assetsync\]'`;
+git-filesync's with `[filesync] `) and names the entry, the source and the
+release: `Add …`, `Update … to … (…, was …)`, `Update … (…, asset
+replaced)`, `Update … (…, filter changed)`, or `Restore …` when `pull
+--overwrite` only brought back what the release gives. The body links the
+release page and names its title, the assets and the filter, for a
+directory also what changes. Each release named has its date
+(`YYYY-MM-DD`, UTC, as `source releases` shows it):
 
 ```
 [assetsync] Update third_party/zlib/ to madler/zlib v1.3.2 (2026-02-17, was v1.3.1 of 2025-01-22)
@@ -1546,21 +1230,15 @@ Filter:  zlib-headers
 Files:   1 added, 0 removed, 9 changed (12 in total)
 ```
 
-When an entry is updated to another release, its **release notes** (the
-description on the release page; also text from the assets with a
-[`changelog` step](#changelogs-from-the-assets)) follow, shortened, so the log tells what
-changed without following the link: at most 20 lines of at most 200
-characters (cut lines end in `[...]`, a cut text with a hint at the
-release page), HTML comments (left over from templates) and repeated blank
-lines dropped. They are indented by two spaces – otherwise `git commit`
-would take Markdown headings like `## What's Changed` for comment lines and
-remove them when the editor opens.
+Updated to another release, the **release notes** follow – and text from
+a [`changelog` step](#changelogs-from-the-assets) – so the log tells what
+changed: at most 20 lines of 200 characters, without HTML comments,
+indented so that `git commit` doesn't take `## headings` for comments.
 
-**Skipped releases:** when the update skips releases – newer than the
-synced one, older than the new one, selected by the same rule as the
-entry (its tag pattern; prereleases only if it takes them; no drafts) –
-`Since:` lists them, and their notes follow those of the new release,
-newest first:
+**Skipped releases** – between the synced and the new one, selected by
+the entry's rule – are listed in `Since:`, and their notes follow, newest
+first; at most 60 lines of notes in all, older ones only referred to.
+Going back to an older release, `Reverted:` lists the releases undone.
 
 ```
 [assetsync] Update bin/tool to acme/tool v1.3 (2026-10-25, was v1.0 of 2026-10-01)
@@ -1577,158 +1255,101 @@ Release notes v1.1 (2026-10-11):
   ...
 ```
 
-At most 60 lines of notes in all; the notes of older releases beyond that
-are only referred to (`[... notes of v1.1 (2026-10-11) and older: see the release
-pages]`). Going back to an older release (e.g. with `pull --release`),
-`Reverted:` lists the releases undone, without notes.
-
 | Setting | Default | Meaning |
 |---|---|---|
-| `assetsync.notesLines` | `20` | lines of notes per release; `0`: no notes at all (the link and `Since:` stay) |
+| `assetsync.notesLines` | `20` | lines of notes per release; `0`: none (the link and `Since:` stay) |
 | `assetsync.notesTotalLines` | `60` | lines of notes in all |
 
-```sh
-git config assetsync.notesLines 40
-git config --global assetsync.notesTotalLines 200
-```
-
-`add` and `pull` stage only and add the proposal to `.git/SQUASH_MSG`,
-which a plain `git commit` offers (as do IDEs like VS Code). Proposals are
-collected – of several commands, also with one git wrote itself (after
-`git merge --squash`); the same proposal again changes nothing. Git
-removes the file after the commit, so the next proposal starts afresh.
-
-A copy of it all goes to `.git/ASSETSYNC_MSG` – always that file,
-overwritten with each proposal (the path is printed along with the hint
-to commit). It brings the message back if `SQUASH_MSG` is gone – after a
-commit that was aborted with an empty message and then made with another
-one, after `git reset`, or after `git commit -m`: `git commit -e -F
+`add` and `pull` add the proposal to `.git/SQUASH_MSG`, which a plain
+`git commit` offers (as do IDEs like VS Code). Proposals of several
+commands are collected; git removes the file after the commit. A copy
+stays in `.git/ASSETSYNC_MSG`, overwritten with each proposal – to get it
+back after `git commit -m` or `git reset`: `git commit -e -F
 .git/ASSETSYNC_MSG`.
 
 ### GitHub and GitLab access
 
 git-assetsync asks the platforms through their command-line tools, used
-only as authenticated HTTP clients: `gh api` for GitHub
-([GitHub CLI](https://cli.github.com)), `glab api` for GitLab
-([GitLab CLI](https://gitlab.com/gitlab-org/cli)). So it works with
-whatever they are logged in to – `gh auth login` / `glab auth login`, or a
-token in `GH_TOKEN` / `GITLAB_TOKEN` (e.g. in CI); for public GitLab
-projects `glab` works without login, too. Private projects need read
-access. For GitHub Enterprise or a self-managed GitLab, log in to the
-host (`gh auth login --hostname HOST`, `glab auth login --hostname HOST`).
-The host is always passed on, so `GH_HOST` or the repository you run in
-doesn't redirect the requests. Only the tool for the platforms you use is
-needed.
+only as authenticated HTTP clients: `gh api` ([GitHub
+CLI](https://cli.github.com)) and `glab api` ([GitLab
+CLI](https://gitlab.com/gitlab-org/cli)). So it works with whatever they
+are logged in to – `gh auth login` / `glab auth login`, or `GH_TOKEN` /
+`GITLAB_TOKEN` (e.g. in CI); public GitLab projects need no login. For
+GitHub Enterprise or a self-managed GitLab, log in to that host
+(`--hostname HOST`); the host is always passed on, so `GH_HOST` doesn't
+redirect requests. Only the tool for the platforms you use is needed.
 
-`status` asks once per source (the latest release, or the release of the
-tag); a pattern lists all releases (100 per request).
-
-Downloads: on GitHub through the asset's API URL. On GitLab, the assets of
-a release are its **links** (the release's automatically generated source
-archives are not assets). A link to an API URL on the project's host – as
-for files in the generic package registry, the usual way to attach build
-results – is downloaded through `glab api`, with your login; so are links
-to job artifacts (`…/-/jobs/ID/artifacts/raw/…`) and project uploads
-(`…/uploads/…`) on that host, via their API counterparts. Links to other
-servers are downloaded plainly, without login – they have to be public
-(`http://` links work, with a warning).
-
-On GitLab, releases with a release date in the future ("upcoming
-releases") count as prereleases: they are skipped unless the entry has
-`prerelease = true`. There are no drafts there.
+On GitHub, assets are downloaded through their API URL. On GitLab, the
+assets of a release are its **links** (not the generated source
+archives). Links on the project's host – the generic package registry,
+job artifacts, uploads – are downloaded through `glab api`, with your
+login; links to other servers plainly, so they must be public (`http://`
+works, with a warning). GitLab releases with a future release date
+("upcoming") count as prereleases; there are no drafts.
 
 `ASSETSYNC_GH` / `ASSETSYNC_GLAB` set other commands instead of `gh` /
-`glab`, split like a shell would (e.g. `ASSETSYNC_GH="/opt/gh/bin/gh"`; on
-Windows use forward slashes). The tests use them to play GitHub and GitLab
-without network.
+`glab` (on Windows with forward slashes).
 
 ### Integrity
 
-GitHub reports a SHA-256 digest for each asset (for assets uploaded since
-June 2025); the download is checked against it and refused if it differs.
-For older assets, the digest is computed from the download; their size is
-checked. Either way the digest is recorded in the entry, and a later
-change of the asset in the same release (a re-upload with other content)
-shows up as pending.
+GitHub reports a SHA-256 digest for assets uploaded since June 2025; the
+download is checked against it. For older assets the digest is computed
+from the download. Either way it is recorded, so a re-upload with other
+content shows up as pending.
 
-Where the platform reports no digests – GitLab, and GitHub for older
-assets – the entry also records `assetid`, a fingerprint of what the
-platform says about the assets: name, id, URL and size. A re-upload gets
-a new id on GitHub; on GitLab, a replaced asset is a link with a new id or
-a new URL. Either way `status` shows the entry as pending, without a
-download. Not noticed is only other content behind the same URL (e.g. a
-generic package overwritten, or a link to a server elsewhere) – there,
-not even `verify` sees it while the download cache has the old file
-(`git assetsync cache clear`, then `verify`). Entries synced before 0.19.0
-get `assetid` with their next `pull`.
+Where the platform reports no digests – GitLab, older GitHub assets – the
+entry also records `assetid`: name, id, URL and size of the assets. A
+re-upload changes it, so `status` notices without a download. Only other
+content behind the same URL goes unnoticed (e.g. an overwritten generic
+package) – not even `verify` sees it while the cache has the old file
+(`cache clear`, then `verify`).
 
 ### Download cache
 
-Downloaded assets are kept in a cache, so another filter, `pull --overwrite`
-or a second repository with the same asset need no new download:
-`~/.cache/git-assetsync` (or `$XDG_CACHE_HOME/git-assetsync`), on Windows
+Downloaded assets are cached, so another filter, `pull --overwrite` or a
+second repository needs no new download: in `~/.cache/git-assetsync` (or
+`$XDG_CACHE_HOME/git-assetsync`), on Windows
 `%LOCALAPPDATA%\git-assetsync`; `ASSETSYNC_CACHE` sets another directory.
-Contents are kept by their SHA-256 (`sha256/`), with an index for
-platforms that report no digests (`index/`, GitLab), which also says
-where each file came from; `local/` remembers the SHA-256 of assets in
-[local folders](#source-map) (`clear` removes them, `prune` those of
-files no longer there). Files unused for 90 days are removed
-automatically; [`cache`](#cache) shows, lists and cleans it up, and sets
-other limits. Deleting it (or parts of it) by hand does no harm either.
+It also remembers the SHA-256 of assets in [local folders](#source-map).
+Files unused for 90 days are removed automatically; see [`cache`](#cache).
+Deleting it by hand does no harm.
 
 ### Git LFS
 
-git-assetsync stores files exactly as `git add` would: if `.gitattributes`
-puts one into Git LFS, it is committed as an LFS pointer, and the recorded
-`blob` (for a directory: the `tree`) contains the pointer's id. To put
-files into LFS from the start, run `git lfs track PATTERN` before `add`
-(`add` suggests it for big binaries).
-
-Files moved to LFS later (`git lfs track` + `git add --renormalize`) stay
-unmodified. Requires `git-lfs` for files stored in LFS.
+Files are stored as `git add` would: if `.gitattributes` puts one into Git
+LFS, it is committed as an LFS pointer. Run `git lfs track PATTERN` before
+`add` (it suggests that for big binaries). Files moved to LFS later stay
+unmodified. Needs `git-lfs`.
 
 ### Line endings
 
-Files – also those of a directory – are stored as `git add` stores them, so
-`text=auto`, `eol` attributes and `core.autocrlf` apply as for any other
-file: an asset with CRLF line ends is committed normalized in a
-`text=auto` repository. Files are written to the working tree as `git
-checkout` would write them (with `core.autocrlf=true`, a text asset gets
-CRLF) – those of a directory too. Changing
-these settings afterwards doesn't make entries count as modified. To keep
-an asset byte for byte, mark it `-text` (or `binary`) in `.gitattributes`;
-to set its line endings in the filter, see [`--eol`](#line-endings-in-filters).
+Files are stored as `git add` stores them, so `text=auto`, `eol` and
+`core.autocrlf` apply as for any other file, and written as `git checkout`
+writes them. Changing these settings later doesn't make entries count as
+modified. To keep an asset byte for byte, mark it `-text` in
+`.gitattributes`; to set line endings in the filter, see
+[`--eol`](#line-endings-in-filters).
 
 ### Offline operation
 
-`status` works without network for everything local: whether the committed
-and working tree files (directories) are still what their release gives is
-decided from the recorded `blob` (`tree`). Only the check for new releases
-needs GitHub or GitLab; `--no-fetch` skips it (`new releases not
-checked`). `diff` works offline, too, and so does
-everything with a source [mapped to a local folder](#source-map). `add`, `pull`
-and `diff --upstream` always ask the platform which release to take;
-assets already in the [download cache](#download-cache) are not
+`status` decides offline whether the files are still what their release
+gave; only the check for new releases needs GitHub or GitLab (`--no-fetch`
+skips it). `diff` works offline too, and everything with a source
+[mapped to a local folder](#source-map). `add`, `pull` and `diff
+--upstream` always ask which release to take; cached assets aren't
 downloaded again.
 
-Commands that only look – `status`, `diff`, `difftool`, `verify` and the
-hooks – change nothing in the repository: the objects they need for
-comparing go to a temporary object directory, removed afterwards – only
-a directory's base got again (by `verify`, `diff` or `difftool`) is kept. They read only the files
-of the entries, not those of others in a directory, and only the ones
-that differ from what the release gave are looked at more closely.
+Commands that only look – `status`, `diff`, `difftool`, `verify`, the
+hooks – change nothing in the repository (except that a directory's base
+got again is kept).
 
 ### Colors
 
 Output is colored like `git status`: pending updates yellow, local
-modifications red (NOT ALLOWED and errors bold red), entries not committed
-yet green.
-
-Colors follow `color.assetsync`, falling back to `color.ui` (default: on
-for terminals); `--color[=always|never|auto]` and `--no-color` override
-that, and `NO_COLOR` turns colors off. Hook output on stderr is colored the
-same way, and so is the help (`-h`) – with Python 3.14 or later, which
-colors it; the list of commands in the colors of the rest.
+modifications red, entries not committed yet green. Colors follow
+`color.assetsync`, else `color.ui`; `--color` / `--no-color` override
+that, and `NO_COLOR` turns them off. With Python 3.14 or later the help
+(`-h`) is colored too.
 
 ### CI
 
@@ -1751,51 +1372,48 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 ```
 
-This uses the latest release. To pin a version, download
+To pin a version, download
 `https://github.com/stsichler/git-assetsync/releases/download/v0.23.2/git-assetsync.py`
-instead. `gh` is preinstalled on GitHub's runners; `GH_TOKEN` logs it in. For
-sources in other private repositories, use a token with read access to
-them. For GitLab sources, install `glab` in the job (and give
-`GITLAB_TOKEN` for private projects).
+instead. `gh` is preinstalled on GitHub's runners; for sources in other
+private repositories use a token with read access. For GitLab sources,
+install `glab` (and give `GITLAB_TOKEN` for private projects).
 
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
 | `0` | ok |
-| `1` | something to do: `status --exit-code` with something to pull or a modified or missing file; `verify` or `diff --exit-code` found a difference |
-| `2` | error (also: `pull` refused a modified file) |
-| `141` | the output went into a pipe that was closed early (e.g. `\| head`), as with git: a command that only looks (`status`, `diff`, `difftool`, `verify`, and those that list or show, like `source releases`, `filter show` or `cache list`) stops there; one that changes something finishes its work first – never only half of it |
+| `1` | something to do: `status --exit-code` found something to pull, modified or missing; `verify` or `diff --exit-code` found a difference |
+| `2` | error, also an entry `pull` refused |
+| `141` | output into a pipe closed early (e.g. `\| head`), as with git: a command that only looks stops there, one that changes something finishes first |
 
-`--dry-run` / `-n` exit with 0, or 2 on errors.
+`-n` (`--dry-run`) exits with 0, or 2 on errors.
 
 ### Windows
 
-git-assetsync runs with Git for Windows and a Python from python.org (or
-the Microsoft Store); set the alias with `py` or `python`, see the
-[README](README.md). Output has LF line ends, like git's.
+git-assetsync runs with Git for Windows and a Python from python.org or
+the Microsoft Store; set the alias with `py` or `python` (see the
+[README](README.md)). Output has LF line ends, like git's.
 
-Git for Windows runs the alias through its own (MSYS) shell, also when you
-call `git assetsync` from cmd or PowerShell. That shell changes two kinds of
-arguments before git-assetsync sees them:
+Git for Windows runs the alias through its MSYS shell, also from cmd or
+PowerShell. That shell changes two kinds of arguments:
 
-- **Wildcard characters** (`*`, `?`, `[…]`) are expanded if a file in the
-  current directory matches, quoted or not:
-  `git assetsync add acme/tool lib/tool.zip --asset 'tool-*.zip'` turns
-  into `tool-1.0.zip` when that file is there.
-- **Arguments starting with `/`** become Windows paths: `unlink /tmp/x` (of
-  a broken entry) turns into `C:/Users/…/Temp/x`.
+- **Wildcards** (`*`, `?`, `[…]`) are expanded if a file in the current
+  directory matches, quoted or not: `--asset 'tool-*.zip'` turns into
+  `tool-1.0.zip` when that file is there.
+- **Arguments starting with `/`** become Windows paths: `unlink /tmp/x`
+  turns into `C:/Users/…/Temp/x`.
 
-For such arguments, run the script directly instead of through the alias,
-e.g. `py C:/tools/git-assetsync.py add acme/tool lib/tool.zip --asset
-tool-*.zip` in cmd or PowerShell; in Git Bash, put `MSYS_NO_PATHCONV=1` in
-front of it. Don't set `MSYS_NO_PATHCONV` (or `MSYS=noglob`) for git
-itself: it breaks how git passes the arguments to the alias.
+For such arguments, run the script directly (`py
+C:/tools/git-assetsync.py …` in cmd or PowerShell), or put
+`MSYS_NO_PATHCONV=1` in front in Git Bash. Don't set it (or
+`MSYS=noglob`) for git itself: that breaks how git passes arguments to the
+alias.
 
 ### Shipping git-assetsync with your repository
 
 git-assetsync can keep a copy of itself in your repository, so everyone
-has the same version without installing it:
+has the same version:
 
 ```sh
 git assetsync add stsichler/git-assetsync tools/git-assetsync.py --asset git-assetsync.py
@@ -1803,10 +1421,7 @@ git commit
 git config alias.assetsync '!python3 tools/git-assetsync.py'     # each clone, once (Windows: !py …)
 ```
 
-The alias goes into the repository's own config (`.git/config`), so it has
-to be set in each clone; it takes precedence over a global alias. Git runs
-shell aliases in the top-level directory, so the relative path works from
-any subdirectory. `git assetsync status` then shows new releases of
-git-assetsync, too. The same works for
-[git-filesync](https://github.com/stsichler/git-filesync), which publishes
-its script as a release asset as well.
+The alias in `.git/config` takes precedence over a global one; git runs
+it in the top-level directory, so the relative path works everywhere.
+`status` then shows new releases of git-assetsync too. The same works for
+[git-filesync](https://github.com/stsichler/git-filesync).
