@@ -13,6 +13,11 @@ unpacked from a ZIP that another project publishes as release assets on
 GitHub or GitLab, see when a new release is out, and update with one
 command – with a proposed commit message that says where it came from.
 
+> **Vibe-coded:** git-assetsync is entirely vibe-coded – all of its code, tests
+> and documentation were written by [Claude](https://claude.ai) (Anthropic),
+> directed by its author. The regression tests run on Linux, macOS and
+> Windows on every push.
+
 ```console
 $ git assetsync status
 Upstream changes to pull:
