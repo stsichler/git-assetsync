@@ -60,6 +60,7 @@
 #   36. Missing files, entries not synced yet, pull --all --release
 #   37. A step it doesn't know, cache limits of 0, verify keeps a base
 #   38. Line endings: the eol step
+#   39. The synced release gone from the server
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -2387,21 +2388,22 @@ check "map: verify" "$(git assetsync verify)" "t.bin: verified (v3)"
 # --remote: the mapping ignored this once, it stays
 asset t.bin "server two"; release acme/loc v2 15 "$F/t.bin"
 check "--remote: status against the server" "$(git assetsync status --remote | grep 'pending:' | sed 's/^[[:space:]]*//')" \
-  "pending:    t.bin  (v3 -> v2)"
+  "pending:    t.bin  (v3 -> v2, synced release not found)"
 check "--remote: source releases" "$(git assetsync source releases --remote acme/loc | cut -c1-2 | oneline)" "v2 "
 check "--remote: pull" "$(git assetsync pull -n --remote t.bin)" "would: Update t.bin to acme/loc v2 (2026-10-15, was v3)"
 check "--remote: the mapping stays" "$(git assetsync status -s) $(git assetsync source map | grep -c acme/loc)" " 1"
-# synced from the server, a release the local folder doesn't have: the folder
-# may only be behind - left as it is, with a warning
+# synced from the server, a release the local folder doesn't have: no
+# guessing why - said; pull --all leaves it, pull PATH takes the folder's
 asset t.bin "server four"; release acme/loc v4 16 "$F/t.bin"
 pullc --remote t.bin
-check "synced release not in the folder: status warns, nothing to pull" \
-  "$(git assetsync status -s) | $(git assetsync status | grep -c 'synced from v4, which is not in the local folder')" " | 1"
-check "... pull leaves it" "$(git assetsync pull t.bin 2>&1 | oneline) $(reg file.t.bin.synced)" \
-  "warning: t.bin: synced from v4, which is not in the local folder - left as it is (--remote: the releases of the server) t.bin: up to date  v4"
-check "... pull --release takes one anyway" "$(git assetsync pull -n --release v3 t.bin 2>&1 | tail -1 | sed 's/([0-9-]*,/(DAY,/')" \
-  "would: Update t.bin to acme/loc v3 (DAY, was v4)"
-pullc --release v3 t.bin          # back to the folder's release, for what follows
+check "synced release not in the folder: pending, said" \
+  "$(git assetsync status -s) | $(git assetsync status | grep -E 'pending:|isn.t in the local folder' | sed 's/^[[:space:]]*//; s/: .*folder - /: ... - /' | oneline)" \
+  "P  t.bin | pending:    t.bin  (v4 -> v3, synced release not found, local folder) warning: ... - if the folder is behind, update it (or use --remote); else 'git assetsync pull t.bin' takes v3 "
+check "... pull --all leaves it" "$(git assetsync pull --all 2>&1 | oneline) $(reg file.t.bin.synced)" \
+  "warning: t.bin: synced release v4 not found - left out (see 'git assetsync status')  v4"
+check "... hooks don't say pull" "$(git assetsync hook pre-push </dev/null 2>&1 | grep -c 'pull <file>') $(git assetsync hook pre-push </dev/null 2>&1 | grep -c 'synced releases not found')" "0 1"
+pullc t.bin
+check "... pull PATH takes the folder's" "$(reg file.t.bin.synced) $(git assetsync status -s)" "v3 "
 # a source given by name
 quiet git assetsync source rename acme/loc loc && git commit -qm rename -- .git-assetsync
 check "map: --unset by source name" "$(git assetsync source map loc --unset)" \
@@ -3244,6 +3246,22 @@ addc acme/eol38 e.txt --filter e1
 git cat-file blob :e.txt > stored.out
 check "eol: stored with LF, clean" "$(bytes stored.out)|$(st e.txt)" " x \n y \n |"
 check "eol: verify" "$(git assetsync verify e.txt)" "e.txt: verified (v1)"
+
+# =============================================================================
+section "39. The synced release gone from the server"
+# =============================================================================
+asset gone.txt "gone one"; release acme/gone v1 10 "$F/gone.txt"
+new_repo r39
+addc acme/gone g.txt
+asset gone.txt "gone two"; release acme/gone v2 11 "$F/gone.txt"
+rm -rf "$GH/github.com/acme/gone/1"          # v1 deleted
+check "release deleted: pending, said" "$(git assetsync status -s) | $(git assetsync status | grep -c "release v1 is no longer on acme/gone (deleted or renamed) - 'git assetsync pull g.txt' takes v2")" \
+  "P  g.txt | 1"
+check "... pull --all leaves it" "$(git assetsync pull --all 2>&1 | oneline)$(reg file.g.txt.synced)" \
+  "warning: g.txt: synced release v1 not found - left out (see 'git assetsync status') v1"
+check "... status --exit-code" "$(rc git assetsync status --exit-code)" "1"
+pullc g.txt
+check "... pull PATH takes v2" "$(reg file.g.txt.synced) $(cat g.txt)" "v2 gone two"
 
 # =============================================================================
 echo

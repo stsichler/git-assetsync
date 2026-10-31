@@ -335,7 +335,7 @@ would.
 
 | Option | Meaning |
 |---|---|
-| `--all` | all entries with something to pull (with `--overwrite` also modified ones; missing ones are left out); not with paths |
+| `--all` | all entries with something to pull (with `--overwrite` also modified ones); left out are missing ones and those whose [synced release isn't found](#selecting-the-release); not with paths |
 | `--release TAG\|PATTERN` | this release instead of the selected one, once – see below; prereleases count for a pattern only if the entry takes them |
 | `--overwrite` | discard local modifications and files of yours in the way |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` does |
@@ -694,8 +694,8 @@ git assetsync source map acme/tool --unset                # remove it again
 - `--remote` asks the platform once (e.g. `status --remote`), `--unset`
   for good.
 - An entry synced from a release the folder doesn't have – e.g. synced
-  later from the server – is left as it is: `status` warns, and `pull`
-  doesn't go back to a release of the folder (`pull --release` does).
+  later from the server – is shown as pending, see [Selecting the
+  release](#selecting-the-release).
 - The [push check](#hooks) warns about entries whose release isn't
   published yet.
 
@@ -950,6 +950,12 @@ If the selected release has no asset matching the entry's pattern, or
 several, that is an error – also when an older release would match, so a
 renamed asset doesn't go unnoticed: `git assetsync set PATH --asset
 'NEW-*'`, then `pull`.
+
+If the release an entry was synced with is no longer in its source –
+deleted, or missing in a [local folder](#source-map) that is behind –
+`status` shows the entry as pending (`synced release not found`) and
+says what to do. `pull --all` leaves it alone; `pull PATH` takes the
+selected release.
 
 To change the selection, use [`set --release`](#set) (e.g. `set lib/ bin/
 --latest`) and `pull`; to take another release once, [`pull

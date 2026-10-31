@@ -3396,6 +3396,7 @@ class State:
                               # entry (not allowed) - deleted, committed or not
     unchecked: bool = False   # a directory whose base isn't in this clone: not checked
     changelog: list = field(default_factory=list)   # [(path, text)] its filter read (pull)
+    unknown: Optional[str] = None     # the synced release isn't in the source: what to do
 
 
 def base_unavailable(st, e):
@@ -3538,6 +3539,13 @@ def local_state(repo, st):
         st.local = "clean" if items_match_base(repo, st, now) else "modified"
 
 
+def has_release(origin, tag):
+    """Has the source the release tag (from its list, if asked already)?"""
+    if any(r.tag == tag and not r.draft for r in origin.listed or []):
+        return True
+    return origin.by_tag(tag) is not None
+
+
 def evaluate(ctx, repo, entry):
     """State of an entry in three independent respects:
     upstream  - synced assets and filter vs. those of the release the source
@@ -3607,13 +3615,21 @@ def evaluate(ctx, repo, entry):
             st.digest_changed = bool(entry.assetid and assets_id(st.assets) != entry.assetid)
         st.filter_changed = filter_hash(entry.steps, entry.reg.filters, repo) != entry.filterhash
         st.changed = st.tag_changed or st.digest_changed or st.filter_changed
-        # a local folder without the synced release may only be behind (synced
-        # later from the server): left as it is, unless pull --release says
-        if st.tag_changed and entry.synced and isinstance(st.origin, LocalFolder) and \
-                not ctx.override and not st.origin.by_tag(entry.synced):
-            st.changed = st.tag_changed = st.digest_changed = st.filter_changed = False
-            st.warnings.append(f"synced from {entry.synced}, which is not in the local folder "
-                               "- left as it is (--remote: the releases of the server)")
+        # the synced release isn't in the source (any source - no guessing why):
+        # said, pull --all leaves it; pull PATH is the user's decision
+        if st.tag_changed and entry.synced and not ctx.override:
+            try:
+                found = has_release(st.origin, entry.synced)
+            except FsError as e:
+                st.error = str(e)
+                return st
+            if not found:
+                pull = f"'git assetsync pull {path_arg(repo, entry.shown)}' takes {st.release.tag}"
+                st.unknown = (f"release {entry.synced} isn't in the local folder - if the folder "
+                              f"is behind, update it (or use --remote); else {pull}"
+                              if isinstance(st.origin, LocalFolder) else
+                              f"release {entry.synced} is no longer on {st.origin.label} (deleted "
+                              f"or renamed) - {pull}")
     st.pending = st.changed or (not entry.blob and st.worktree == "missing")
     if st.pending:
         for name in untrusted(repo, entry.steps, entry.reg.filters):
@@ -3630,7 +3646,8 @@ def upstream_state(st):
     if st.changed and not e.synced:
         return "new", f"not synced yet, release {st.release.tag}"
     if st.tag_changed:
-        return "pending", f"{e.synced} -> {st.release.tag}"
+        return "pending", f"{e.synced} -> {st.release.tag}" + (
+            ", synced release not found" if st.unknown else "")
     if st.digest_changed:
         return "pending", f"asset{'s' if len(st.assets) > 1 else ''} replaced in release {e.synced}"
     if st.filter_changed:
@@ -3753,7 +3770,7 @@ def print_long(ctx, repo, sts, verbose):
     section("Not committed yet:", ['use "git commit" to commit them'],
             [("new file", st.entry.shown, None, None) for st in new], "green")
 
-    warnings = [(st.entry.shown, w) for st in ok for w in st.warnings]
+    warnings = [(st.entry.shown, w) for st in ok for w in st.warnings + [st.unknown] if w]
     if warnings:
         print("Warnings:")
         for rel, w in warnings:
@@ -4019,8 +4036,11 @@ def hook_reminders(sts):
     for st in attention:
         print(f"assetsync: {paint(st.entry.shown, 'yellow', 'err')}: "
               f"{render(describe(st), 'err')}", file=sys.stderr)
-    if any(st.pending for st in attention):
+    if any(st.pending and not st.unknown for st in attention):
         print("assetsync: run 'git assetsync pull <file>' to update", file=sys.stderr)
+    if any(st.unknown for st in attention):
+        print("assetsync: see 'git assetsync status' for synced releases not found (pull --all "
+              "leaves such entries alone)", file=sys.stderr)
     if any(st.modified for st in attention):
         print("assetsync: see 'git assetsync status' and 'git assetsync diff <file>' for "
               "local modifications", file=sys.stderr)
@@ -4685,8 +4705,6 @@ def pull_one(ctx, repo, reg, st, args, keep):
                       f"'git assetsync restore {path_arg(repo, rel)}', or remove the entry "
                       f"with 'git assetsync unlink {path_arg(repo, rel)}'")
     if not st.pending and not st.modified:
-        for w in st.warnings:
-            warn(f"{rel}: {w}")
         print(f"{rel}: {paint('up to date', 'green')}")
         return None
     # like `git pull` with no merge possible: local modifications are never
@@ -4772,6 +4790,11 @@ def cmd_pull(ctx, repo, args):
             continue
         if args.all and st.missing:
             warn(f"{entry.shown}: missing - left out (see 'git assetsync status')")
+            done += 1
+            continue
+        if args.all and st.unknown:
+            warn(f"{entry.shown}: synced release {entry.synced} not found - left out (see "
+                 "'git assetsync status')")
             done += 1
             continue
         if args.all and not st.pending and not (args.overwrite and st.modified):
