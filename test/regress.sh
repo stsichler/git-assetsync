@@ -358,7 +358,7 @@ check "add: digest" "$(reg file.bin/tool.bin.digest)" "sha256:$(sha "$F/tool-1.0
 check "add: blob as git add stores it" "$(reg file.bin/tool.bin.blob)" "$(git rev-parse :bin/tool.bin)"
 git commit -q --no-edit
 check "add: proposed commit message" "$(msg)" \
-  "[assetsync] Add bin/tool.bin from acme/tool v1.0 Release: https://github.com/acme/tool/releases/tag/v1.0 Title:   Tool 1.0 Asset:   tool-1.0.bin "
+  "[assetsync] Add bin/tool.bin from acme/tool v1.0 Release: https://github.com/acme/tool/releases/tag/v1.0 (2026-10-10) Title:   Tool 1.0 Asset:   tool-1.0.bin "
 check "add + commit: file and entry" "$(git show --name-only --format= HEAD | sort | oneline)" ".git-assetsync bin/tool.bin "
 check "status: clean" "$(st)" ""
 check "status: nothing to pull" "$(git assetsync status | tail -1)" "nothing to pull, 1 file unmodified"
@@ -384,7 +384,7 @@ check "pull -v: where it comes from first" "$(printf '%s\n' "$out" | head -1)" \
 check "pull into a closed pipe: finished, exit 141" "$(printf '%s\n' "$out" | tail -1)" "rc=141"
 check "pull: content" "$(cat bin/tool.bin)" "tool 1.1"
 check "pull: commit message" "$(msg)" \
-  "[assetsync] Update bin/tool.bin to acme/tool v1.1 (was v1.0) Release: https://github.com/acme/tool/releases/tag/v1.1 Asset:   tool-1.1.bin "
+  "[assetsync] Update bin/tool.bin to acme/tool v1.1 (was v1.0) Release: https://github.com/acme/tool/releases/tag/v1.1 (2026-10-11) Asset:   tool-1.1.bin "
 check "pull: commit has file and entry" "$(git show --name-only --format= HEAD | sort | oneline)" ".git-assetsync bin/tool.bin "
 check "pull: no assetid where there is a digest" "$(reg file.bin/tool.bin.assetid)" ""
 check "status into a closed pipe: stops, exit 141" "$(PYTHONUNBUFFERED=1 git assetsync status | (exec 0<&-); echo "${PIPESTATUS[0]}")" "141"
@@ -669,7 +669,7 @@ out=$(pullcm --overwrite lm.txt 2>/dev/null)
 check "pull --overwrite restores" "$(cat lm.txt)" "lm 1"
 check "pull --overwrite: a committed modification isn't lost, not named" "$(printf '%s\n' "$out" | grep -c '^discarded:')" "0"
 check "pull --overwrite: message" "$(msg)" \
-  "[assetsync] Restore lm.txt from acme/lm v1 Release: https://github.com/acme/lm/releases/tag/v1 Asset:   lm.txt Local modifications of this repository were discarded. "
+  "[assetsync] Restore lm.txt from acme/lm v1 Release: https://github.com/acme/lm/releases/tag/v1 (2026-10-10) Asset:   lm.txt Local modifications of this repository were discarded. "
 check "after restore: clean" "$(st)" ""
 echo mine > lm.txt
 out=$(pullcm --overwrite lm.txt 2>/dev/null)
@@ -1167,7 +1167,7 @@ check "GitLab: generic package downloaded via the API" \
   "$(grep -c '^glab api --hostname gitlab.com projects/grp%2Fproj/packages/generic/pkg/v1/gl.bin$' "$GH/calls.log")" "1"
 git commit -q --no-edit
 check "GitLab: message" "$(msg)" \
-  "[assetsync] Add gl.bin from grp/proj v1 Release: https://gitlab.com/grp/proj/-/releases/v1 Title:   GL 1 Asset:   gl.bin "
+  "[assetsync] Add gl.bin from grp/proj v1 Release: https://gitlab.com/grp/proj/-/releases/v1 (2026-10-10) Title:   GL 1 Asset:   gl.bin "
 check "GitLab: clean" "$(st)" ""
 check "GitLab: URL of a page of the project" "$(rc asd add https://gitlab.com/grp/proj/-/releases gl2.txt --asset gl.txt)" "0"
 check "... same source" "$(reg file.gl2.txt.source)" "grp/proj"
@@ -1183,7 +1183,7 @@ check "GitLab: pending" "$(st)" "P"
 pullc gl.bin
 check "GitLab: pulled" "$(cat gl.bin)" "gl 2"
 check "GitLab: message with notes" "$(msg)" \
-  "[assetsync] Update gl.bin to grp/proj v2 (was v1) Release: https://gitlab.com/grp/proj/-/releases/v2 Asset:   gl.bin Release notes:   ## Changes   * faster "
+  "[assetsync] Update gl.bin to grp/proj v2 (was v1) Release: https://gitlab.com/grp/proj/-/releases/v2 (2026-10-11) Asset:   gl.bin Release notes:   ## Changes   * faster "
 
 # upcoming releases (released_at in the future) count as prereleases
 asset gl.bin "gl 3 upcoming"
@@ -2364,7 +2364,7 @@ addc https://github.com/acme/loc t.bin
 check "map: newest by file date, not by name" "$(reg file.t.bin.synced) $(cat t.bin)" "v1 one"
 check "map: nothing asked online" "$(calls)" "0"
 check "map: commit message" "$(git log -1 --format=%B | grep '^Release:')" \
-  "Release: v1 (from a local folder, not published)"
+  "Release: v1 (2026-10-12, from a local folder, not published)"
 check "map: not in .git-assetsync" "$(grep -ci 'localrel' .git-assetsync)" "0"
 check "map: status names the folder" "$(git assetsync status | grep -c 'from the local folder')" "1"
 check "map: up to date" "$(git assetsync status -s)" ""
@@ -2383,6 +2383,13 @@ check "map: releases" "$(git assetsync source releases acme/loc | cut -c1-2 | on
 check "map: no release" "$(git assetsync pull -n --release v9 t.bin 2>&1 | tr '\\' /)" \
   "error: t.bin: no release with tag 'v9' in acme/loc (local folder $L)"
 check "map: verify" "$(git assetsync verify)" "t.bin: verified (v3)"
+# --remote: the mapping ignored this once, it stays
+asset t.bin "server two"; release acme/loc v2 15 "$F/t.bin"
+check "--remote: status against the server" "$(git assetsync status --remote | grep 'pending:' | sed 's/^[[:space:]]*//')" \
+  "pending:    t.bin  (v3 -> v2)"
+check "--remote: source releases" "$(git assetsync source releases --remote acme/loc | cut -c1-2 | oneline)" "v2 "
+check "--remote: pull" "$(git assetsync pull -n --remote t.bin)" "would: Update t.bin to acme/loc v2 (was v3)"
+check "--remote: the mapping stays" "$(git assetsync status -s) $(git assetsync source map | grep -c acme/loc)" " 1"
 # a source given by name
 quiet git assetsync source rename acme/loc loc && git commit -qm rename -- .git-assetsync
 check "map: --unset by source name" "$(git assetsync source map loc --unset)" \
@@ -2466,7 +2473,7 @@ quiet git assetsync set s.bin --latest && git commit -qm latest -- .git-assetsyn
 check "--sort name: latest by name" "$(git assetsync status | grep 'pending: *s.bin' | sed 's/^[[:space:]]*//')" \
   "pending:    s.bin  (rel20260101 -> rel20261022, local folder)"
 pullc s.bin
-check "--sort name: skipped by name" "$(git log -1 --format=%B | grep '^Since:')" "Since:   rel20260501"
+check "--sort name: skipped by name" "$(git log -1 --format=%B | grep '^Since:')" "Since:   rel20260501 (2026-12-01)"
 quiet git assetsync set s.bin --release 'rel202605*' && git commit -qm pattern -- .git-assetsync
 check "--sort name: pattern" "$(git assetsync pull -n s.bin)" "would: Update s.bin to acme/sorted rel20260501 (was rel20261022)"
 quiet git assetsync set s.bin --latest && git commit -qm latest -- .git-assetsync
@@ -2592,17 +2599,17 @@ new_repo r28
 addc acme/sk s.txt --release v1
 quiet git assetsync set s.txt --release 'v*' && git commit -qm pattern -- .git-assetsync
 pullc s.txt
-check "skipped: listed (pattern, no prerelease)" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v2"
+check "skipped: listed (pattern, no prerelease)" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v2 (2026-10-12)"
 check "skipped: their notes too, newest first" \
   "$(git log -1 --format=%B | grep -E '^(Release notes|  Notes)' | oneline)" \
-  "Release notes v4:   Notes of v4. Release notes v2:   Notes of v2. "
-check "going back: reverted, no notes" "$(pullcm --release v1 s.txt >/dev/null 2>&1; git log -1 --format=%B | grep -cE '^Reverted: v4, v2$|^Release notes|Notes of')" "1"
+  "Release notes v4 (2026-10-14):   Notes of v4. Release notes v2 (2026-10-12):   Notes of v2. "
+check "going back: reverted, no notes" "$(pullcm --release v1 s.txt >/dev/null 2>&1; git log -1 --format=%B | grep -cE '^Reverted: v4 \(2026-10-14\), v2 \(2026-10-12\)$|^Release notes|Notes of')" "1"
 quiet git -c assetsync.notesTotalLines=1 assetsync pull s.txt; commitp
 check "notesTotalLines: the rest only linked" "$(git log -1 --format=%B | grep -E '^(Release notes|  Notes|\[\.\.\.)' | oneline)" \
-  "Release notes v4:   Notes of v4. [... notes of v2 and older: see the release pages] "
+  "Release notes v4 (2026-10-14):   Notes of v4. [... notes of v2 (2026-10-12) and older: see the release pages] "
 quiet pullcm --release v1 s.txt
 quiet git -c assetsync.notesLines=0 assetsync pull s.txt; commitp
-check "notesLines=0: no notes, still the list" "$(git log -1 --format=%B | grep -cE '^Since:   v2$|Notes of')" "1"
+check "notesLines=0: no notes, still the list" "$(git log -1 --format=%B | grep -cE '^Since:   v2 \(2026-10-12\)$|Notes of')" "1"
 check "notesLines: not a number" "$(git -c assetsync.notesLines=many assetsync pull --release v1 s.txt 2>&1 | grep -c "assetsync.notesLines: 'many' is not a number of lines")" "1"
 
 # the changelog step: text from the assets with the release notes
@@ -2630,7 +2637,7 @@ quiet git assetsync set cl a.txt --release 'c*' && git commit -qm pattern -- .gi
 pullc cl a.txt
 check "changelog: after the notes of the release, before those skipped" \
   "$(git log -1 --format=%B | grep -E '^(Release notes|Changelog|  )' | oneline)" \
-  "Release notes c3:   Notes of c3. Changelog (CHANGELOG.txt):   c3: change 3   c2: change 2   c1: change 1 Release notes c2:   Notes of c2. Release notes c3:   Notes of c3. Changelog (CHANGELOG.txt):   c3: change 3   c2: change 2   c1: change 1 Changelog (a.txt):   cl 3 Release notes c2:   Notes of c2. "
+  "Release notes c3 (2026-10-23):   Notes of c3. Changelog (CHANGELOG.txt):   c3: change 3   c2: change 2   c1: change 1 Release notes c2 (2026-10-22):   Notes of c2. Release notes c3 (2026-10-23):   Notes of c3. Changelog (CHANGELOG.txt):   c3: change 3   c2: change 2   c1: change 1 Changelog (a.txt):   cl 3 Release notes c2 (2026-10-22):   Notes of c2. "
 quiet pullcm --release c1 cl
 quiet git -c assetsync.notesLines=1 assetsync pull cl; commitp
 check "changelog: shortened" "$(git log -1 --format=%B | grep -A2 '^Changelog' | oneline)" \
@@ -2666,7 +2673,7 @@ check "changelog: Windows-1252, UTF-16" "$(git log -1 --format=%B | grep -A1 '^C
 quiet pullcm --release v1 s.txt
 quiet git assetsync set s.txt --latest --prerelease && git commit -qm pre -- .git-assetsync
 pullc s.txt
-check "skipped: prereleases when taken" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v3, other-1, v2"
+check "skipped: prereleases when taken" "$(git log -1 --format=%B | grep '^Since:')" "Since:   v3 (2026-10-13), other-1 (2026-10-12), v2 (2026-10-12)"
 quiet pullcm --release v3 s.txt; pullc s.txt
 check "one release forward: no list" "$(git log -1 --format=%B | grep -cE '^Since:|^Release notes:$')" "1"
 

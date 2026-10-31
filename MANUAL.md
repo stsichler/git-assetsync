@@ -306,6 +306,7 @@ Nothing refers to the object, so `git gc` removes it after a while
 | Option | Meaning |
 |---|---|
 | `--color[=WHEN]`, `--no-color` | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
+| `--remote` | ignore [mappings](#source-map) this once: work against the upstream URL, the mapping stays (`status`, `pull`, `diff`, `difftool`, `add`, `verify`, `source releases`, `filter test`) |
 
 ### `status`
 
@@ -859,16 +860,16 @@ git assetsync source map acme/tool --unset                # remove it again
   selection](#selecting-the-release) applies as usual – a pattern takes
   the newest matching folder, a pinned tag that folder; prereleases and
   drafts don't exist here, and there are no release notes.
-- The commit message says where it came from: `Release: v1.3-rc1 (from a
-  local folder, not published)`.
+- The commit message says where it came from: `Release: v1.3-rc1
+  (2026-10-29, from a local folder, not published)`.
 - Everything works offline; the assets are read from the folder, not
   copied into the [download cache](#download-cache). Only their SHA-256
   is remembered there, with each file's size and modification time, so
   that `status` doesn't read big assets again on every call (e.g. from a
   network share); a file that changes is read again, and `pull` and
   `verify` always read what they take. `status` names the folder, `source
-  releases` lists the folders; `source map … --unset` takes the releases
-  from the platform again.
+  releases` lists the folders; `--remote` asks the platform this once
+  (e.g. `status --remote`), `source map … --unset` for good.
 - Before pushing, the [push check](#hooks) warns
   about entries whose release isn't published yet.
 
@@ -1373,7 +1374,7 @@ git assetsync filter add fw --extract --changelog CHANGELOG.txt --exclude CHANGE
 ```
 [assetsync] Update firmware/ to acme/fw rel20260410 (was rel20260213)
 
-Release: rel20260410 (from a local folder, not published)
+Release: rel20260410 (2026-04-10, from a local folder, not published)
 Asset:   rel20260410.7z
 Filter:  fw
 
@@ -1487,7 +1488,7 @@ using it. All methods 7-Zip knows work (LZMA, LZMA2, PPMd, BCJ2, …).
 ```
 [assetsync] Update bin/tool to acme/tool v1.1 (was v1.0)
 
-Release: https://github.com/acme/tool/releases/tag/v1.1
+Release: https://github.com/acme/tool/releases/tag/v1.1 (2026-10-11)
 Title:   Tool 1.1
 Asset:   tool-1.1-linux-x64
 
@@ -1509,12 +1510,13 @@ the source and the release –
 --overwrite` brought back what the release gives after local modifications.
 The body links the release page and names its title (if it differs from
 the tag), the assets and the filter; for a directory it adds what changes
-in it:
+in it. Each release named in the body has its date (`YYYY-MM-DD`, UTC, as
+`source releases` shows it; for a local folder its newest file):
 
 ```
 [assetsync] Update third_party/zlib/ to madler/zlib v1.3.2 (was v1.3.1)
 
-Release: https://github.com/madler/zlib/releases/tag/v1.3.2
+Release: https://github.com/madler/zlib/releases/tag/v1.3.2 (2026-02-17)
 Title:   zlib 1.3.2
 Asset:   zlib-1.3.2.tar.gz
 Filter:  zlib-headers
@@ -1540,20 +1542,20 @@ newest first:
 ```
 [assetsync] Update bin/tool to acme/tool v1.3 (was v1.0)
 
-Release: https://github.com/acme/tool/releases/tag/v1.3
+Release: https://github.com/acme/tool/releases/tag/v1.3 (2026-10-25)
 Asset:   tool-1.3-linux-x64
-Since:   v1.2, v1.1
+Since:   v1.2 (2026-10-18), v1.1 (2026-10-11)
 
-Release notes v1.3:
+Release notes v1.3 (2026-10-25):
   ...
-Release notes v1.2:
+Release notes v1.2 (2026-10-18):
   ...
-Release notes v1.1:
+Release notes v1.1 (2026-10-11):
   ...
 ```
 
 At most 60 lines of notes in all; the notes of older releases beyond that
-are only referred to (`[... notes of v1.1 and older: see the release
+are only referred to (`[... notes of v1.1 (2026-10-11) and older: see the release
 pages]`). Going back to an older release (e.g. with `pull --release`),
 `Reverted:` lists the releases undone, without notes.
 

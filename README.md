@@ -198,7 +198,7 @@ Proposed commit message:
 ```
 [assetsync] Update bin/tool to acme/tool v1.1 (was v1.0)
 
-Release: https://github.com/acme/tool/releases/tag/v1.1
+Release: https://github.com/acme/tool/releases/tag/v1.1 (2026-10-11)
 Title:   Tool 1.1
 Asset:   tool-1.1-linux-x64
 

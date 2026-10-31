@@ -339,6 +339,10 @@ Advanced commands - change entries, sources and filters; set up:
 
     Common options:
         --color[=WHEN], --no-color  always, never or auto (default)
+        --remote                ignore mappings (source map) this once, use
+                                the upstream URL (status, pull, diff,
+                                difftool, add, verify, source releases,
+                                filter test)
 
 Exit codes: 0 ok, 1 something to do (status --exit-code, diff, verify), 2 error, 141
 output into a pipe closed early (| head; a command that changes something
@@ -3979,11 +3983,20 @@ def cmd_hook(ctx, repo, args):
     return EXIT_OK
 
 
+def dated(release, text=None):
+    """'v1.1 (2026-10-11)': text (default: its tag) with the release's date -
+    in commit messages, after every tag but in the subject."""
+    day = (release.date or "")[:10]
+    return f"{text or release.tag} ({day})" if day else text or release.tag
+
+
 def release_lines(release, assets, filter_name=None, stats=None):
     """Body lines of a commit message naming the release, assets and filter,
     and for a directory what changes in it."""
-    lines = [f"Release: {release.tag} (from a local folder, not published)" if release.local
-             else f"Release: {release.url or release.tag}"]
+    day = (release.date or "")[:10]
+    lines = [f"Release: {release.tag} ({day + ', ' if day else ''}from a local folder, "
+             "not published)" if release.local
+             else f"Release: {dated(release, release.url)}"]
     if release.title and release.title != release.tag:
         lines.append(f"Title:   {release.title}")
     names = [a.name for a in assets]
@@ -4090,7 +4103,7 @@ def build_message(st, discarded, unchanged=False, stats=None, between=None,
     lines = [COMMIT_PREFIX + subject, ""] + release_lines(release, st.assets, entry.filter, stats)
     kind, others = between or ("", [])
     if others:
-        tags = [r.tag for r in others]
+        tags = [dated(r) for r in others]
         lines.append(f"{kind + ':':<8} {', '.join(tags[:LIST_RELEASES])}"
                      + (f" and {len(tags) - LIST_RELEASES} more" if len(tags) > LIST_RELEASES
                         else ""))
@@ -4098,7 +4111,7 @@ def build_message(st, discarded, unchanged=False, stats=None, between=None,
     # also from replaced assets of the same release - then the notes of
     # those skipped; none when going back
     with_notes = [release] + others if old and tag != old and kind != "Reverted" else []
-    texts = [(f"Release notes {r.tag}:" if len(with_notes) > 1 else "Release notes:", r.notes,
+    texts = [(f"Release notes {dated(r)}:" if len(with_notes) > 1 else "Release notes:", r.notes,
               "[... see the release page for more]", r) for r in with_notes]
     log = st.changelog if with_notes or old and tag == old and st.digest_changed else []
     texts[1:1] = [(f"Changelog ({path}):", text, f"[... more in {path}]", None)
@@ -4109,7 +4122,8 @@ def build_message(st, discarded, unchanged=False, stats=None, between=None,
         if remaining <= 0:
             rest = [x for _, t, _, x in texts[n:] if x and t.strip()]
             if rest:
-                sections += ["", f"[... notes of {rest[0].tag} and older: see the release pages]"]
+                sections += ["", f"[... notes of {dated(rest[0])} and older: see the release "
+                                 "pages]"]
             break
         notes = notes_lines(text, min(per, remaining), more)
         if notes:
@@ -6041,6 +6055,9 @@ def run(argv):
     colorp = argparse.ArgumentParser(add_help=False)
     colorp.add_argument("--color", nargs="?", const="always", default="auto",
                         choices=["always", "never", "auto"], help="colored output (default: auto)")
+    remotep = argparse.ArgumentParser(add_help=False)
+    remotep.add_argument("--remote", action="store_true",
+                         help="ignore mappings (source map) this once, use the upstream URL")
     colorp.add_argument("--no-color", dest="color", action="store_const", const="never",
                         help="same as --color=never")
 
@@ -6062,7 +6079,7 @@ def run(argv):
                             parser_class=argparse.ArgumentParser)
     ap.commands = sub
 
-    p = sub.add_parser("status", parents=[colorp], help="show the state of the synced files")
+    p = sub.add_parser("status", parents=[colorp, remotep], help="show the state of the synced files")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
     p.add_argument("-s", "--short", action="store_true",
                    help="short format: upstream and local columns")
@@ -6073,7 +6090,7 @@ def run(argv):
     p.add_argument("--no-fetch", action="store_true",
                    help="don't ask the platform for new releases")
 
-    p = sub.add_parser("pull", parents=[colorp], help="update files to the selected release")
+    p = sub.add_parser("pull", parents=[colorp, remotep], help="update files to the selected release")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories")
     p.add_argument("--all", action="store_true", help="all files with something to pull")
     p.add_argument("--release", metavar="TAG|PATTERN",
@@ -6090,7 +6107,7 @@ def run(argv):
             ("difftool", "same in the configured difftool",
              "Show local modifications against what the release gave in the configured "
              "difftool.")):
-        p = sub.add_parser(name, parents=[colorp], help=hlp, description=desc,
+        p = sub.add_parser(name, parents=[colorp, remotep], help=hlp, description=desc,
                            epilog="Options after '--' are passed to git " + name + ".")
         p.add_argument("paths", nargs="*", metavar="PATH",
                        help="files or directories (default: all)")
@@ -6158,7 +6175,7 @@ def run(argv):
     p.add_argument("-W", "--worktree", action="store_true",
                    help="restore the working tree (the default; with -S: both)")
 
-    p = sub.add_parser("add", parents=[colorp],
+    p = sub.add_parser("add", parents=[colorp, remotep],
                        help="take a file or directory from release assets")
     p.add_argument("--filter", metavar="NAME",
                    help="the named filter (see 'filter add') to apply to the assets")
@@ -6213,7 +6230,7 @@ def run(argv):
     sub.add_parser("edit", parents=[colorp],
                    help=f"open {REGISTRY} in the editor, then check and stage it")
 
-    p = sub.add_parser("verify", parents=[colorp],
+    p = sub.add_parser("verify", parents=[colorp, remotep],
                        help="filter the synced assets again and compare with what is committed")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
     p.add_argument("-v", "--verbose", action="store_true",
@@ -6277,7 +6294,7 @@ def run(argv):
     a.add_argument("--global", dest="glob", action="store_true",
                    help="in the global git config, for all repositories")
 
-    a = actions.add_parser("releases", parents=[colorp],
+    a = actions.add_parser("releases", parents=[colorp, remotep],
                            help="list the releases of a source or project (and their assets)",
                            description="List the releases of a source or project, newest first (and their assets) - also outside a repository, with a URL.")
     a.add_argument("source", metavar="URL|SOURCE",
@@ -6302,7 +6319,7 @@ def run(argv):
     a = actions.add_parser("set", parents=[colorp, filterp],
                            help="replace the steps of a filter (in the order given)")
     a.add_argument("name", metavar="NAME")
-    a = actions.add_parser("test", parents=[colorp],
+    a = actions.add_parser("test", parents=[colorp, remotep],
                            help="apply a filter to local files or to the assets of a release, "
                                 "and list or write the result (nothing else changes)")
     a.add_argument("name", metavar="NAME")
@@ -6392,7 +6409,8 @@ def run(argv):
             return cmd_cache(args)
         if args.cmd == "source" and args.action == "map":   # --global: also outside one
             return cmd_map(args, repo)
-        MAPPINGS.update((norm_url(m.url), m) for m in local_mappings())
+        if not getattr(args, "remote", False):    # --remote: none this once
+            MAPPINGS.update((norm_url(m.url), m) for m in local_mappings())
         if args.cmd == "source" and args.action == "releases":   # also outside a repository
             return cmd_releases(Context(args), repo, args)
         if repo is None:
