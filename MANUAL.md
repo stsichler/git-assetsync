@@ -704,7 +704,7 @@ The base the files are compared with (`blob`, `digest`) is kept, so local
 modifications stay modifications. With another URL or asset, which release
 asset a file comes from is unknown until the next `pull`: `status` shows it
 as pending (`entry changed`), and `pull` fetches it – if it is the same file,
-the commit only records that (`Record … (file unchanged)`). Another filter
+the commit only records that (`Record … (…, file unchanged)`). Another filter
 (or a changed one) shows as pending (`filter changed`); `pull` filters
 the assets again, from the [download cache](#download-cache). A
 file can't become a directory or the other way round: `unlink` it and
@@ -860,8 +860,8 @@ git assetsync source map acme/tool --unset                # remove it again
   selection](#selecting-the-release) applies as usual – a pattern takes
   the newest matching folder, a pinned tag that folder; prereleases and
   drafts don't exist here, and there are no release notes.
-- The commit message says where it came from: `Release: v1.3-rc1
-  (2026-10-29, from a local folder, not published)`.
+- The commit message says where it came from: `Release: v1.3-rc1 (from a
+  local folder, not published)`.
 - Everything works offline; the assets are read from the folder, not
   copied into the [download cache](#download-cache). Only their SHA-256
   is remembered there, with each file's size and modification time, so
@@ -1196,6 +1196,7 @@ has the name of its step:
 | `--copy PATTERN TARGET` | the same, but the files also stay where they are |
 | `--apply PATTERN NAME` | apply the filter `NAME` to the matching files only, see [Filters using filters](#filters-using-filters) |
 | `--executable PATTERN…` | make the matching files executable – an asset itself never is, see [Executables](#executables) |
+| `--eol PATTERN lf\|crlf\|native` | line endings of the matching text files, see [Line endings in filters](#line-endings-in-filters) |
 | `--changelog PATTERN…` | reads only: the text of the matching files goes with the release notes into the commit message of `pull`, see [Changelogs from the assets](#changelogs-from-the-assets) |
 | `--convert PATTERN TARGET COMMAND` | convert each matching file with a command of your own (e.g. bin2c), see [Commands in filters](#commands-in-filters) |
 | `--run PATTERN COMMAND` | run a command on the matching files at once (`'*'`: all), see [Commands in filters](#commands-in-filters) |
@@ -1287,6 +1288,27 @@ with the filter (`git assetsync set bin/tool --filter exe`). On Windows
 (`core.filemode = false`) the bit is kept in the repository for the
 other platforms.
 
+#### Line endings in filters
+
+**`--eol PATTERN lf|crlf|native`** sets the line endings of the matching
+files – for a command step that expects certain ones, or a repository
+whose `.gitattributes` say nothing about them:
+
+```sh
+git assetsync filter add sdk --extract --eol '*.h' lf --eol '*.bat' crlf
+```
+
+- Binary files stay as they are, decided as git does for `text=auto`: a
+  NUL byte (also UTF-16), a CR not before an LF, or too many control
+  characters. `filter test` says how many.
+- `native` is the line ending git checks out a text file with here:
+  `core.autocrlf` (`true`: CRLF, `input`: LF), else `core.eol` (default:
+  CRLF on Windows, LF elsewhere). So the result depends on the machine –
+  `verify` elsewhere may find it differs.
+- The step gives the content; the repository's `.gitattributes` still
+  decide how it is stored and checked out (see [Line endings](#line-endings)):
+  with `text` or `text=auto`, git stores LF anyway.
+
 #### Filters using filters
 
 Most steps take a pattern and leave the other files alone, so files of
@@ -1372,9 +1394,9 @@ git assetsync filter add fw --extract --changelog CHANGELOG.txt --exclude CHANGE
 ```
 
 ```
-[assetsync] Update firmware/ to acme/fw rel20260410 (was rel20260213)
+[assetsync] Update firmware/ to acme/fw rel20260410 (2026-04-10, was rel20260213 of 2026-02-13)
 
-Release: rel20260410 (2026-04-10, from a local folder, not published)
+Release: rel20260410 (from a local folder, not published)
 Asset:   rel20260410.7z
 Filter:  fw
 
@@ -1486,9 +1508,9 @@ using it. All methods 7-Zip knows work (LZMA, LZMA2, PPMd, BCJ2, …).
 ### Proposed commit messages
 
 ```
-[assetsync] Update bin/tool to acme/tool v1.1 (was v1.0)
+[assetsync] Update bin/tool to acme/tool v1.1 (2026-10-11, was v1.0 of 2026-10-01)
 
-Release: https://github.com/acme/tool/releases/tag/v1.1 (2026-10-11)
+Release: https://github.com/acme/tool/releases/tag/v1.1
 Title:   Tool 1.1
 Asset:   tool-1.1-linux-x64
 
@@ -1504,19 +1526,19 @@ The subject starts with `[assetsync] `, so the commits git-assetsync
 proposed are easy to tell apart (`git log --grep='^\[assetsync\]'`;
 git-filesync's start with `[filesync] `). It names the file (directory),
 the source and the release –
-`Add …` for a new entry, `Update … to … (was …)` for another release,
+`Add …` for a new entry, `Update … to … (…, was …)` for another release,
 `Update … (asset replaced)` when the asset of the same release changed,
 `Update … (filter changed)` after another filter, `Restore …` when `pull
 --overwrite` brought back what the release gives after local modifications.
 The body links the release page and names its title (if it differs from
 the tag), the assets and the filter; for a directory it adds what changes
-in it. Each release named in the body has its date (`YYYY-MM-DD`, UTC, as
-`source releases` shows it; for a local folder its newest file):
+in it. Each release named has its date (`YYYY-MM-DD`, UTC, as `source
+releases` shows it; for a local folder its newest file):
 
 ```
-[assetsync] Update third_party/zlib/ to madler/zlib v1.3.2 (was v1.3.1)
+[assetsync] Update third_party/zlib/ to madler/zlib v1.3.2 (2026-02-17, was v1.3.1 of 2025-01-22)
 
-Release: https://github.com/madler/zlib/releases/tag/v1.3.2 (2026-02-17)
+Release: https://github.com/madler/zlib/releases/tag/v1.3.2
 Title:   zlib 1.3.2
 Asset:   zlib-1.3.2.tar.gz
 Filter:  zlib-headers
@@ -1540,9 +1562,9 @@ entry (its tag pattern; prereleases only if it takes them; no drafts) –
 newest first:
 
 ```
-[assetsync] Update bin/tool to acme/tool v1.3 (was v1.0)
+[assetsync] Update bin/tool to acme/tool v1.3 (2026-10-25, was v1.0 of 2026-10-01)
 
-Release: https://github.com/acme/tool/releases/tag/v1.3 (2026-10-25)
+Release: https://github.com/acme/tool/releases/tag/v1.3
 Asset:   tool-1.3-linux-x64
 Since:   v1.2 (2026-10-18), v1.1 (2026-10-11)
 
@@ -1673,7 +1695,8 @@ file: an asset with CRLF line ends is committed normalized in a
 checkout` would write them (with `core.autocrlf=true`, a text asset gets
 CRLF) – those of a directory too. Changing
 these settings afterwards doesn't make entries count as modified. To keep
-an asset byte for byte, mark it `-text` (or `binary`) in `.gitattributes`.
+an asset byte for byte, mark it `-text` (or `binary`) in `.gitattributes`;
+to set its line endings in the filter, see [`--eol`](#line-endings-in-filters).
 
 ### Offline operation
 

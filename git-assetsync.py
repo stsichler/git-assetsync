@@ -65,7 +65,9 @@ TARGET (what matches - a file, or a directory with all below it - goes
 into TARGET/ under its name, else to the path TARGET with {path} {dir}
 {parent} {name} {stem} {ext}), apply PATTERN NAME (the filter NAME on the
 matching files only), executable PATTERN... (the matching files become
-executable - assets themselves never are), changelog PATTERN... (reads
+executable - assets themselves never are), eol PATTERN lf|crlf|native
+(line endings of the matching text files; binary ones stay, as for git's
+text=auto; native: as git checks out text files here), changelog PATTERN... (reads
 only: the text of the
 matching files goes with the release notes into pull's commit message,
 shortened like them), convert PATTERN TARGET COMMAND (each matching file:
@@ -284,7 +286,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 order given:
         --extract [PATTERN...], --subdir PATH, --strip N, --include PATTERN...,
         --exclude PATTERN..., --move PATTERN TARGET, --copy PATTERN TARGET,
-        --apply PATTERN NAME, --executable PATTERN..., --changelog PATTERN...,
+        --apply PATTERN NAME, --executable PATTERN..., --eol PATTERN MODE,
+        --changelog PATTERN...,
         --convert PATTERN TARGET COMMAND, --run PATTERN COMMAND
                                 (each option one step)
     filter set NAME STEP-OPTIONS...  replace the steps of a filter
@@ -376,6 +379,7 @@ import fnmatch
 import functools
 import gzip
 import hashlib
+import io
 import json
 import lzma
 import os
@@ -1462,7 +1466,8 @@ def auto_prune():
 
 # filter steps; the options of filter add / set have the same names
 STEPS = ("extract", "subdir", "strip", "include", "exclude", "move", "copy", "apply",
-         "executable", "changelog", "convert", "run")
+         "executable", "eol", "changelog", "convert", "run")
+EOL_MODES = ("lf", "crlf", "native")
 # the steps that run commands: only in trusted filters (see trust)
 COMMAND_STEPS = ("convert", "run")
 # placeholders in the target of move / copy, for a file a/b/c.txt
@@ -1773,6 +1778,7 @@ def parse_step(step):
           "include": bool(args) and all(args), "exclude": bool(args) and all(args),
           "move": len(args) == 2 and all(args), "copy": len(args) == 2 and all(args),
           "apply": len(args) == 2 and all(args), "executable": bool(args) and all(args),
+          "eol": len(args) == 2 and bool(args[0]) and args[1] in EOL_MODES,
           "changelog": bool(args) and all(args),
           "convert": len(args) == 3 and all(args), "run": len(args) == 2 and all(args)}.get(name)
     if ok is None:
@@ -1780,6 +1786,8 @@ def parse_step(step):
     if name == "run" and len(args) == 1:      # before 0.19.0: no pattern
         raise FsError(f"filter step '{step}': run needs a pattern first, like the other "
                       f"steps - for all files: {shlex.join(['run', '*'] + args)}")
+    if name == "eol" and len(args) == 2 and args[1] not in EOL_MODES:
+        raise FsError(f"filter step '{step}': eol takes {', '.join(EOL_MODES)}")
     if not ok:
         raise FsError(f"malformed filter step '{step}'")
     if name in ("move", "copy", "convert"):
@@ -2060,6 +2068,31 @@ def changelog_text(data):
         return data.decode("cp1252", "replace")
 
 
+def looks_binary(data):
+    """Is this not text - as git decides for text=auto: a NUL, a CR not
+    before an LF, or more than one non-printable byte in 128."""
+    if b"\0" in data or data.count(b"\r") != data.count(b"\r\n"):
+        return True
+    nonprintable = sum(data.count(bytes([c])) for c in range(1, 32)
+                       if c not in (8, 9, 10, 12, 13, 27)) + data.count(b"\x7f")
+    if data.endswith(b"\x1a"):         # a DOS end of file
+        nonprintable -= 1
+    printable = len(data) - nonprintable - data.count(b"\n") - data.count(b"\r")
+    return (printable >> 7) < nonprintable
+
+
+def native_eol():
+    """The line ending git checks out a text file with that has no eol
+    attribute: core.autocrlf, else core.eol (native: CRLF on Windows)."""
+    autocrlf = (config_get("core.autocrlf") or "").strip().lower()
+    if autocrlf in ("true", "yes", "on", "1"):
+        return "crlf"
+    if autocrlf == "input":
+        return "lf"
+    eol = (config_get("core.eol") or "").strip().lower()
+    return eol if eol in ("lf", "crlf") else "crlf" if os.name == "nt" else "lf"
+
+
 def run_steps(files, steps, work, filters=None, chain=(), report=None):
     """Apply the filter steps to {path: (file, executable)}; filters: the
     named filters {name: steps}, for 'apply' steps. A step that matches no
@@ -2228,6 +2261,28 @@ def run_steps(files, steps, work, filters=None, chain=(), report=None):
             matched = {r for r in files if any(x.match(r) for x in rxs)}
             files = {r: (v[0], True) if r in matched else v for r, v in files.items()}
             info = f"{plural(len(matched), 'file')} executable" if matched else "no files match"
+        elif name == "eol":
+            # line endings of the matching text files (binary ones stay, as
+            # for git's text=auto); native: as git checks out a text file
+            rx, to = glob_regex(args[0]), native_eol() if args[1] == "native" else args[1]
+            matched = sorted(r for r in files if rx.match(r))
+            changed = binary = 0
+            files = dict(files)
+            for r in matched:
+                src, executable = files[r]
+                data = Path(src).read_bytes()
+                if looks_binary(data):
+                    binary += 1
+                    continue
+                new = data.replace(b"\r\n", b"\n")
+                if to == "crlf":
+                    new = new.replace(b"\n", b"\r\n")
+                if new != data:
+                    files[r] = (work.copy(io.BytesIO(new)), executable)
+                    changed += 1
+            info = (f"{changed} of {plural(len(matched), 'file')} to {to.upper()}"
+                    + (f", {binary} binary left as is" if binary else "")
+                    if matched else "no files match")
         else:
             rxs = [glob_regex(a) for a in args]
             files = {r: v for r, v in files.items()
@@ -3983,20 +4038,19 @@ def cmd_hook(ctx, repo, args):
     return EXIT_OK
 
 
-def dated(release, text=None):
-    """'v1.1 (2026-10-11)': text (default: its tag) with the release's date -
-    in commit messages, after every tag but in the subject."""
-    day = (release.date or "")[:10]
-    return f"{text or release.tag} ({day})" if day else text or release.tag
+def dated(release, more=""):
+    """'v1.1 (2026-10-11)', with more 'v1.1 (2026-10-11, more)': a tag in a
+    commit message, with the release's date (None: no release, no date)."""
+    day = ((release.date if release else "") or "")[:10]
+    inside = ", ".join(x for x in (day, more) if x)
+    return f"{release.tag} ({inside})" if inside else release.tag
 
 
 def release_lines(release, assets, filter_name=None, stats=None):
     """Body lines of a commit message naming the release, assets and filter,
     and for a directory what changes in it."""
-    day = (release.date or "")[:10]
-    lines = [f"Release: {release.tag} ({day + ', ' if day else ''}from a local folder, "
-             "not published)" if release.local
-             else f"Release: {dated(release, release.url)}"]
+    lines = [f"Release: {release.tag} (from a local folder, not published)" if release.local
+             else f"Release: {release.url or release.tag}"]
     if release.title and release.title != release.tag:
         lines.append(f"Title:   {release.title}")
     names = [a.name for a in assets]
@@ -4028,6 +4082,17 @@ def notes_limits(repo):
     return repo.notes_limits
 
 
+def synced_release(st):
+    """The release an entry was synced with, from the list of releases (asked
+    anyway) - None if it is gone or can't be asked."""
+    try:
+        return next((r for r in st.origin.releases()
+                     if r.tag == st.entry.synced and not r.draft), None) or \
+            st.origin.by_tag(st.entry.synced)
+    except FsError:
+        return None
+
+
 def releases_between(st):
     """('Since', [releases]) skipped by updating to st.release - newer than
     the synced one, older than the new one, selected by the source's rule
@@ -4037,8 +4102,7 @@ def releases_between(st):
     entry, new = st.entry, st.release
     try:
         listed = st.origin.releases()
-        old = next((r for r in listed if r.tag == entry.synced and not r.draft), None) or \
-            st.origin.by_tag(entry.synced)
+        old = synced_release(st)
         if not old or not old.order or not new.order:
             return None
         rule, pre = entry.spec.get("release"), is_true(entry.spec.get("prerelease"))
@@ -4087,19 +4151,22 @@ def build_message(st, discarded, unchanged=False, stats=None, between=None,
     rel, name, tag, old = entry.shown, entry.name, release.tag, entry.synced
     what = "directory" if entry.is_dir else "file"
     if not old and entry.blob:      # source or asset changed with set
-        subject = (f"Record {rel} as {name} {tag} ({what} unchanged)" if unchanged else
-                   f"Update {rel} to {name} {tag}")
+        subject = (f"Record {rel} as {name} {dated(release, f'{what} unchanged')}"
+                   if unchanged else f"Update {rel} to {name} {dated(release)}")
     elif not old:
-        subject = f"Add {rel} from {name} {tag}"
+        subject = f"Add {rel} from {name} {dated(release)}"
     elif tag != old:
-        subject = f"Update {rel} to {name} {tag} (was {old})"
+        was = synced_release(st)
+        day = ((was.date if was else "") or "")[:10]
+        subject = f"Update {rel} to {name} " \
+                  f"{dated(release, f'was {old}' + (f' of {day}' if day else ''))}"
     elif st.digest_changed:
-        subject = f"Update {rel} from {name} {tag} (asset{'s' if len(st.assets) > 1 else ''} " \
-                  "replaced)"
+        subject = f"Update {rel} from {name} " \
+                  f"{dated(release, 'asset' + ('s' if len(st.assets) > 1 else '') + ' replaced')}"
     elif st.filter_changed:
-        subject = f"Update {rel} from {name} {tag} (filter changed)"
+        subject = f"Update {rel} from {name} {dated(release, 'filter changed')}"
     else:
-        subject = f"Restore {rel} from {name} {tag}"
+        subject = f"Restore {rel} from {name} {dated(release)}"
     lines = [COMMIT_PREFIX + subject, ""] + release_lines(release, st.assets, entry.filter, stats)
     kind, others = between or ("", [])
     if others:
@@ -4913,7 +4980,7 @@ def cmd_add(ctx, repo, args):
               "nothing to commit")
         return EXIT_OK
     # staged only, like git add; the proposed message is prepared for the commit
-    msg = "\n".join([f"{COMMIT_PREFIX}Add {shown_rel} from {name} {release.tag}", ""]
+    msg = "\n".join([f"{COMMIT_PREFIX}Add {shown_rel} from {name} {dated(release)}", ""]
                     + release_lines(release, assets, args.filter, stats)) + "\n"
     report_staged(repo, shown_rel, msg, paint("staged", "green"))
     return EXIT_OK
@@ -6154,6 +6221,9 @@ def run(argv):
                    help="apply the filter NAME to the matching files")
     g.add_argument("--executable", action=StepOption, nargs="+", metavar="PATTERN",
                    help="make the matching files executable (an asset itself never is)")
+    g.add_argument("--eol", action=StepOption, nargs=2, metavar=("PATTERN", "lf|crlf|native"),
+                   help="line endings of the matching text files (binary ones stay, as for "
+                        "git's text=auto); native: as git checks out text files here")
     g.add_argument("--changelog", action=StepOption, nargs="+", metavar="PATTERN",
                    help="add the text of the matching files to the release notes in pull's "
                         "commit message (the files stay)")

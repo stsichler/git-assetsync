@@ -59,6 +59,7 @@
 #   35. executable: making files executable
 #   36. Missing files, entries not synced yet, pull --all --release
 #   37. A step it doesn't know, cache limits of 0, verify keeps a base
+#   38. Line endings: the eol step
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -358,7 +359,7 @@ check "add: digest" "$(reg file.bin/tool.bin.digest)" "sha256:$(sha "$F/tool-1.0
 check "add: blob as git add stores it" "$(reg file.bin/tool.bin.blob)" "$(git rev-parse :bin/tool.bin)"
 git commit -q --no-edit
 check "add: proposed commit message" "$(msg)" \
-  "[assetsync] Add bin/tool.bin from acme/tool v1.0 Release: https://github.com/acme/tool/releases/tag/v1.0 (2026-10-10) Title:   Tool 1.0 Asset:   tool-1.0.bin "
+  "[assetsync] Add bin/tool.bin from acme/tool v1.0 (2026-10-10) Release: https://github.com/acme/tool/releases/tag/v1.0 Title:   Tool 1.0 Asset:   tool-1.0.bin "
 check "add + commit: file and entry" "$(git show --name-only --format= HEAD | sort | oneline)" ".git-assetsync bin/tool.bin "
 check "status: clean" "$(st)" ""
 check "status: nothing to pull" "$(git assetsync status | tail -1)" "nothing to pull, 1 file unmodified"
@@ -384,7 +385,7 @@ check "pull -v: where it comes from first" "$(printf '%s\n' "$out" | head -1)" \
 check "pull into a closed pipe: finished, exit 141" "$(printf '%s\n' "$out" | tail -1)" "rc=141"
 check "pull: content" "$(cat bin/tool.bin)" "tool 1.1"
 check "pull: commit message" "$(msg)" \
-  "[assetsync] Update bin/tool.bin to acme/tool v1.1 (was v1.0) Release: https://github.com/acme/tool/releases/tag/v1.1 (2026-10-11) Asset:   tool-1.1.bin "
+  "[assetsync] Update bin/tool.bin to acme/tool v1.1 (2026-10-11, was v1.0 of 2026-10-10) Release: https://github.com/acme/tool/releases/tag/v1.1 Asset:   tool-1.1.bin "
 check "pull: commit has file and entry" "$(git show --name-only --format= HEAD | sort | oneline)" ".git-assetsync bin/tool.bin "
 check "pull: no assetid where there is a digest" "$(reg file.bin/tool.bin.assetid)" ""
 check "status into a closed pipe: stops, exit 141" "$(PYTHONUNBUFFERED=1 git assetsync status | (exec 0<&-); echo "${PIPESTATUS[0]}")" "141"
@@ -414,13 +415,13 @@ quiet pullcm --all
 check "pull --all: both updated" "$(cat bin/tool.bin other.bin | oneline)" "tool 1.3 tool 1.3 "
 check "pull --all: one commit for all" "$(($(git rev-list --count HEAD) - N)) $(git log -1 --format=%s)" \
   "1 [assetsync] Update 2 files from acme/tool"
-check "... with the message of each" "$(git log -1 --format=%B | grep -c '^Update [a-z/.]* to acme/tool v1.3 (was v1.[12])$')" "2"
+check "... with the message of each" "$(git log -1 --format=%B | grep -c '^Update [a-z/.]* to acme/tool v1.3 (2026-10-13, was v1.[12] of 2026-10-1[12])$')" "2"
 # an entry refused: the others are pulled and committed anyway, exit code 2
 asset tool-1.4.bin "tool 1.4"
 release acme/tool v1.4 14 "$F/tool-1.4.bin"
 echo mine > other.bin
 check "pull --all: a refused entry left out" "$(rc pullcm --all) $(git log -1 --format=%s) $(cat other.bin)" \
-  "2 [assetsync] Update bin/tool.bin to acme/tool v1.4 (was v1.3) mine"
+  "2 [assetsync] Update bin/tool.bin to acme/tool v1.4 (2026-10-14, was v1.3 of 2026-10-13) mine"
 git checkout -q other.bin
 
 # release notes, shortened, in the message of an update
@@ -618,7 +619,7 @@ check "asset replaced: pending" "$(st)" "P"
 check "asset replaced: note" "$(git assetsync status | grep -c 'asset replaced in release v1')" "1"
 pullc re.bin
 check "asset replaced: pulled" "$(cat re.bin)" "second upload"
-check "asset replaced: message" "$(git log -1 --format=%s)" "[assetsync] Update re.bin from acme/re v1 (asset replaced)"
+check "asset replaced: message" "$(git log -1 --format=%s)" "[assetsync] Update re.bin from acme/re v1 (2026-10-10, asset replaced)"
 
 # a wrong digest in the release: nothing is changed
 asset bad.bin bad
@@ -640,7 +641,7 @@ asset nod.bin nodigesT      # the same size: only the id tells
 reupload acme/nod v1 "$F/nod.bin"
 check "no digest: re-upload pending" "$(st nod.bin)" "P"
 pullc nod.bin
-check "... pulled" "$(cat nod.bin) $(git log -1 --format=%s)" "nodigesT [assetsync] Update nod.bin from acme/nod v1 (asset replaced)"
+check "... pulled" "$(cat nod.bin) $(git log -1 --format=%s)" "nodigesT [assetsync] Update nod.bin from acme/nod v1 (2026-10-10, asset replaced)"
 check "... then up to date" "$(st nod.bin)" ""
 
 
@@ -669,7 +670,7 @@ out=$(pullcm --overwrite lm.txt 2>/dev/null)
 check "pull --overwrite restores" "$(cat lm.txt)" "lm 1"
 check "pull --overwrite: a committed modification isn't lost, not named" "$(printf '%s\n' "$out" | grep -c '^discarded:')" "0"
 check "pull --overwrite: message" "$(msg)" \
-  "[assetsync] Restore lm.txt from acme/lm v1 Release: https://github.com/acme/lm/releases/tag/v1 (2026-10-10) Asset:   lm.txt Local modifications of this repository were discarded. "
+  "[assetsync] Restore lm.txt from acme/lm v1 (2026-10-10) Release: https://github.com/acme/lm/releases/tag/v1 Asset:   lm.txt Local modifications of this repository were discarded. "
 check "after restore: clean" "$(st)" ""
 echo mine > lm.txt
 out=$(pullcm --overwrite lm.txt 2>/dev/null)
@@ -696,7 +697,7 @@ check "... file unchanged" "$(cat lm.txt)" "dirty"
 check "pull --all --overwrite: discards and updates" \
   "$(pullcm --all --overwrite 2>&1 | grep -c 'warning: lm.txt: discarding local modifications')" "1"
 check "... content" "$(cat lm.txt)" "lm 2"
-check "... message" "$(git log -1 --format=%s)" "[assetsync] Update lm.txt to acme/lm v2 (was v1)"
+check "... message" "$(git log -1 --format=%s)" "[assetsync] Update lm.txt to acme/lm v2 (2026-10-11, was v1 of 2026-10-10)"
 
 # uncommitted deletion
 rm lm.txt
@@ -730,7 +731,7 @@ check "existing other file: refused" "$(git assetsync pull hand.txt 2>&1 | tail 
   "error: 'hand.txt' is in the way of the release - use --overwrite to replace it"
 rm hand.txt
 pullc hand.txt
-check "hand-written entry: pulled" "$(cat hand.txt) $(git log -1 --format=%s)" "hand [assetsync] Add hand.txt from h v1"
+check "hand-written entry: pulled" "$(cat hand.txt) $(git log -1 --format=%s)" "hand [assetsync] Add hand.txt from h v1 (2026-10-10)"
 check "hand-written entry: base recorded" "$(reg file.hand.txt.synced)" "v1"
 
 
@@ -855,9 +856,9 @@ check "pull: staged, not committed" "$RC $(git status --porcelain | oneline)$(gi
   "0 M  .git-assetsync M  p1.txt another message"
 check "pull: hint" "$(echo "$OUT" | grep -c '^p1.txt: updated and staged. Commit with:')" "1"
 check "... one entry: said once" "$(echo "$OUT" | grep -c 'updated')" "1"
-check "pull: proposed message in SQUASH_MSG" "$(head -1 .git/SQUASH_MSG)" "[assetsync] Update p1.txt to acme/p v2 (was v1)"
+check "pull: proposed message in SQUASH_MSG" "$(head -1 .git/SQUASH_MSG)" "[assetsync] Update p1.txt to acme/p v2 (2026-10-11, was v1 of 2026-10-10)"
 git commit -q --no-edit
-check "pull: a plain commit takes it" "$(git log -1 --format=%s)" "[assetsync] Update p1.txt to acme/p v2 (was v1)"
+check "pull: a plain commit takes it" "$(git log -1 --format=%s)" "[assetsync] Update p1.txt to acme/p v2 (2026-10-11, was v1 of 2026-10-10)"
 # a SQUASH_MSG git wrote itself (e.g. merge --squash): the proposal is added to it
 echo "squash of someone else" > .git/SQUASH_MSG
 OUT=$(git assetsync pull p2.txt 2>&1)
@@ -871,11 +872,11 @@ release acme/p v3 12 "$F/p.txt"
 quiet git assetsync pull p1.txt
 check "after a commit the next proposal starts afresh, the copy too" \
   "$(grep -c 'squash of someone else' .git/ASSETSYNC_MSG) $(head -1 .git/ASSETSYNC_MSG)" \
-  "0 [assetsync] Update p1.txt to acme/p v3 (was v2)"
+  "0 [assetsync] Update p1.txt to acme/p v3 (2026-10-12, was v2 of 2026-10-11)"
 git commit -q --no-edit
 quiet git assetsync pull p2.txt && git commit -q --no-edit
 check "... and commits" "$(git log -1 --format=%s)$(git status --porcelain)" \
-  "[assetsync] Update p2.txt to acme/p v3 (was v2)"
+  "[assetsync] Update p2.txt to acme/p v3 (2026-10-12, was v2 of 2026-10-11)"
 # several entries: one proposal for all; other staged files are the user's
 asset p.txt "p 4"
 release acme/p v4 13 "$F/p.txt"
@@ -1083,7 +1084,7 @@ addc acme/dr dr.txt --asset dr.txt
 asset dr.txt "dr 2"
 release acme/dr v2 11 "$F/dr.txt"
 check "pull -n: output" "$(git assetsync pull -n dr.txt 2>&1)" \
-  "would: Update dr.txt to acme/dr v2 (was v1)"
+  "would: Update dr.txt to acme/dr v2 (2026-10-11, was v1 of 2026-10-10)"
 check "pull -n: nothing changed" "$(git status --porcelain; cat dr.txt)" "dr 1"
 check "unlink -n" "$(git assetsync unlink -n dr.txt; git status --porcelain)" "would unlink dr.txt"
 git config -f .git-assetsync source.acme/dr.note x
@@ -1167,7 +1168,7 @@ check "GitLab: generic package downloaded via the API" \
   "$(grep -c '^glab api --hostname gitlab.com projects/grp%2Fproj/packages/generic/pkg/v1/gl.bin$' "$GH/calls.log")" "1"
 git commit -q --no-edit
 check "GitLab: message" "$(msg)" \
-  "[assetsync] Add gl.bin from grp/proj v1 Release: https://gitlab.com/grp/proj/-/releases/v1 (2026-10-10) Title:   GL 1 Asset:   gl.bin "
+  "[assetsync] Add gl.bin from grp/proj v1 (2026-10-10) Release: https://gitlab.com/grp/proj/-/releases/v1 Title:   GL 1 Asset:   gl.bin "
 check "GitLab: clean" "$(st)" ""
 check "GitLab: URL of a page of the project" "$(rc asd add https://gitlab.com/grp/proj/-/releases gl2.txt --asset gl.txt)" "0"
 check "... same source" "$(reg file.gl2.txt.source)" "grp/proj"
@@ -1183,7 +1184,7 @@ check "GitLab: pending" "$(st)" "P"
 pullc gl.bin
 check "GitLab: pulled" "$(cat gl.bin)" "gl 2"
 check "GitLab: message with notes" "$(msg)" \
-  "[assetsync] Update gl.bin to grp/proj v2 (was v1) Release: https://gitlab.com/grp/proj/-/releases/v2 (2026-10-11) Asset:   gl.bin Release notes:   ## Changes   * faster "
+  "[assetsync] Update gl.bin to grp/proj v2 (2026-10-11, was v1 of 2026-10-10) Release: https://gitlab.com/grp/proj/-/releases/v2 Asset:   gl.bin Release notes:   ## Changes   * faster "
 
 # upcoming releases (released_at in the future) count as prereleases
 asset gl.bin "gl 3 upcoming"
@@ -1361,7 +1362,7 @@ check "set: base kept" "$(reg file.x.bin.synced)" "v1"
 check "set: pending" "$(st x.bin)" "P"
 check "set: other file unchanged" "$(st y.bin)" ""
 pullc x.bin
-check "set + pull" "$(cat x.bin) $(git log -1 --format=%s)" "x v2 [assetsync] Update x.bin to acme/set v2 (was v1)"
+check "set + pull" "$(cat x.bin) $(git log -1 --format=%s)" "x v2 [assetsync] Update x.bin to acme/set v2 (2026-10-11, was v1 of 2026-10-10)"
 check "set -n: nothing changed" "$(git assetsync set -n y.bin --latest | head -1; git status --porcelain)" \
   "would: y.bin: release v1 -> latest release"
 
@@ -1374,7 +1375,7 @@ check "... a new source, the old one stays while used" "$(reg file.x.bin.source)
 check "set --source: synced removed, base kept" "$(reg file.x.bin.synced)|$(reg file.x.bin.blob)" "|$(git rev-parse HEAD:x.bin)"
 check "set --source: still unmodified" "$(git assetsync status x.bin | grep -c 'pending:    x.bin  (entry changed, release v2)')" "1"
 pullc x.bin
-check "set --source + pull" "$(cat x.bin) $(git log -1 --format=%s)" "fork x v2 [assetsync] Update x.bin to me/set-fork v2"
+check "set --source + pull" "$(cat x.bin) $(git log -1 --format=%s)" "fork x v2 [assetsync] Update x.bin to me/set-fork v2 (2026-10-12)"
 # local modifications stay modifications
 echo mine > x.bin && git commit -qam mine
 quiet git assetsync set x.bin --source https://github.com/acme/set
@@ -1385,11 +1386,11 @@ git reset -q --hard HEAD~1
 quiet git assetsync set y.bin --asset 'y*'
 pullc y.bin
 check "set --asset, same file: recorded" "$(git log -1 --format=%s) $(reg file.y.bin.asset)" \
-  "[assetsync] Record y.bin as acme/set v1 (file unchanged) y*"
+  "[assetsync] Record y.bin as acme/set v1 (2026-10-10, file unchanged) y*"
 quiet git assetsync set y.bin --asset x.bin
 check "set --asset: pending" "$(st y.bin)" "P"
 pullc y.bin
-check "set --asset + pull" "$(cat y.bin) $(git log -1 --format=%s)" "x v1 [assetsync] Update y.bin to acme/set v1"
+check "set --asset + pull" "$(cat y.bin) $(git log -1 --format=%s)" "x v1 [assetsync] Update y.bin to acme/set v1 (2026-10-10)"
 check "set --no-asset" "$(git assetsync set y.bin --no-asset >/dev/null; reg file.y.bin.asset)" ""
 git reset -q --hard
 check "set --release and --latest" "$(git assetsync set y.bin --release v1 --latest 2>&1 | tail -1)" \
@@ -1457,7 +1458,7 @@ check "dir: tree as staged" "$(reg dir.lib/zlib.tree)" "$(git write-tree --prefi
 check "dir: filterhash" "$(reg dir.lib/zlib.filterhash | wc -c | tr -d ' ')" "17"
 git commit -q --no-edit
 check "dir: message" "$(git log -1 --format=%B | grep -E '^(\[assetsync\] Add|Filter|Files)' | oneline)" \
-  "[assetsync] Add lib/zlib/ from madler/zlib v1.3 Filter:  zwin Files:   3 added, 0 removed, 0 changed (3 in total) "
+  "[assetsync] Add lib/zlib/ from madler/zlib v1.3 (2026-10-10) Filter:  zwin Files:   3 added, 0 removed, 0 changed (3 in total) "
 check "dir: clean" "$(st) $(git status --porcelain)" " "
 check "dir: nothing to pull" "$(git assetsync status | tail -1)" "nothing to pull, 1 directory unmodified"
 check "dir: status -v" "$(git assetsync status -v | grep -c "unmodified: lib/zlib/  (zlib-\*-win64.zip from madler/zlib, latest release, filter zwin;")" "1"
@@ -1475,7 +1476,7 @@ check "dir: pulled" "$(git ls-files lib | oneline)$(cat lib/zlib/include/zlib.h)
   "lib/zlib/include/new.h lib/zlib/include/zlib.h lib/zlib/lib/x64/zlib.lib zlib 1.3.1"
 check "dir: removed file gone" "$(ls lib/zlib/include | oneline)" "new.h zlib.h "
 check "dir: message" "$(git log -1 --format=%B | grep -E '^(\[assetsync\] Update|Files)' | oneline)" \
-  "[assetsync] Update lib/zlib/ to madler/zlib v1.3.1 (was v1.3) Files:   1 added, 1 removed, 1 changed (3 in total) "
+  "[assetsync] Update lib/zlib/ to madler/zlib v1.3.1 (2026-10-11, was v1.3 of 2026-10-10) Files:   1 added, 1 removed, 1 changed (3 in total) "
 check "dir: clean after pull" "$(st) $(git status --porcelain)" " "
 
 # local modifications: only the files of the release count - files of
@@ -1501,7 +1502,7 @@ check "dir: pull refused" "$(rc pullcm lib/zlib)" "2"
 git commit -qam "local change"
 check "dir: committed modification" "$(st)" " M"
 pullc --overwrite lib/zlib
-check "dir: --overwrite restores" "$(cat lib/zlib/include/zlib.h) $(git log -1 --format=%s)" "zlib 1.3.1 [assetsync] Restore lib/zlib/ from madler/zlib v1.3.1"
+check "dir: --overwrite restores" "$(cat lib/zlib/include/zlib.h) $(git log -1 --format=%s)" "zlib 1.3.1 [assetsync] Restore lib/zlib/ from madler/zlib v1.3.1 (2026-10-11)"
 check "dir: --overwrite: files of others and ignored ones kept" "$(ls lib/zlib | oneline)" "build.log include lib mine.h "
 check "dir: clean after restore" "$(st) $(git status --porcelain)" " "
 
@@ -1513,7 +1514,7 @@ check "set filter: pending" "$(git assetsync status | grep -c 'pending:    lib/z
 reset_calls
 pullc lib/zlib
 check "filter changed: pulled, the files of others kept" "$(git ls-files lib | oneline)" "lib/zlib/include/new.h lib/zlib/include/zlib.h lib/zlib/mine.h "
-check "filter changed: message" "$(git log -1 --format=%s)" "[assetsync] Update lib/zlib/ from madler/zlib v1.3.1 (filter changed)"
+check "filter changed: message" "$(git log -1 --format=%s)" "[assetsync] Update lib/zlib/ from madler/zlib v1.3.1 (2026-10-11, filter changed)"
 check "filter changed: no download (cache)" "$(downloads)" "0"
 check "set --no-filter" "$(git assetsync set lib/zlib --no-filter; reg dir.lib/zlib.filter)" \
   "lib/zlib/: filter zh -> (none)
@@ -1585,7 +1586,7 @@ printf '[source "h"]\n\turl = https://github.com/acme/many-assets\n[dir "hand"]\
 git add .git-assetsync && git commit -qm "hand-written dir"
 check "hand-written dir: new" "$(st hand)" "N"
 pullc hand
-check "hand-written dir: pulled" "$(git ls-files hand | oneline) $(git log -1 --format=%s)" "hand/a1.txt hand/a2.txt  [assetsync] Add hand/ from h v1"
+check "hand-written dir: pulled" "$(git ls-files hand | oneline) $(git log -1 --format=%s)" "hand/a1.txt hand/a2.txt  [assetsync] Add hand/ from h v1 (2026-10-10)"
 
 # mv and unlink of a directory entry
 quiet git assetsync mv hand moved
@@ -2278,18 +2279,18 @@ check "diff --release: unknown tag" "$(git assetsync diff --upstream --release v
   "error: f.txt: no release with tag 'v9' in acme/df"
 # pull --release: once another release, the selection stays
 check "pull --release: dry run" "$(git assetsync pull -n --release v1 f.txt | head -1)" \
-  "would: Update f.txt to acme/df v1 (was v2)"
+  "would: Update f.txt to acme/df v1 (2026-10-10, was v2 of 2026-10-11)"
 out=$(pullcm --release v1 f.txt)
 check "pull --release: hint" "$(printf '%s\n' "$out" | tail -1)" \
   "note: f.txt: it still selects v2 - 'git assetsync pull f.txt' goes back to it; to stay on v1: 'git assetsync set f.txt --release v1'"
 check "pull --release: content" "$(cat f.txt | oneline)" "one two "
 check "pull --release: synced" "$(reg file.f.txt.synced)" "v1"
 check "pull --release: selection unchanged" "$(reg file.f.txt.release)" ""
-check "pull --release: message" "$(git log -1 --format=%s)" "[assetsync] Update f.txt to acme/df v1 (was v2)"
+check "pull --release: message" "$(git log -1 --format=%s)" "[assetsync] Update f.txt to acme/df v1 (2026-10-10, was v2 of 2026-10-11)"
 check "pull --release: status pending" "$(git assetsync status -s f.txt)" "P  f.txt"
 check "pull --release: up to date" "$(git assetsync pull --release v1 f.txt)" "f.txt: up to date"
 check "pull --release: pattern = newest matching" "$(git assetsync pull -n --release 'v*' f.txt | head -1)" \
-  "would: Update f.txt to acme/df v2 (was v1)"
+  "would: Update f.txt to acme/df v2 (2026-10-11, was v1 of 2026-10-10)"
 check "pull --release: also with --all" "$(git assetsync pull -n --all --release v1 2>&1 | grep -c '^error'; git status --porcelain)" "0"
 check "pull --release: unknown tag" "$(git assetsync pull --release v9 f.txt 2>&1)" \
   "error: f.txt: no release with tag 'v9' in acme/df"
@@ -2364,7 +2365,7 @@ addc https://github.com/acme/loc t.bin
 check "map: newest by file date, not by name" "$(reg file.t.bin.synced) $(cat t.bin)" "v1 one"
 check "map: nothing asked online" "$(calls)" "0"
 check "map: commit message" "$(git log -1 --format=%B | grep '^Release:')" \
-  "Release: v1 (2026-10-12, from a local folder, not published)"
+  "Release: v1 (from a local folder, not published)"
 check "map: not in .git-assetsync" "$(grep -ci 'localrel' .git-assetsync)" "0"
 check "map: status names the folder" "$(git assetsync status | grep -c 'from the local folder')" "1"
 check "map: up to date" "$(git assetsync status -s)" ""
@@ -2388,7 +2389,7 @@ asset t.bin "server two"; release acme/loc v2 15 "$F/t.bin"
 check "--remote: status against the server" "$(git assetsync status --remote | grep 'pending:' | sed 's/^[[:space:]]*//')" \
   "pending:    t.bin  (v3 -> v2)"
 check "--remote: source releases" "$(git assetsync source releases --remote acme/loc | cut -c1-2 | oneline)" "v2 "
-check "--remote: pull" "$(git assetsync pull -n --remote t.bin)" "would: Update t.bin to acme/loc v2 (was v3)"
+check "--remote: pull" "$(git assetsync pull -n --remote t.bin)" "would: Update t.bin to acme/loc v2 (2026-10-15, was v3)"
 check "--remote: the mapping stays" "$(git assetsync status -s) $(git assetsync source map | grep -c acme/loc)" " 1"
 # a source given by name
 quiet git assetsync source rename acme/loc loc && git commit -qm rename -- .git-assetsync
@@ -2417,7 +2418,7 @@ check "flat: one asset of two" "$(git assetsync add https://github.com/acme/flat
 addc https://github.com/acme/flat v.xml --asset '*.xml'
 check "flat: newest release, the asset chosen" "$(reg file.v.xml.synced) $(cat v.xml)" "rel20260410 <v>20260410</v>"
 check "flat: pinned tag" "$(git assetsync pull -n --release rel20260213 v.xml | head -1)" \
-  "would: Update v.xml to acme/flat rel20260213 (was rel20260410)"
+  "would: Update v.xml to acme/flat rel20260213 (2026-02-13, was rel20260410 of 2026-04-10)"
 check "flat: .tar.gz is one extension" "$(git assetsync source releases acme/flat | grep -c '^rel20250101 ')" "1"
 check "map --flat: only with DIR" "$(git assetsync source map --flat acme/flat 2>&1)" \
   "error: --flat goes with the folder: source map --flat URL|SOURCE DIR"
@@ -2475,11 +2476,11 @@ check "--sort name: latest by name" "$(git assetsync status | grep 'pending: *s.
 pullc s.bin
 check "--sort name: skipped by name" "$(git log -1 --format=%B | grep '^Since:')" "Since:   rel20260501 (2026-12-01)"
 quiet git assetsync set s.bin --release 'rel202605*' && git commit -qm pattern -- .git-assetsync
-check "--sort name: pattern" "$(git assetsync pull -n s.bin)" "would: Update s.bin to acme/sorted rel20260501 (was rel20261022)"
+check "--sort name: pattern" "$(git assetsync pull -n s.bin)" "would: Update s.bin to acme/sorted rel20260501 (2026-12-01, was rel20261022 of 2026-01-01)"
 quiet git assetsync set s.bin --latest && git commit -qm latest -- .git-assetsync
 quiet git assetsync source map acme/sorted "$SN"
 check "map again without --sort: by date" "$(git config assetsync.https://github.com/acme/sorted.sort; git assetsync pull -n s.bin)" \
-  "would: Update s.bin to acme/sorted rel20260501 (was rel20261022)"
+  "would: Update s.bin to acme/sorted rel20260501 (2026-12-01, was rel20261022 of 2026-01-01)"
 check "--sort: only with DIR" "$(git assetsync source map acme/sorted --sort name 2>&1)" \
   "error: --sort goes with the folder: source map URL|SOURCE DIR --sort name"
 quiet git assetsync source map acme/sorted --unset
@@ -2648,7 +2649,7 @@ mkarchive "$F/cl-3.tar.gz" "$F/cl"
 reupload acme/cl c3 "$F/cl-3.tar.gz"
 pullc cl
 check "changelog: also for replaced assets" "$(git log -1 --format=%B | grep -E '^(\[assetsync\]|Release notes|Changelog|  )' | oneline)" \
-  "[assetsync] Update cl/ from acme/cl c3 (asset replaced) Changelog (CHANGELOG.txt):   c3: rebuilt   c3: change 3   c2: change 2   c1: change 1 "
+  "[assetsync] Update cl/ from acme/cl c3 (2026-10-23, asset replaced) Changelog (CHANGELOG.txt):   c3: rebuilt   c3: change 3   c2: change 2   c1: change 1 "
 printf 'bin\000ary\n' > "$F/log.bin"; printf 'text\n' > "$F/log.txt"
 quiet git assetsync filter add clb --changelog 'log.*'
 check "filter test: not text skipped" "$(git assetsync filter test clb "$F/log.bin" "$F/log.txt" 2>&1 | grep '^changelog')" \
@@ -3148,7 +3149,7 @@ git config -f .git-assetsync file.h.txt.source acme/cm && git config -f .git-ass
 git commit -qam "h.txt by hand"
 check "not synced yet: new" "$(st h.txt) $(git assetsync status | grep -c 'new:        h.txt  (not synced yet, release v2)')" "N 1"
 pullcm h.txt >/dev/null 2>&1
-check "... pull: Add" "$(cat h.txt) $(git log -1 --format=%s)" "c2 [assetsync] Add h.txt from acme/cm v2"
+check "... pull: Add" "$(cat h.txt) $(git log -1 --format=%s)" "c2 [assetsync] Add h.txt from acme/cm v2 (2026-10-17)"
 # pull --all --release: once, for all; an entry whose project has no such release: an error
 out=$(git assetsync pull --all --release v1 2>&1); r=$?
 check "pull --all --release: the others pulled, one error" \
@@ -3188,6 +3189,42 @@ quiet asd add acme/cm v/ && echo changed > v/cm1.txt && git add -A && git commit
 cd "$T" && git clone -q --no-local r37 r37c && cd r37c
 check "verify: base got again, kept" "$(git assetsync verify v | head -1) $(git for-each-ref refs/assetsync | lines) $(st v)" \
   "v/: verified (v2) 1  M"
+
+# =============================================================================
+section "38. Line endings: the eol step"
+# =============================================================================
+# bytes PATH - the bytes of a file, CR and LF named (for comparing)
+bytes() { od -An -c "$1" | tr -s ' \n' ' '; }
+new_repo r38
+mkdir in && printf 'a\r\nb\nc\r\n' > in/mixed.txt && printf 'a\nb\n' > in/unix.txt
+printf 'a\0b\r\n' > in/zero.dat && printf 'a\rb\n' > in/cr.txt
+filt e1 --eol '*' lf
+check "eol lf: what filter test says" "$(git assetsync filter test e1 in -o o1 2>&1 | head -1)" \
+  "eol '*' lf  1 of 4 files to LF, 2 binary left as is"
+check "eol lf: mixed line endings" "$(bytes o1/mixed.txt)" " a \n b \n c \n "
+check "eol: a NUL, a lone CR - binary, as is" "$(bytes o1/zero.dat)|$(bytes o1/cr.txt)" \
+  " a \0 b \r \n | a \r b \n "
+filt e2 --eol '*.txt' crlf
+quiet git assetsync filter test e2 in -o o2
+check "eol crlf: no CR CR LF" "$(bytes o2/mixed.txt)|$(bytes o2/unix.txt)" " a \r \n b \r \n c \r \n | a \r \n b \r \n "
+filt e3 --eol '*.txt' native
+quiet git -c core.autocrlf=true assetsync filter test e3 in -o o3
+quiet git -c core.autocrlf=input -c core.eol=crlf assetsync filter test e3 in -o o4
+quiet git -c core.autocrlf=false -c core.eol=crlf assetsync filter test e3 in -o o5
+quiet git -c core.autocrlf=false -c core.eol=lf assetsync filter test e3 in -o o6
+check "eol native: as git checks out (autocrlf, then core.eol)" \
+  "$(bytes o3/unix.txt)|$(bytes o4/mixed.txt)|$(bytes o5/unix.txt)|$(bytes o6/mixed.txt)" \
+  " a \r \n b \r \n | a \n b \n c \n | a \r \n b \r \n | a \n b \n c \n "
+check "eol: another mode" "$(git assetsync filter add e4 --eol '*' cr 2>&1)" \
+  "error: filter step 'eol '*' cr': eol takes lf, crlf, native"
+check "eol: needs a pattern and a mode" "$(rc git assetsync filter add e4 --eol lf)" "2"
+# in the repository: stored as the step gives it (-text: as it is)
+printf '*.txt -text\n' > .gitattributes && git add .gitattributes && git commit -qm attr
+printf 'x\r\ny\r\n' > "$F/eol.txt"; release acme/eol38 v1 10 "$F/eol.txt"
+addc acme/eol38 e.txt --filter e1
+git cat-file blob :e.txt > stored.out
+check "eol: stored with LF, clean" "$(bytes stored.out)|$(st e.txt)" " x \n y \n |"
+check "eol: verify" "$(git assetsync verify e.txt)" "e.txt: verified (v1)"
 
 # =============================================================================
 echo
