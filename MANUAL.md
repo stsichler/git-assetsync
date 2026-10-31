@@ -1301,9 +1301,8 @@ git assetsync filter add sdk --extract --eol '*.h' lf --eol '*.bat' crlf
 - Binary files stay as they are, decided as git does for `text=auto`: a
   NUL byte (also UTF-16), a CR not before an LF, or too many control
   characters. `filter test` says how many.
-- `native` is CRLF on Windows, LF elsewhere – whatever git's settings
-  (`core.autocrlf`, `core.eol`). So the result depends on the platform:
-  `verify` on another one may find it differs.
+- `native` is CRLF on Windows, LF elsewhere – so the result depends on
+  the platform: `verify` on another one may find it differs.
 - The step gives the content; the repository's `.gitattributes` still
   decide how it is stored and checked out (see [Line endings](#line-endings)):
   with `text` or `text=auto`, git stores LF anyway.
