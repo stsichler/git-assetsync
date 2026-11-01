@@ -395,7 +395,7 @@ import time
 import zipfile
 import zlib
 from collections import Counter
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
 from collections import namedtuple
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
@@ -2658,8 +2658,9 @@ class Repo:
         saved = {k: os.environ.get(k) for k in OBJECT_VARS}
         td = tempfile.mkdtemp(prefix="assetsync-objects-")
         os.environ["GIT_OBJECT_DIRECTORY"] = td
+        alternates = saved[OBJECT_VARS[1]]
         os.environ["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = os.pathsep.join(
-            [str(objects)] + ([saved[OBJECT_VARS[1]]] if saved[OBJECT_VARS[1]] else []))
+            [str(objects)] + ([alternates] if alternates else []))
         self.scratch_dir = td
         try:
             yield
@@ -2943,7 +2944,8 @@ def with_value(line, value):
             break
         i += 1
     comment = rest[i:]
-    gap = re.search(r"[ \t]*$", rest[:i]).group(0) if comment else ""
+    before = rest[:i]
+    gap = before[len(before.rstrip(" \t")):] if comment else ""
     return m.group(0) + config_value(value) + gap + comment
 
 
@@ -2965,7 +2967,7 @@ def edit_config(text, items, ops):
         """[start, end) of the lines of each section block NAME (sect.sub):
         from its header to its last key."""
         sect, _, sub = name.partition(".")
-        found, start, last = [], None, None
+        found, start, last = [], None, 0
         for i, ln in enumerate(lines + ["[end]"]):
             if ln.lstrip().startswith("["):
                 if start is not None:
@@ -3032,7 +3034,7 @@ def edit_config(text, items, ops):
         k = k.lower()
         norm = name.partition(".")[0].lower() + "." + name.partition(".")[2] + "." + k
         found = blocks(name)
-        idx = key_lines(*found[0], k) if found else []
+        idx = key_lines(found[0][0], found[0][1], k) if found else []
         if flag == "--unset-all":
             for i in reversed(idx):
                 del lines[i]
@@ -3045,7 +3047,8 @@ def edit_config(text, items, ops):
                 for v in values:
                     append(name, k, v)
             else:
-                indent = re.match(r"[ \t]*", lines[idx[0]]).group(0) or "\t"
+                first = lines[idx[0]]
+                indent = first[:len(first) - len(first.lstrip(" \t"))] or "\t"
                 for i in reversed(idx):
                     del lines[i]
                 lines[idx[0]:idx[0]] = [f"{indent}{k} = {config_value(v)}" for v in values]
