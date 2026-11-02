@@ -2,10 +2,7 @@
 
 # git-assetsync
 
-[![Tests](https://github.com/stsichler/git-assetsync/actions/workflows/test.yml/badge.svg)](https://github.com/stsichler/git-assetsync/actions/workflows/test.yml)
-[![License: MIT-0](https://img.shields.io/badge/License-MIT--0-blue.svg)](LICENSE)
-![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)
-![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)
+[![Version](https://img.shields.io/github/v/release/stsichler/git-assetsync?label=Version)](https://github.com/stsichler/git-assetsync/releases/latest) [![Tests](https://github.com/stsichler/git-assetsync/actions/workflows/test.yml/badge.svg)](https://github.com/stsichler/git-assetsync/actions/workflows/test.yml) [![Downloads](https://img.shields.io/github/downloads/stsichler/git-assetsync/latest/total?label=Downloads)](https://github.com/stsichler/git-assetsync/releases/latest) [![License: MIT-0](https://img.shields.io/badge/License-MIT--0-blue.svg)](LICENSE) ![Python 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg) ![Platforms](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)
 
 **Keep files in your repository in sync with release assets of other
 projects.** Check in a binary, a firmware image, or headers unpacked from
