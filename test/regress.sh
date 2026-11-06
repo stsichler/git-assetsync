@@ -1412,7 +1412,7 @@ release --title "Rel 2 RC" --pre acme/rl v2-rc1 12 "$F/small.bin"
 release --draft acme/rl v3 13 "$F/small.bin"
 check "releases outside a repository" "$(asd source releases acme/rl | oneline)" \
   "v3      2026-10-13  (draft) v2-rc1  2026-10-12  Rel 2 RC  (prerelease) v1.1    2026-10-11  (latest) v1      2026-10-10  Rel 1 v0      2026-10-09 "
-check "releases -n" "$(asd source releases acme/rl -n 2 | lines)" "2"
+check "releases --max-count" "$(asd source releases acme/rl --max-count 2 | lines)" "2"
 check "releases --assets" "$(asd source releases acme/rl --assets | tail -5 | oneline)" \
   "v1      2026-10-10  Rel 1     kib.bin    2.9 KiB     small.bin  3 bytes v0      2026-10-09     (no assets) "
 new_repo r17
@@ -1422,9 +1422,9 @@ check "releases: selected by entries" "$(git assetsync source releases acme/rl |
   "v2-rc1  2026-10-12  Rel 2 RC  (prerelease, selected by b.bin) "
 check "releases: latest selected" "$(git assetsync source releases acme/rl | grep '^v1.1 ')" \
   "v1.1    2026-10-11  (latest, selected by a.bin)"
-check "releases of a source by name" "$(git assetsync source releases acme/rl -n 1)" \
+check "releases of a source by name" "$(git assetsync source releases acme/rl --max-count 1)" \
   "v3  2026-10-13  (draft)"
-check "releases: GitLab, upcoming" "$(asd source releases https://gitlab.com/grp/proj -n 2 | oneline)" \
+check "releases: GitLab, upcoming" "$(asd source releases https://gitlab.com/grp/proj --max-count 2 | oneline)" \
   "v3  2026-10-30  (upcoming) v2  2026-10-11  (latest) "
 check "releases: none" "$(asd source releases https://gitlab.com/grp/empty)" "no releases in grp/empty"
 check "releases: unknown project" "$(asd source releases acme/nothing 2>&1)" "error: repository acme/nothing not found (or no access)"

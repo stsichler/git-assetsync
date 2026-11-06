@@ -269,7 +269,7 @@ Advanced commands - change entries, sources and filters; set up:
                                 selected by which entries; also outside a
                                 repository (with a URL)
         --assets                also list the assets, with their sizes
-        -n N, --all             the newest N releases (default 10), or all
+        --max-count N, --all    the newest N releases (default 10), or all
         --type github|gitlab    platform of the URL's host
 
     filter                      list the filters (and who uses them)
@@ -6420,7 +6420,7 @@ def run(argv):
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
     a.add_argument("--assets", action="store_true", help="also list the assets")
     g = a.add_mutually_exclusive_group()
-    g.add_argument("-n", "--max-count", type=int, default=10, metavar="N",
+    g.add_argument("--max-count", type=int, default=10, metavar="N",
                    help="the newest N releases (default: 10)")
     g.add_argument("--all", action="store_true", help="all releases")
     a.add_argument("--type", choices=sorted(PLATFORMS),

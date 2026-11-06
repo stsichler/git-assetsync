@@ -702,7 +702,7 @@ git assetsync source map acme/tool --unset                # remove it again
 ### `source releases`
 
 ```
-git assetsync source releases URL|SOURCE [--assets] [-n N | --all] [--type github|gitlab]
+git assetsync source releases URL|SOURCE [--assets] [--max-count N | --all] [--type github|gitlab]
 ```
 
 Lists the releases of a project, newest first: tag, date and title,
@@ -711,7 +711,7 @@ by …` with the entries that select it – a help for choosing `--release`
 and `--asset`. With a URL it also works outside a repository.
 
 ```console
-$ git assetsync source releases acme/tool --assets -n 2
+$ git assetsync source releases acme/tool --assets --max-count 2
 v1.1      2026-10-11  Tool 1.1  (latest, selected by bin/tool)
     tool-1.1-linux-x64     14.6 MiB
     tool-1.1-windows.zip   15.2 MiB
@@ -722,7 +722,7 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
 | Option | Meaning |
 |---|---|
 | `--assets` | also list the assets, with their sizes (GitLab reports none) |
-| `-n`, `--max-count N` | the newest N releases (default: 10) |
+| `--max-count N` | the newest N releases (default: 10) |
 | `--all` | all releases |
 | `--type github\|gitlab` | platform of the URL's host |
 
