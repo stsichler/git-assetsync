@@ -235,7 +235,7 @@ Advanced commands - change entries, sources and filters; set up:
         --release TAG|PATTERN, --latest, --prerelease, --no-prerelease
                                 another release selection
         --asset PATTERN, --no-asset  another asset (--no-asset: the only one,
-                                for a directory all)
+                                for a directory all - with sourcecode none)
         --sourcecode FORMAT, --no-sourcecode  the source code archive, or not
         --filter NAME, --no-filter  another filter, or none
         -n, --dry-run           only show what would change
@@ -915,14 +915,18 @@ class GitHub(Platform):
 
     def commit_of(self, release):
         """The commit of a release's tag: one more request (the release
-        doesn't say)."""
-        try:
-            d = self.json(f"repos/{self.project}/commits/refs/tags/{quote(release.tag, safe='')}")
-        except NotFound:
-            d = None
-        if not isinstance(d, dict) or not d.get("sha"):
+        doesn't say) - only its id, not the whole commit; once per run."""
+        path = f"repos/{self.project}/commits/refs/tags/{quote(release.tag, safe='')}"
+        if path not in self.answers:
+            try:
+                self.answers[path] = self.api(path, headers=["Accept: application/vnd.github.sha"]
+                                              ).decode("utf-8", "replace").strip()
+            except NotFound:
+                self.answers[path] = ""
+        sha = self.answers[path]
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
             raise FsError(f"{self.label}: commit of tag {release.tag} not found")
-        return d["sha"]
+        return sha
 
     def archive_path(self, sha, fmt):
         return f"repos/{self.project}/{'zipball' if fmt == 'zip' else 'tarball'}/{sha}"
@@ -963,8 +967,9 @@ class GitLab(Platform):
                        d.get("description") or "", commit=(d.get("commit") or {}).get("id") or "")
 
     def commit_of(self, release):
-        if not release.commit:
-            raise FsError(f"{self.label}: commit of tag {release.tag} not found")
+        if not release.commit:     # GitLab leaves it out without access to the repository
+            raise FsError(f"{self.label}: commit of tag {release.tag} not found (no access to "
+                          "its repository?)")
         return release.commit
 
     def archive_path(self, sha, fmt):
@@ -1325,6 +1330,15 @@ def select_assets(release, pattern, label, is_dir, choose="--asset PATTERN"):
     return found
 
 
+def check_sourcecode(url, kind, fmt):
+    """Error if the platform of a source offers no source code archive in
+    format fmt - also for a source mapped to a local folder (offline)."""
+    platform = type(platform_of(url, kind, remote=True))
+    if fmt and fmt not in platform.SOURCE_FORMATS:
+        raise FsError(f"{url}: no source code archive '{fmt}' (formats: "
+                      f"{', '.join(platform.SOURCE_FORMATS)})")
+
+
 def entry_assets(origin, release, pattern, sourcecode, is_dir, choose="--asset PATTERN"):
     """The assets an entry takes (see select_assets()); with sourcecode,
     the release's source code archive in that format too - and the
@@ -1335,7 +1349,7 @@ def entry_assets(origin, release, pattern, sourcecode, is_dir, choose="--asset P
         raise FsError("a file takes one asset: an asset pattern or the source code, not both")
     archive = origin.source_archive(release, sourcecode)
     # a local folder's archive is one of its files: not twice
-    assets = [a for a in select_assets(release, pattern, origin.label, True)
+    assets = [a for a in select_assets(release, pattern, origin.label, True, choose)
               if a is not archive] if pattern else []
     if any(a.name == archive.name for a in assets):
         raise FsError(f"the source code archive and an asset of release {release.tag} of "
@@ -5067,6 +5081,7 @@ def cmd_add(ctx, repo, args):
     reg.need_filter(args.filter)
     steps = named_steps(args.filter) if args.filter else []
     url, spec, named = given_source(reg, args)
+    check_sourcecode(url, spec.get("type"), args.sourcecode)
     origin, release = ctx.release(url, spec)
     assets = entry_assets(origin, release, args.asset, args.sourcecode, is_dir)
     name = named or reg.source_name(url)
@@ -5235,18 +5250,24 @@ def cmd_set(ctx, repo, args):
     reg.need_filter(args.filter)
     reg.dry_run = args.dry_run
     entries = select_entries(repo, reg, args.paths)
+    if args.source:           # another project (fork, moved) or [source]
+        url, spec, named = given_source(reg, SimpleNamespace(
+            source=args.source, release=None, prerelease=None, type=args.type))
+        platform_of(url, spec.get("type"))       # a usable URL and type
     for e in entries:
         asset = None if args.no_asset else e.asset if args.asset is None else args.asset
         sourcecode = None if args.no_sourcecode else args.sourcecode or e.sourcecode
         if asset and sourcecode and not e.is_dir:
             raise FsError(f"{e.shown}: a file takes one asset: --asset or --sourcecode, not "
                           "both")
+        if sourcecode and (args.sourcecode or args.source):
+            if args.source:
+                check_sourcecode(url, spec.get("type"), sourcecode)
+            else:
+                check_sourcecode(e.url, e.spec.get("type"), sourcecode)
     would = "would: " if args.dry_run else ""
     changed = False
-    if args.source:           # another project (fork, moved) or [source]
-        url, spec, named = given_source(reg, SimpleNamespace(
-            source=args.source, release=None, prerelease=None, type=args.type))
-        platform_of(url, spec.get("type"))       # a usable URL and type
+    if args.source:
         target = named or reg.source_name(url)
         for e in [e for e in entries if e.name != target]:
             old, other_url = e.name, norm_url(e.url) != norm_url(url)
@@ -5280,7 +5301,8 @@ def cmd_set(ctx, repo, args):
         new = None if args.no_asset else args.asset
         for e in entries:
             if (e.asset or None) != new:
-                every = "(all)" if e.is_dir else "(the only one)"
+                sourcecode = None if args.no_sourcecode else args.sourcecode or e.sourcecode
+                every = "(the only one)" if not e.is_dir else "(none)" if sourcecode else "(all)"
                 print(f"{would}{e.shown}: asset {e.asset or every} -> {new or every}")
                 e.set("asset", new)
                 e.set("synced", None)
@@ -5937,6 +5959,7 @@ def filter_test(ctx, repo, reg, args):
         files = {}
         if args.source:
             url, spec, _ = given_source(reg, args)
+            check_sourcecode(url, spec.get("type"), args.sourcecode)
             origin, release = ctx.release(url, spec)
             assets = entry_assets(origin, release, args.asset, args.sourcecode, True)
             for a in assets:
@@ -6466,7 +6489,8 @@ def run(argv):
     g = p.add_mutually_exclusive_group()
     g.add_argument("--asset", metavar="PATTERN", help="another asset (glob, exactly one match)")
     g.add_argument("--no-asset", action="store_true",
-                   help="no pattern: the release's only asset (a directory: all)")
+                   help="no pattern: the release's only asset (a directory: all; "
+                        "with --sourcecode none)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--sourcecode", metavar="FORMAT",
                    help="the release's source code archive in FORMAT (zip, tar.gz, ...)")

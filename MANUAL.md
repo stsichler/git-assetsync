@@ -584,7 +584,7 @@ with the change.
 | `--release TAG\|PATTERN`, `--latest` | another release selection: a tag pins, a pattern takes the newest match, `--latest` the latest |
 | `--prerelease`, `--no-prerelease` | let prereleases count, or not |
 | `--type github\|gitlab` | with `--source` a new URL: the platform of its host |
-| `--asset PATTERN`, `--no-asset` | another asset; `--no-asset`: the only one (a directory: all) |
+| `--asset PATTERN`, `--no-asset` | another asset; `--no-asset`: the only one (a directory: all; with `sourcecode` none) |
 | `--sourcecode FORMAT`, `--no-sourcecode` | take the source code archive (as for [`add`](#add)), or not |
 | `--filter NAME`, `--no-filter` | another named [filter](#filters), or none |
 | `-n`, `--dry-run` | only show what would change |
@@ -921,7 +921,8 @@ assetsync: bin/tool: synced from assets of release v1.3 that differ from those o
 
 Others couldn't pull or verify that state. The check ignores mappings and
 only asks for entries the remote doesn't have yet, so usually no request
-is needed. GitLab reports no digests; there only the tag is checked. Like
+is needed. GitLab and source code archives have no digests; there only
+the tag is checked. Like
 Git with submodules, it only warns by default; `assetsync.pushCheck` sets
 what happens:
 
@@ -1335,7 +1336,8 @@ Source code archives are made by the platform on request: no digest; the
 commit of the tag stands for the content (`assetid`). Its content follows
 the project's `export-ignore` and `export-subst` attributes. The digest is
 computed from the download; the platform may change how it compresses, so
-`verify` without the archive in the cache can find a difference.
+without the archive in the cache `verify` – and rebuilding a directory's
+base that isn't in this clone – can find a difference.
 
 ### Download cache
 

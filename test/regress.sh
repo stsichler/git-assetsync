@@ -3308,10 +3308,15 @@ check "file: not with --asset" "$(git assetsync add acme/sarc s2.zip --sourcecod
 check "set: not both for a file" "$(git assetsync set s.zip --asset 'bin*' 2>&1)" \
   "error: s.zip: a file takes one asset: --asset or --sourcecode, not both"
 check "format not offered" "$(git assetsync add acme/sarc x.7z --sourcecode 7z 2>&1)" \
-  "error: acme/sarc: no source code archive '7z' (formats: zip, tar.gz)"
+  "error: https://github.com/acme/sarc: no source code archive '7z' (formats: zip, tar.gz)"
+check "set: format checked" "$(git assetsync set d --sourcecode tgz 2>&1)" \
+  "error: https://github.com/acme/sarc: no source code archive 'tgz' (formats: zip, tar.gz)"
+check "... GitHub: only the commit id asked" "$(grep 'commits/refs/tags/' "$GH/calls.log" | grep -vc 'Accept: application/vnd.github.sha')" "0"
 asset sarc-v2.zip "not the source"; release --src "$F/sc2" acme/sarc v2 11 "$F/bin.txt" "$F/sarc-v2.zip"
 check "name taken by an asset" "$(git assetsync pull both 2>&1)" \
   "error: both/: the source code archive and an asset of release v2 of acme/sarc are both named sarc-v2.zip - take them with two entries"
+check "set --no-asset with sourcecode: none" "$(git assetsync set -n both --no-asset)" \
+  "would: both/: asset * -> (none)"
 check "set --no-sourcecode: the assets" "$(git assetsync set both --no-sourcecode --no-asset | head -2)" \
   "both/: asset * -> (all)
 both/: source code zip -> (none)"
@@ -3330,6 +3335,10 @@ check "... clean" "$(st g)" ""
 # a local folder: its file named like the archive
 mkdir -p "$T/loc40/v3"
 quiet git assetsync source map https://github.com/acme/sarc "$T/loc40"
+: > "$T/loc40/v3/sarc-v3.7z"
+check "local folder: formats of the platform" "$(git assetsync add acme/sarc l/ --sourcecode 7z 2>&1)" \
+  "error: https://github.com/acme/sarc: no source code archive '7z' (formats: zip, tar.gz)"
+rm "$T/loc40/v3/sarc-v3.7z"
 check "local folder: archive missing" "$(git assetsync status -s d 2>/dev/null) $(git assetsync status d 2>&1 | tr '\\' / | grep -c "release v3 of acme/sarc (local folder $T/loc40) has no sarc-v3.tar.gz (its source code archive)")" "E  d/ 1"
 mkdir -p "$T/lsrc/x" && printf 'local\n' > "$T/lsrc/x/a.c"
 mkarchive "$T/loc40/v3/sarc-v3.tar.gz" "$T/lsrc"; cp "$F/bin.txt" "$T/loc40/v3/"

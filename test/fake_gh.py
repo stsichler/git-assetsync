@@ -124,7 +124,10 @@ def main(argv):
     if parts[3] == "commits" and len(rest) == 3 and rest[:2] == ["refs", "tags"]:
         for meta, _ in rels:
             if meta["tag_name"] == unquote(rest[2]):
-                sys.stdout.write(json.dumps({"sha": meta["commit"]}))
+                if accept == "application/vnd.github.sha":
+                    sys.stdout.write(meta["commit"])
+                else:
+                    sys.stdout.write(json.dumps({"sha": meta["commit"], "files": []}))
                 return
         fail(404, "Not Found")
     if parts[3] in ("zipball", "tarball") and len(parts) == 5:
