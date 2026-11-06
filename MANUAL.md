@@ -704,6 +704,9 @@ git assetsync source map acme/tool --unset                # remove it again
   map` without them goes back to the defaults.
 - There are no prereleases, drafts or release notes; the commit message
   says `Release: v1.3-rc1 (from a local folder, not published)`.
+- The source code archive (`--sourcecode`) is the release's file
+  `REPO-TAG.FORMAT`, e.g. `tool-v1.2.tar.gz` in `v1.2/` (not with
+  `--flat`: that file would be a release of its own).
 - Everything works offline; the assets are read from the folder. Their
   SHA-256 is remembered in the [download cache](#download-cache), so
   `status` doesn't read big files on every call.

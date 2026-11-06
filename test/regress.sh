@@ -3327,10 +3327,18 @@ addc https://gitlab.com/grp/gsrc g/ --sourcecode tar.bz2 --filter unpack
 check "GitLab: tar.bz2" "$(cd g && find . -type f | sort | oneline)" "./README ./lib/a.c "
 check "... downloaded by commit, no commit request" "$(grep -c 'projects/grp%2Fgsrc/repository/archive.tar.bz2?sha=[0-9a-f]\{40\}$' "$GH/calls.log") $(grep -c commits "$GH/calls.log")" "1 0"
 check "... clean" "$(st g)" ""
-# a local folder has none
-mkdir -p "$T/loc40/v1"
+# a local folder: its file named like the archive
+mkdir -p "$T/loc40/v3"
 quiet git assetsync source map https://github.com/acme/sarc "$T/loc40"
-check "local folder: no source code" "$(git assetsync status -s d 2>/dev/null) $(git assetsync status d 2>&1 | grep -c 'a local folder has no source code archives')" "E  d/ 1"
+check "local folder: archive missing" "$(git assetsync status -s d 2>/dev/null) $(git assetsync status d 2>&1 | tr '\\' / | grep -c "release v3 of acme/sarc (local folder $T/loc40) has no sarc-v3.tar.gz (its source code archive)")" "E  d/ 1"
+mkdir -p "$T/lsrc/x" && printf 'local\n' > "$T/lsrc/x/a.c"
+mkarchive "$T/loc40/v3/sarc-v3.tar.gz" "$T/lsrc"; cp "$F/bin.txt" "$T/loc40/v3/"
+check "... its file" "$(git assetsync status -s d 2>/dev/null)" "P  d/"
+pullc d
+check "... pulled" "$(cat d/a.c)" "local"
+git assetsync set both --sourcecode tar.gz --asset '*' >/dev/null && git commit -qm set
+check "... not twice with --asset" "$(git assetsync pull both 2>&1 | grep -c staged) $(ls both | oneline)" "1 bin.txt sarc-v3.tar.gz "
+git commit -qm both
 quiet git assetsync source map --unset https://github.com/acme/sarc
 
 # =============================================================================

@@ -873,8 +873,8 @@ class Platform:
             raise FsError(f"{self.label}: no source code archive '{fmt}' (formats: "
                           f"{', '.join(self.SOURCE_FORMATS)})")
         sha = self.commit_of(release)
-        name = f"{self.project.rsplit('/', 1)[-1]}-{release.tag.replace('/', '-')}.{fmt}"
-        return SourceArchive(name, sha, path=self.archive_path(sha, fmt))
+        return SourceArchive(archive_name(self.project, release, fmt), sha,
+                             path=self.archive_path(sha, fmt))
 
     def download(self, asset, dest):
         if isinstance(asset, SourceArchive):
@@ -882,6 +882,11 @@ class Platform:
                 self.api(asset.path, stdout=f)
         else:
             self.download_asset(asset, dest)
+
+
+def archive_name(project, release, fmt):
+    """Name of a release's source code archive: <repo>-<tag>.<fmt>."""
+    return f"{project.rsplit('/', 1)[-1]}-{release.tag.replace('/', '-')}.{fmt}"
 
 
 class GitHub(Platform):
@@ -1143,7 +1148,13 @@ class LocalFolder:
         return max(rels, key=lambda r: r.order) if rels else None
 
     def source_archive(self, release, fmt):
-        raise FsError(f"{self.where}: a local folder has no source code archives")
+        """The release's file named like its source code archive."""
+        name = archive_name(self.project, release, fmt)
+        found = next((a for a in release.assets if a.name == name), None)
+        if not found:
+            raise FsError(f"release {release.tag} of {self.where} has no {name} (its source "
+                          "code archive)")
+        return found
 
     def by_tag(self, tag):
         self.check_project()
@@ -1323,7 +1334,9 @@ def entry_assets(origin, release, pattern, sourcecode, is_dir, choose="--asset P
     if pattern and not is_dir:
         raise FsError("a file takes one asset: an asset pattern or the source code, not both")
     archive = origin.source_archive(release, sourcecode)
-    assets = select_assets(release, pattern, origin.label, True) if pattern else []
+    # a local folder's archive is one of its files: not twice
+    assets = [a for a in select_assets(release, pattern, origin.label, True)
+              if a is not archive] if pattern else []
     if any(a.name == archive.name for a in assets):
         raise FsError(f"the source code archive and an asset of release {release.tag} of "
                       f"{origin.label} are both named {archive.name} - take them with two entries")
