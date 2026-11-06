@@ -10,13 +10,15 @@ Fixture layout (written by the 'release' helper in regress.sh):
     <dir>/<host>/<project path>/<n>/release.json   one directory per release
     <dir>/<host>/<project path>/<n>/assets/<name>  its assets
     <dir>/<host>/<project path>/<n>/notes.md       optional: its description
+    <dir>/<host>/<project path>/<n>/source/<path>  optional: the files of its tag
 
 release.json: {"tag_name", "name", "published_at" (released_at here),
 "prerelease" (an upcoming release here), "links" (how the asset links
 point to the files: "api" (default; generic packages), "job" (job
 artifacts), "upload" (project uploads), "http" (a server elsewhere:
-$FAKE_HTTP, see http_server.py), "broken" (a missing file there))}. Drafts don't exist on GitLab and are
-left out.
+$FAKE_HTTP, see http_server.py), "broken" (a missing file there)), "commit"
+(of the tag; default: derived from project and tag)}. Drafts don't exist on
+GitLab and are left out.
 
 Every call is appended to <dir>/calls.log. Like glab, a missing resource
 gives a JSON message on stdout, 'glab: 404 Not Found (HTTP 404)' on stderr
@@ -28,6 +30,9 @@ import os
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fake_archive import commit_of, source_archive  # noqa: E402
 
 ROOT = Path(os.environ["FAKE_GH_DIR"])
 SECRET = "0123456789abcdef0123456789abcdef"
@@ -77,6 +82,7 @@ def answer(host, project, meta, d, files):
             "description": meta.get("body", ""),
             "released_at": meta["published_at"], "created_at": meta["published_at"],
             "upcoming_release": bool(meta.get("prerelease")),
+            "commit": {"id": commit_of(project, meta)},
             "_links": {"self": f"https://{host}/{project}/-/releases/{quote(tag)}"},
             "assets": {"count": len(files) + 2,
                        "sources": [{"format": fmt, "url": f"https://{host}/{project}/-/archive/"
@@ -138,6 +144,14 @@ def main(argv):
         for r in rels:
             if r[0]["tag_name"] == tag:
                 out(answer(host, project, *r))
+                return
+        fail(404, "Not Found")
+    elif len(rest) == 2 and rest[0] == "repository" and rest[1].startswith("archive."):
+        fmt, sha = rest[1][len("archive."):], query.get("sha", [""])[0]
+        for meta, d, _ in rels:
+            if commit_of(project, meta) == sha:
+                top = f"{project.rsplit('/', 1)[-1]}-{meta['tag_name']}-{sha}"
+                sys.stdout.buffer.write(source_archive(d / "source", top, fmt))
                 return
         fail(404, "Not Found")
     elif len(rest) == 5 and rest[:2] == ["packages", "generic"]:

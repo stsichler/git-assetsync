@@ -216,9 +216,12 @@ asset() { printf '%s\n' "$2" > "$F/$1"; }
 # --draft, --latest (marked as latest), --nodigest (no digest in the API),
 # --baddigest (a wrong one), --title TITLE, --notes FILE (its description),
 # --host HOST (default github.com), --links KIND (GitLab: how asset links
-# point to the files - api, job, upload or http, see fake_glab.py)
+# point to the files - api, job, upload or http, see fake_glab.py), --src
+# DIR (the files of its tag: the source code archives), --commit SHA (of its
+# tag; default: derived from repository and tag)
 release() {
   local pre=false draft=false latest=false nodigest=false baddigest=false title= notes= host=github.com links=api
+  local commit= src=
   while :; do
     case $1 in
       --pre) pre=true; shift ;;
@@ -230,6 +233,8 @@ release() {
       --notes) notes=$2; shift 2 ;;
       --host) host=$2; shift 2 ;;
       --links) links=$2; shift 2 ;;
+      --commit) commit=$2; shift 2 ;;
+      --src) src=$2; shift 2 ;;
       *) break ;;
     esac
   done
@@ -240,9 +245,10 @@ release() {
   mkdir -p "$base"
   n=$(($(ls "$base" | lines) + 1))
   mkdir -p "$base/$n/assets"
-  printf '{"tag_name": "%s", "name": "%s", "published_at": "%s", "prerelease": %s, "draft": %s, "latest": %s, "nodigest": %s, "baddigest": %s, "links": "%s"}\n' \
-    "$tag" "${title:-$tag}" "$date" $pre $draft $latest $nodigest $baddigest $links > "$base/$n/release.json"
+  printf '{"tag_name": "%s", "name": "%s", "published_at": "%s", "prerelease": %s, "draft": %s, "latest": %s, "nodigest": %s, "baddigest": %s, "links": "%s", "commit": "%s"}\n' \
+    "$tag" "${title:-$tag}" "$date" $pre $draft $latest $nodigest $baddigest $links "$commit" > "$base/$n/release.json"
   [ -n "$notes" ] && cp "$notes" "$base/$n/notes.md"
+  [ -n "$src" ] && cp -R "$src" "$base/$n/source"
   local f
   for f; do cp "$f" "$base/$n/assets/"; done
 }
@@ -1351,7 +1357,7 @@ new_repo r16
 addc acme/set x.bin --asset x.bin --release v1
 addc acme/set y.bin --asset y.bin --release v1
 check "nothing to change" "$(git assetsync set x.bin 2>&1)" \
-  "error: nothing to change: give --source, --release/--latest/--prerelease, --asset/--no-asset or --filter/--no-filter"
+  "error: nothing to change: give --source, --release/--latest/--prerelease, --asset/--no-asset, --sourcecode/--no-sourcecode or --filter/--no-filter"
 check "same selection: nothing to change" "$(git assetsync set x.bin --release v1)" "nothing to change"
 
 # another release selection for one file of two: only its entry
@@ -3262,6 +3268,70 @@ check "... pull --all leaves it" "$(git assetsync pull --all 2>&1 | oneline)$(re
 check "... status --exit-code" "$(rc git assetsync status --exit-code)" "1"
 pullc g.txt
 check "... pull PATH takes v2" "$(reg file.g.txt.synced) $(cat g.txt)" "v2 gone two"
+
+# =============================================================================
+section "40. Source code archives of releases (--sourcecode)"
+# =============================================================================
+mkdir -p "$F/sc1/lib" "$F/sc2/lib"
+printf 'one\n' > "$F/sc1/lib/a.c"; printf 'readme\n' > "$F/sc1/README"
+printf 'two\n' > "$F/sc2/lib/a.c"; printf 'readme\n' > "$F/sc2/README"
+asset bin.txt "a binary"; release --src "$F/sc1" acme/sarc v1 10 "$F/bin.txt"
+new_repo r40
+quiet git assetsync filter add unpack --extract --strip 1
+: > "$GH/calls.log"
+addc acme/sarc d/ --sourcecode tar.gz --filter unpack
+check "sourcecode: only the archive, unpacked" "$(cd d && find . -type f | sort | oneline)" \
+  "./README ./lib/a.c "
+check "... the entry" "$(reg dir.d.sourcecode)|$(reg dir.d.asset)|$(reg dir.d.assetid | cut -c1-7)" \
+  "tar.gz||sha256:"
+check "... downloaded by commit" "$(grep -c "^api --hostname github.com repos/acme/sarc/tarball/$(printf 'acme/sarc\nv1' | "$PYTHON" -c 'import hashlib,sys; print(hashlib.sha1(sys.stdin.buffer.read()).hexdigest())')$" "$GH/calls.log")" "1"
+check "... message" "$(msg | grep -o 'Asset: *sarc-v1.tar.gz')" "Asset:   sarc-v1.tar.gz"
+check "... clean" "$(st)|$(git assetsync status --exit-code >/dev/null; echo $?)" "|0"
+check "... verify" "$(git assetsync verify d)" "d/: verified (v1)"
+check "... status -v" "$(git assetsync status -v | grep -c 'source code (tar.gz) from acme/sarc, latest release, filter unpack; synced v1')" "1"
+: > "$GH/calls.log"
+git assetsync status >/dev/null
+check "... status: the commit asked once" "$(grep -c 'repos/acme/sarc/commits/refs/tags/v1' "$GH/calls.log")" "1"
+# the tag moved: the archive counts as replaced
+sedi 's/"commit": ""/"commit": "1111111111111111111111111111111111111111"/' "$GH/github.com/acme/sarc/1/release.json"
+rm -rf "$GH/github.com/acme/sarc/1/source" && cp -R "$F/sc2" "$GH/github.com/acme/sarc/1/source"
+check "tag moved: pending" "$(git assetsync status -s)|$(git assetsync status | grep -c 'asset replaced in release v1')" "P  d/|1"
+pullc d
+check "... pull takes it" "$(cat d/lib/a.c) $(st)" "two "
+# with assets: both; a file takes one
+addc acme/sarc both/ --sourcecode zip --asset '*'
+check "with --asset: both" "$(ls both | oneline)" "bin.txt sarc-v1.zip "
+check "file: one archive" "$(rc git assetsync add acme/sarc s.zip --sourcecode zip)|$(head -c 2 s.zip)" "0|PK"
+git commit -qm s.zip
+check "file: not with --asset" "$(git assetsync add acme/sarc s2.zip --sourcecode zip --asset 'bin*' 2>&1)" \
+  "error: a file takes one asset: an asset pattern or the source code, not both"
+check "set: not both for a file" "$(git assetsync set s.zip --asset 'bin*' 2>&1)" \
+  "error: s.zip: a file takes one asset: --asset or --sourcecode, not both"
+check "format not offered" "$(git assetsync add acme/sarc x.7z --sourcecode 7z 2>&1)" \
+  "error: acme/sarc: no source code archive '7z' (formats: zip, tar.gz)"
+asset sarc-v2.zip "not the source"; release --src "$F/sc2" acme/sarc v2 11 "$F/bin.txt" "$F/sarc-v2.zip"
+check "name taken by an asset" "$(git assetsync pull both 2>&1)" \
+  "error: both/: the source code archive and an asset of release v2 of acme/sarc are both named sarc-v2.zip - take them with two entries"
+check "set --no-sourcecode: the assets" "$(git assetsync set both --no-sourcecode --no-asset | head -2)" \
+  "both/: asset * -> (all)
+both/: source code zip -> (none)"
+git commit -qm set
+pullc both
+check "... pull" "$(ls both | oneline)" "bin.txt sarc-v2.zip "
+check "filter test with --sourcecode" "$(git assetsync filter test unpack --source acme/sarc --sourcecode zip 2>/dev/null | sed 's/^ *[0-9]* bytes  //' | oneline)" \
+  "README lib/a.c "
+# GitLab: the commit is in the release
+release --host gitlab.com --src "$F/sc1" grp/gsrc v1 10 "$F/bin.txt"
+: > "$GH/calls.log"
+addc https://gitlab.com/grp/gsrc g/ --sourcecode tar.bz2 --filter unpack
+check "GitLab: tar.bz2" "$(cd g && find . -type f | sort | oneline)" "./README ./lib/a.c "
+check "... downloaded by commit, no commit request" "$(grep -c 'projects/grp%2Fgsrc/repository/archive.tar.bz2?sha=[0-9a-f]\{40\}$' "$GH/calls.log") $(grep -c commits "$GH/calls.log")" "1 0"
+check "... clean" "$(st g)" ""
+# a local folder has none
+mkdir -p "$T/loc40/v1"
+quiet git assetsync source map https://github.com/acme/sarc "$T/loc40"
+check "local folder: no source code" "$(git assetsync status -s d 2>/dev/null) $(git assetsync status d 2>&1 | grep -c 'a local folder has no source code archives')" "E  d/ 1"
+quiet git assetsync source map --unset https://github.com/acme/sarc
 
 # =============================================================================
 echo

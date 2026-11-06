@@ -9,10 +9,13 @@ Fixture layout (written by the 'release' helper in regress.sh):
     <dir>/<host>/<owner>/<repo>/<n>/release.json   one directory per release
     <dir>/<host>/<owner>/<repo>/<n>/assets/<name>  its assets
     <dir>/<host>/<owner>/<repo>/<n>/notes.md       optional: its description
+    <dir>/<host>/<owner>/<repo>/<n>/source/<path>  optional: the files of its tag
+                                                   (for the source code archives)
 
 release.json: {"tag_name", "name", "published_at", "prerelease", "draft",
 "latest" (marked as latest), "nodigest" (no digest in the answer),
-"baddigest" (a wrong one)}.
+"baddigest" (a wrong one), "commit" (of the tag; default: derived from
+repository and tag)}.
 
 Every call is appended to <dir>/calls.log (one line, arguments joined by
 blanks). Like gh, a missing resource gives a JSON message on stdout, 'gh: Not Found (HTTP 404)'
@@ -25,6 +28,9 @@ import os
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fake_archive import commit_of, source_archive  # noqa: E402
 
 ROOT = Path(os.environ["FAKE_GH_DIR"])
 
@@ -64,6 +70,8 @@ def releases(host, repo):
         notes = d / "notes.md"
         if notes.is_file():
             meta["body"] = notes.read_bytes().decode("utf-8")
+        meta["commit"] = commit_of(repo, meta)
+        meta["dir"] = d
         result.append((meta, assets))
     return result
 
@@ -108,11 +116,27 @@ def main(argv):
             fail(404, "Not Found")
         sys.stdout.write(json.dumps({"full_name": f"{parts[1]}/{parts[2]}"}))
         return
-    if len(parts) < 4 or parts[0] != "repos" or parts[3] != "releases":
+    if len(parts) < 4 or parts[0] != "repos":
         fail(404, "Not Found")
     repo = f"{parts[1]}/{parts[2]}"
     rels = releases(host, repo)
     rest = parts[4:]
+    if parts[3] == "commits" and len(rest) == 3 and rest[:2] == ["refs", "tags"]:
+        for meta, _ in rels:
+            if meta["tag_name"] == unquote(rest[2]):
+                sys.stdout.write(json.dumps({"sha": meta["commit"]}))
+                return
+        fail(404, "Not Found")
+    if parts[3] in ("zipball", "tarball") and len(parts) == 5:
+        for meta, _ in rels:
+            if meta["commit"] == parts[4]:
+                top = f"{parts[1]}-{parts[2]}-{meta['commit'][:7]}"
+                fmt = "zip" if parts[3] == "zipball" else "tar.gz"
+                sys.stdout.buffer.write(source_archive(meta["dir"] / "source", top, fmt))
+                return
+        fail(404, "Not Found")
+    if parts[3] != "releases":
+        fail(404, "Not Found")
     visible = [r for r in rels if not r[0].get("draft")]
 
     def out(obj):

@@ -37,6 +37,8 @@ assets of a project on GitHub or GitLab:
     [dir "third_party/zlib"]       ; files of a directory (others may be there)
         source = madler/zlib
         asset = zlib-*.tar.gz      ; optional: the assets (glob); without: all
+        sourcecode = tar.gz        ; optional: the source code archive (then
+                                   ; without asset: no assets)
         filter = zlib-headers      ; optional: the filter applied to the assets
         synced = ...; digest = ...; filterhash = <of the filter>
         tree = <id of the directory as committed>
@@ -188,6 +190,11 @@ Basic commands - what you need day to day:
         --asset PATTERN         the asset (glob; a file: exactly one match,
                                 default the release's only asset; a
                                 directory: all matching, default all)
+        --sourcecode FORMAT     the release's source code archive (zip,
+                                tar.gz; GitLab also tar.bz2, tar) as an
+                                asset REPO-TAG.FORMAT; a directory also
+                                takes the assets matching --asset (without:
+                                none)
         --filter NAME           the filter to apply to the assets
         --release TAG|PATTERN   release to take (exact tag: pinned) or the
                                 newest one matching (default: the latest)
@@ -229,6 +236,7 @@ Advanced commands - change entries, sources and filters; set up:
                                 another release selection
         --asset PATTERN, --no-asset  another asset (--no-asset: the only one,
                                 for a directory all)
+        --sourcecode FORMAT, --no-sourcecode  the source code archive, or not
         --filter NAME, --no-filter  another filter, or none
         -n, --dry-run           only show what would change
 
@@ -280,7 +288,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 nothing else changes
         --source SOURCE         instead: the assets of its release (with
                                 --release, --prerelease, --type as for add;
-                                --asset PATTERN: only the matching ones)
+                                --asset PATTERN: only the matching ones;
+                                --sourcecode FORMAT as for add)
         -o, --output DIR        write the result to DIR (new or empty)
     filter add NAME STEP-OPTIONS...  define a new filter; the steps in the
                                 order given:
@@ -695,6 +704,14 @@ class Asset:
 
 
 @dataclass
+class SourceArchive(Asset):
+    """The source code archive of a release, made by the platform on
+    request: id is the commit of the tag, path the API path to download it
+    from; no digest, no size."""
+    path: str = ""
+
+
+@dataclass
 class Release:
     tag: str                  # identifies the release (opaque string)
     title: str
@@ -706,6 +723,7 @@ class Release:
     notes: str = ""           # description / changelog (Markdown)
     local: bool = False       # from a local folder (map), not published
     sort_key: str = ""        # a local folder sorted by name: the tag
+    commit: str = ""          # commit of the tag, if the answer has it (GitLab)
 
     @property
     def order(self):
@@ -733,6 +751,7 @@ class Platform:
 
     PER_PAGE = 100
     CLI = CLI_VAR = CLI_NAME = CLI_URL = KIND = ""
+    SOURCE_FORMATS = ()       # formats of the source code archives
     # API paths, and a release from the API's answer: given by the subclasses
     project_path = list_path = latest_path = property(lambda self: "")
 
@@ -741,6 +760,15 @@ class Platform:
 
     @staticmethod
     def release(d) -> Release:
+        raise NotImplementedError
+
+    def commit_of(self, release):
+        raise NotImplementedError
+
+    def archive_path(self, sha, fmt):
+        raise NotImplementedError
+
+    def download_asset(self, asset, dest):
         raise NotImplementedError
 
     def __init__(self, host, project, label):
@@ -836,12 +864,32 @@ class Platform:
                 return result
             page += 1
 
+    def source_archive(self, release, fmt):
+        """The source code archive of a release as an asset named
+        <repo>-<tag>.<fmt>; its id is the commit of the tag, which changes
+        when the tag is moved (the platform makes the archive on request:
+        no digest)."""
+        if fmt not in self.SOURCE_FORMATS:
+            raise FsError(f"{self.label}: no source code archive '{fmt}' (formats: "
+                          f"{', '.join(self.SOURCE_FORMATS)})")
+        sha = self.commit_of(release)
+        name = f"{self.project.rsplit('/', 1)[-1]}-{release.tag.replace('/', '-')}.{fmt}"
+        return SourceArchive(name, sha, path=self.archive_path(sha, fmt))
+
+    def download(self, asset, dest):
+        if isinstance(asset, SourceArchive):
+            with open(dest, "wb") as f:
+                self.api(asset.path, stdout=f)
+        else:
+            self.download_asset(asset, dest)
+
 
 class GitHub(Platform):
     """Releases of a GitHub repository (also GitHub Enterprise)."""
 
     CLI, CLI_VAR, CLI_NAME, CLI_URL, KIND = \
         "gh", "ASSETSYNC_GH", "GitHub CLI", "https://cli.github.com", "repository"
+    SOURCE_FORMATS = ("zip", "tar.gz")
 
     project_path = property(lambda self: f"repos/{self.project}")
     list_path = property(lambda self: f"repos/{self.project}/releases")
@@ -860,7 +908,21 @@ class GitHub(Platform):
                        d.get("html_url", ""), bool(d.get("prerelease")),
                        bool(d.get("draft")), assets, d.get("body") or "")
 
-    def download(self, asset, dest):
+    def commit_of(self, release):
+        """The commit of a release's tag: one more request (the release
+        doesn't say)."""
+        try:
+            d = self.json(f"repos/{self.project}/commits/refs/tags/{quote(release.tag, safe='')}")
+        except NotFound:
+            d = None
+        if not isinstance(d, dict) or not d.get("sha"):
+            raise FsError(f"{self.label}: commit of tag {release.tag} not found")
+        return d["sha"]
+
+    def archive_path(self, sha, fmt):
+        return f"repos/{self.project}/{'zipball' if fmt == 'zip' else 'tarball'}/{sha}"
+
+    def download_asset(self, asset, dest):
         with open(dest, "wb") as f:
             self.api(f"repos/{self.project}/releases/assets/{asset.id}",
                      headers=["Accept: application/octet-stream"], stdout=f)
@@ -873,6 +935,7 @@ class GitLab(Platform):
 
     CLI, CLI_VAR, CLI_NAME, CLI_URL, KIND = \
         "glab", "ASSETSYNC_GLAB", "GitLab CLI", "https://gitlab.com/gitlab-org/cli", "project"
+    SOURCE_FORMATS = ("zip", "tar.gz", "tar.bz2", "tar")
 
     pid = property(lambda self: quote(self.project, safe=""))
     project_path = property(lambda self: f"projects/{self.pid}")
@@ -892,7 +955,15 @@ class GitLab(Platform):
                        d.get("released_at") or d.get("created_at") or "",
                        (d.get("_links") or {}).get("self", ""),
                        bool(d.get("upcoming_release")), False, assets,
-                       d.get("description") or "")
+                       d.get("description") or "", commit=(d.get("commit") or {}).get("id") or "")
+
+    def commit_of(self, release):
+        if not release.commit:
+            raise FsError(f"{self.label}: commit of tag {release.tag} not found")
+        return release.commit
+
+    def archive_path(self, sha, fmt):
+        return f"projects/{self.pid}/repository/archive.{fmt}?sha={sha}"
 
     def api_path(self, url):
         """API path for downloading a link on this host - with the login of
@@ -919,7 +990,7 @@ class GitLab(Platform):
                    f"/{m.group(3)}"
         return None
 
-    def download(self, asset, dest):
+    def download_asset(self, asset, dest):
         path = self.api_path(asset.url)
         if path:
             with open(dest, "wb") as f:
@@ -1070,6 +1141,9 @@ class LocalFolder:
     def latest(self):
         rels = self.releases()
         return max(rels, key=lambda r: r.order) if rels else None
+
+    def source_archive(self, release, fmt):
+        raise FsError(f"{self.where}: a local folder has no source code archives")
 
     def by_tag(self, tag):
         self.check_project()
@@ -1238,6 +1312,22 @@ def select_assets(release, pattern, label, is_dir, choose="--asset PATTERN"):
     if not found:
         raise FsError(f"release {release.tag} of {label} has no assets")
     return found
+
+
+def entry_assets(origin, release, pattern, sourcecode, is_dir, choose="--asset PATTERN"):
+    """The assets an entry takes (see select_assets()); with sourcecode,
+    the release's source code archive in that format too - and the
+    uploaded assets only with a pattern (without: none)."""
+    if not sourcecode:
+        return select_assets(release, pattern, origin.label, is_dir, choose)
+    if pattern and not is_dir:
+        raise FsError("a file takes one asset: an asset pattern or the source code, not both")
+    archive = origin.source_archive(release, sourcecode)
+    assets = select_assets(release, pattern, origin.label, True) if pattern else []
+    if any(a.name == archive.name for a in assets):
+        raise FsError(f"the source code archive and an asset of release {release.tag} of "
+                      f"{origin.label} are both named {archive.name} - take them with two entries")
+    return assets + [archive]
 
 
 def assets_digest(pairs):
@@ -2879,6 +2969,8 @@ def origin_text(entry):
     'tool-*.bin from acme/tool, latest release, filter x; synced v1.2'."""
     synced = f"synced {entry.synced}" if entry.synced else "not synced yet"
     what = entry.asset or ("all assets" if entry.is_dir else "only asset")
+    if entry.sourcecode:
+        what = f"source code ({entry.sourcecode})" + (f" and {entry.asset}" if entry.asset else "")
     steps = f", filter {entry.filter}" if entry.filter else ""
     return f"{what} from {entry.name}, {spec_text(entry.spec)}{steps}; {synced}"
 
@@ -3324,6 +3416,7 @@ class Entry:
     url = property(lambda self: self.source.get("url", ""))
     spec = property(lambda self: entry_spec(self.v, self.source))
     asset = property(lambda self: self.v.get("asset", ""))
+    sourcecode = property(lambda self: self.v.get("sourcecode", ""))   # format of the archive
     synced = property(lambda self: self.v.get("synced", ""))
     digest = property(lambda self: self.v.get("digest", ""))
     assetid = property(lambda self: self.v.get("assetid", ""))
@@ -3485,7 +3578,7 @@ def rebuild_base(repo, reg, entry, what):
     release = origin.by_tag(entry.synced)
     if not release:
         raise FsError(f"{what}, and release {entry.synced} of {origin.label} no longer exists")
-    assets = select_assets(release, entry.asset, origin.label, True)
+    assets = entry_assets(origin, release, entry.asset, entry.sourcecode, True)
     digest, items = filter_items(repo, reg, entry, origin, release, assets)
     tree = release_tree(repo, entry.rel, items)
     if digest != (entry.digest or "").lower() or tree != entry.blob:
@@ -3605,8 +3698,9 @@ def evaluate(ctx, repo, entry):
     if ctx.fetch:
         try:
             st.origin, st.release = ctx.release(entry.url, entry.spec)
-            st.assets = select_assets(st.release, entry.asset, st.origin.label, entry.is_dir,
-                                      f"'git assetsync set {path_arg(repo, entry.rel)} --asset PATTERN'")
+            st.assets = entry_assets(st.origin, st.release, entry.asset, entry.sourcecode,
+                                     entry.is_dir,
+                                     f"'git assetsync set {path_arg(repo, entry.rel)} --asset PATTERN'")
         except FsError as e:
             st.error = str(e)
             return st
@@ -4013,6 +4107,8 @@ def push_check(repo, args):
             release = origin.by_tag(tag)
             if release:
                 _, v, _ = items[0]
+                if v.get("sourcecode"):      # made by the server: no digest to compare
+                    continue
                 assets = select_assets(release, v.get("asset", ""), origin.label,
                                        any(rel.endswith("/") for rel, _, _ in items))
                 now = assets_digest([(a.name, a.digest) for a in assets])
@@ -4959,9 +5055,9 @@ def cmd_add(ctx, repo, args):
     steps = named_steps(args.filter) if args.filter else []
     url, spec, named = given_source(reg, args)
     origin, release = ctx.release(url, spec)
-    assets = select_assets(release, args.asset, origin.label, is_dir)
+    assets = entry_assets(origin, release, args.asset, args.sourcecode, is_dir)
     name = named or reg.source_name(url)
-    if is_dir and not args.asset and len(assets) > 1:
+    if is_dir and not args.asset and not args.sourcecode and len(assets) > 1:
         print(f"{shown_rel}: all {plural(len(assets), 'asset')} of {name} {release.tag}: "
               + ", ".join(a.name + (f" ({human_size(a.size)})" if a.size is not None else "")
                           for a in assets), flush=True)
@@ -5013,7 +5109,7 @@ def cmd_add(ctx, repo, args):
     entry = Entry(reg, rel)
     for k, v in (("source", name), ("release", spec.get("release")),
                  ("prerelease", spec.get("prerelease")), ("asset", args.asset),
-                 ("filter", args.filter),
+                 ("sourcecode", args.sourcecode), ("filter", args.filter),
                  ("synced", release.tag), ("digest", digest), ("assetid", assets_id(assets)),
                  ("filterhash", filter_hash(steps, reg.filters, repo)), (BASE_KEY[kind], base),
                  ("mode", mode)):
@@ -5119,13 +5215,19 @@ def cmd_set(ctx, repo, args):
     (synced removed)."""
     select = args.release is not None or args.latest or args.prerelease is not None
     if not (args.source or select or args.asset is not None or args.no_asset or
-            args.filter or args.no_filter):
+            args.sourcecode or args.no_sourcecode or args.filter or args.no_filter):
         raise FsError("nothing to change: give --source, --release/--latest/--prerelease, "
-                      "--asset/--no-asset or --filter/--no-filter")
+                      "--asset/--no-asset, --sourcecode/--no-sourcecode or --filter/--no-filter")
     reg = Registry(repo)
     reg.need_filter(args.filter)
     reg.dry_run = args.dry_run
     entries = select_entries(repo, reg, args.paths)
+    for e in entries:
+        asset = None if args.no_asset else e.asset if args.asset is None else args.asset
+        sourcecode = None if args.no_sourcecode else args.sourcecode or e.sourcecode
+        if asset and sourcecode and not e.is_dir:
+            raise FsError(f"{e.shown}: a file takes one asset: --asset or --sourcecode, not "
+                          "both")
     would = "would: " if args.dry_run else ""
     changed = False
     if args.source:           # another project (fork, moved) or [source]
@@ -5168,6 +5270,14 @@ def cmd_set(ctx, repo, args):
                 every = "(all)" if e.is_dir else "(the only one)"
                 print(f"{would}{e.shown}: asset {e.asset or every} -> {new or every}")
                 e.set("asset", new)
+                e.set("synced", None)
+                changed = True
+    if args.sourcecode or args.no_sourcecode:
+        for e in entries:
+            if (e.sourcecode or None) != args.sourcecode:
+                print(f"{would}{e.shown}: source code {e.sourcecode or '(none)'} -> "
+                      f"{args.sourcecode or '(none)'}")
+                e.set("sourcecode", args.sourcecode)
                 e.set("synced", None)
                 changed = True
     if args.filter or args.no_filter:
@@ -5242,7 +5352,7 @@ def verify_plan(repo, reg, entry, keep):
     release = origin.by_tag(entry.synced)
     if not release:
         raise FsError(f"release {entry.synced} of {origin.label} no longer exists")
-    assets = select_assets(release, entry.asset, origin.label, entry.is_dir)
+    assets = entry_assets(origin, release, entry.asset, entry.sourcecode, entry.is_dir)
     digest, files = filtered_files(repo, reg, entry, origin, release, assets, keep)
     if digest != (entry.digest or "").lower():
         return False, (f"the assets of {release.tag} differ from those it was synced with "
@@ -5815,7 +5925,7 @@ def filter_test(ctx, repo, reg, args):
         if args.source:
             url, spec, _ = given_source(reg, args)
             origin, release = ctx.release(url, spec)
-            assets = select_assets(release, args.asset, origin.label, True)
+            assets = entry_assets(origin, release, args.asset, args.sourcecode, True)
             for a in assets:
                 add_member(files, safe_path(a.name, f"{what}: asset"),
                            (get_asset(origin, release, a)[0], False), what)
@@ -6308,6 +6418,9 @@ def run(argv):
                    help="asset of the release (glob pattern; a file: must match exactly one, "
                         "default the release's only asset; a directory: all matching, "
                         "default all)")
+    p.add_argument("--sourcecode", metavar="FORMAT",
+                   help="the release's source code archive (zip, tar.gz; GitLab also tar.bz2, "
+                        "tar) - assets then only with --asset (a directory)")
     p.add_argument("--release", metavar="TAG|PATTERN",
                    help="release to take: an exact tag (pinned) or the newest matching "
                         "(default: the latest release)")
@@ -6341,6 +6454,10 @@ def run(argv):
     g.add_argument("--asset", metavar="PATTERN", help="another asset (glob, exactly one match)")
     g.add_argument("--no-asset", action="store_true",
                    help="no pattern: the release's only asset (a directory: all)")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--sourcecode", metavar="FORMAT",
+                   help="the release's source code archive in FORMAT (zip, tar.gz, ...)")
+    g.add_argument("--no-sourcecode", action="store_true", help="no source code archive")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--filter", metavar="NAME", help="use the named filter NAME")
     g.add_argument("--no-filter", action="store_true", help="use no filter")
@@ -6452,6 +6569,8 @@ def run(argv):
     a.add_argument("--type", choices=sorted(PLATFORMS), help="with --source: as for add")
     a.add_argument("--asset", metavar="PATTERN",
                    help="with --source: only the matching assets (default: all)")
+    a.add_argument("--sourcecode", metavar="FORMAT",
+                   help="with --source: the source code archive (as for add)")
     a.add_argument("-o", "--output", metavar="DIR",
                    help="write the result to DIR (new or empty) instead of listing it")
     a = actions.add_parser("rename", parents=[colorp],

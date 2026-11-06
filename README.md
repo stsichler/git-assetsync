@@ -81,9 +81,10 @@ commit that says what it brings.
 
 ## Features
 
-- Files and directories from release assets on GitHub and GitLab – also
-  GitHub Enterprise, self-managed GitLab and private projects; all entries
-  in one file, `.git-assetsync` (git-config format, like `.gitmodules`)
+- Files and directories from release assets (or a release's source code
+  archive) on GitHub and GitLab – also GitHub Enterprise, self-managed
+  GitLab and private projects; all entries in one file, `.git-assetsync`
+  (git-config format, like `.gitmodules`)
 - Built-in filters that run no code: unpack ZIP, tar and 7z safely, take a
   subdirectory, strip directories, include or exclude files, move or copy
   them, make them executable, set line endings; named, and usable by

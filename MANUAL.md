@@ -31,7 +31,8 @@ A **source** is a project that publishes releases: a repository on GitHub
 (also GitHub Enterprise) or a project on GitLab (gitlab.com or
 self-managed). A **release** is identified by its **tag** (e.g. `v1.3.1`
 or `tool-20261016`); its title is only shown. Its **assets** are the files
-attached to it.
+attached to it; its **source code archive** (`--sourcecode`, see
+[`add`](#add)) can be taken like one.
 
 git-assetsync takes a file or directory of your repository from assets:
 it downloads them, optionally unpacks and selects files with a
@@ -92,7 +93,7 @@ Git-config format:
 	step = include '*.h' LICENSE
 [dir "third_party/zlib"]
 	source = madler/zlib
-	asset = zlib-*.tar.gz        # without: all assets
+	asset = zlib-*.tar.gz        # without: all uploaded assets
 	filter = zlib-headers
 	synced = v1.3.2
 	digest = sha256:…
@@ -117,6 +118,9 @@ Git-config format:
   (see [Integrity](#integrity)).
 - **`[dir "PATH"]`** – like `[file]`, but `asset` may match several assets
   (without it: all), and the base is `tree`.
+- **`sourcecode = FORMAT`** (`[file]` or `[dir]`) – the release's source
+  code archive instead (a directory: also the assets `asset` matches;
+  without `asset` none).
 - **`[filter "NAME"]`** – a [named filter](#filters), one `step` per step.
   Entries use it with `filter = NAME`; `filterhash` records the filter an
   entry was synced with, so a changed filter shows up as pending.
@@ -455,8 +459,8 @@ directory](#files-of-your-own-in-a-directory)).
 ### `add`
 
 ```
-git assetsync add SOURCE PATH [--asset PATTERN] [--release TAG|PATTERN] [--prerelease]
-                  [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-n]
+git assetsync add SOURCE PATH [--asset PATTERN] [--sourcecode FORMAT] [--release TAG|PATTERN]
+                  [--prerelease] [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-n]
 ```
 
 Takes the file or directory `PATH` from assets of the release `SOURCE`
@@ -478,10 +482,17 @@ the entry in `.git-assetsync` and stages both, like `git add`. A plain
   for later releases too. A file needs exactly one match; without
   `--asset` the release must have exactly one asset. A directory takes all
   matching assets – without `--asset` all of them, listed first.
+- **`--sourcecode FORMAT`** takes the source code archive of the release
+  (the tag's files) as an asset named `REPO-TAG.FORMAT`. Formats: `zip`,
+  `tar.gz`; GitLab also `tar.bz2`, `tar`. A file takes only the archive; a
+  directory also the assets matching `--asset` – without it none. Its top
+  directory varies: unpack it with `--extract --strip 1`. The archive
+  counts as replaced when the tag is moved to another commit.
 
 | Option | Meaning |
 |---|---|
 | `--asset PATTERN` | the assets to take, see above |
+| `--sourcecode FORMAT` | also (a file: instead) the source code archive, see above |
 | `--release TAG\|PATTERN` | a tag pins the entry, a pattern takes the newest matching release (default: the latest) |
 | `--prerelease` | prereleases count too |
 | `--type github\|gitlab` | platform of the URL's host; needed for hosts other than github.com, gitlab.com and `gitlab.*` |
@@ -506,6 +517,9 @@ git assetsync add https://gitlab.com/gitlab-org/cli tools/glab \
 
 git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' LICENSE
 git assetsync add madler/zlib third_party/zlib/ --asset 'zlib-*.tar.gz' --filter zlib-headers
+
+git assetsync filter add unpack --extract --strip 1
+git assetsync add acme/lib third_party/lib/ --sourcecode tar.gz --filter unpack
 ```
 
 ### `rm`
@@ -555,7 +569,8 @@ it (e.g. `bin/`): all of them follow.
 ```
 git assetsync set PATH… [--source URL|SOURCE [--type github|gitlab]] [--release TAG|PATTERN | --latest]
                         [--prerelease | --no-prerelease]
-                        [--asset PATTERN | --no-asset] [--filter NAME | --no-filter] [-n]
+                        [--asset PATTERN | --no-asset] [--sourcecode FORMAT | --no-sourcecode]
+                        [--filter NAME | --no-filter] [-n]
 ```
 
 Changes entries – source, release selection, asset or filter – where `add`
@@ -570,6 +585,7 @@ with the change.
 | `--prerelease`, `--no-prerelease` | let prereleases count, or not |
 | `--type github\|gitlab` | with `--source` a new URL: the platform of its host |
 | `--asset PATTERN`, `--no-asset` | another asset; `--no-asset`: the only one (a directory: all) |
+| `--sourcecode FORMAT`, `--no-sourcecode` | take the source code archive (as for [`add`](#add)), or not |
 | `--filter NAME`, `--no-filter` | another named [filter](#filters), or none |
 | `-n`, `--dry-run` | only show what would change |
 
@@ -731,7 +747,8 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
 ```
 git assetsync filter
 git assetsync filter show NAME
-git assetsync filter test NAME (FILE… | --source SOURCE [--release …] [--prerelease] [--type …] [--asset PATTERN]) [-o DIR]
+git assetsync filter test NAME (FILE… | --source SOURCE [--release …] [--prerelease] [--type …] [--asset PATTERN]
+                           [--sourcecode FORMAT]) [-o DIR]
 git assetsync filter add NAME STEP-OPTIONS…
 git assetsync filter set NAME STEP-OPTIONS…
 git assetsync filter rename OLD NEW
@@ -746,7 +763,7 @@ using a changed filter show as pending.
 | (none) | list the filters, with their steps and users |
 | `show NAME` | the steps of a filter, and who uses it |
 | `test NAME FILE…` | apply a filter to local files as if they were the assets (a directory: its files) and list the result, or write it to an empty directory with `-o DIR` |
-| `test NAME --source SOURCE` | the same with the assets of a release (`--release`, `--prerelease`, `--type` as for [`add`](#add); `--asset`: only the matching ones) |
+| `test NAME --source SOURCE` | the same with the assets of a release (`--release`, `--prerelease`, `--type`, `--sourcecode` as for [`add`](#add); `--asset`: only the matching ones) |
 | `add NAME STEP-OPTIONS…` | define a filter with the [step options](#filters), in the order given; names consist of letters, digits, `.`, `+`, `-` and `_` |
 | `set NAME STEP-OPTIONS…` | replace the steps of a filter |
 | `rename OLD NEW` | rename a filter and its references |
@@ -1310,6 +1327,12 @@ re-upload changes it, so `status` notices without a download. Only other
 content behind the same URL goes unnoticed (e.g. an overwritten generic
 package) – not even `verify` sees it while the cache has the old file
 (`cache clear`, then `verify`).
+
+Source code archives are made by the platform on request: no digest; the
+commit of the tag stands for the content (`assetid`). Its content follows
+the project's `export-ignore` and `export-subst` attributes. The digest is
+computed from the download; the platform may change how it compresses, so
+`verify` without the archive in the cache can find a difference.
 
 ### Download cache
 
