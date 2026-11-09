@@ -149,8 +149,11 @@ not allowed while it is an entry. `pull` refuses it, also with
 `unlink`/`rm` remove the entry. An entry not synced yet is **new**
 instead: `pull` takes its release.
 
-In a directory, only the files of the release count: one changed or
-deleted is a modification, all of them gone is missing.
+In a directory, only the files of the release count: one changed is a
+modification, one gone makes the directory missing (`status` says how
+many). If the new release doesn't have those files either, `pull` takes
+it (also `pull --all`). To drop a file of the release for good, leave it
+out with a [filter](#filters) (`--exclude`).
 
 Files an entry gets are staged even if `.gitignore` ignores them (e.g.
 `*.lib`), and written as `git checkout` writes them. What counts is the
@@ -339,7 +342,7 @@ would.
 
 | Option | Meaning |
 |---|---|
-| `--all` | all entries with something to pull (with `--overwrite` also modified ones); left out are missing ones and those whose [synced release isn't found](#selecting-the-release); not with paths |
+| `--all` | all entries with something to pull (with `--overwrite` also modified ones); left out are missing ones (see [above](#no-local-modifications)) and those whose [synced release isn't found](#selecting-the-release); not with paths |
 | `--release TAG\|PATTERN` | this release instead of the selected one, once – see below; prereleases count for a pattern only if the entry takes them |
 | `--overwrite` | discard local modifications and files of yours in the way |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` does |

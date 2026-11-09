@@ -103,7 +103,8 @@ Basic commands - what you need day to day:
                                 releases (or another filter) to pull, entries
                                 not synced yet, local modifications, missing
                                 files (what an entry got, gone - deleted,
-                                committed or not: restore gets it back)
+                                committed or not, in a directory any one of
+                                them: restore gets it back)
         -s, --short             short format: upstream and local columns
                                 (P pending, N new, E error; M modified -
                                 committed or not -, D missing, ? not
@@ -124,8 +125,9 @@ Basic commands - what you need day to day:
                                 in all, default 60); refused
                                 if modified (committed or not) or missing
                                 (also with --overwrite: restore gets it
-                                back); an entry not synced yet is taken as
-                                add would; in a directory its files are
+                                back; not files of a directory the release
+                                dropped too); an entry not synced yet is
+                                taken as add would; in a directory its files are
                                 replaced or deleted, files of others stay
         --all                   all files with something to pull (missing
                                 ones left out)
@@ -461,6 +463,10 @@ CACHE_MAX_AGE, CACHE_PRUNE_EVERY, CACHE_GRACE = 90, 86400, 600
 
 class FsError(Exception):
     pass
+
+
+class MissingError(FsError):
+    """pull: an entry with files gone that the release still has."""
 
 
 # --------------------------------------------------------------------------
@@ -3517,8 +3523,11 @@ class State:
     filter_changed: bool = False  # or another filter
     pending: bool = False     # something for pull to do
     modified: bool = False    # local modifications (not allowed)
-    missing: bool = False     # its file (a directory: all its release's) gone, while it is an
-                              # entry (not allowed) - deleted, committed or not
+    missing: bool = False     # a file of its release gone (a directory: any), while it is
+                              # an entry (not allowed) - deleted, committed or not
+    gone: list = field(default_factory=list)    # those files (paths in the repository)
+    total: int = 0            # and how many it got
+    others_modified: bool = False     # with files gone: the others modified (pull)
     unchecked: bool = False   # a directory whose base isn't in this clone: not checked
     changelog: list = field(default_factory=list)   # [(path, text)] its filter read (pull)
     unknown: Optional[str] = None     # the synced release isn't in the source: what to do
@@ -3547,9 +3556,10 @@ def base_files(repo, entry):
             if k == "blob"]
 
 
-def items_match_base(repo, st, items):
+def items_match_base(repo, st, items, drop=()):
     """Are these files [(mode, id, path in the repository)] - of HEAD, or of
-    the working tree - the base recorded in .git-assetsync: the same paths,
+    the working tree - the base recorded in .git-assetsync (without the
+    paths in drop): the same paths,
     the same modes where the base has one, and each file that differs from
     its base blob that blob stored as it would be now (.gitattributes
     changed since: LFS, line endings)? Re-storing reads the whole content
@@ -3559,7 +3569,7 @@ def items_match_base(repo, st, items):
     if not entry.blob:
         return False
     try:
-        base = {p: (m, o) for m, o, p in base_files(repo, entry) or []}
+        base = {p: (m, o) for m, o, p in base_files(repo, entry) or [] if p not in drop}
         now = {p: (m, o) for m, o, p in items}
         if base.keys() != now.keys() or any(m and m != now[p][0] for p, (m, _) in base.items()):
             return False
@@ -3653,7 +3663,13 @@ def local_state(repo, st):
     elif repo.changed_files(entry.rel) & paths or \
             any(repo.work.get(p, (m, o)) not in (None, (m, o)) for m, o, p in head):
         st.worktree = "modified"
-    if not files:
+    gone = set(paths) - set(files)
+    st.gone, st.total = sorted(gone), len(paths)
+    if files and gone and known:  # the others - for pull, if its release dropped these too
+        now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths - gone).items()]
+        st.others_modified = not items_match_base(repo, st, now, drop=gone) or bool(
+            head and not items_match_base(repo, st, head, drop=gone - {p for _, _, p in head}))
+    if not files or gone:         # any file of its release: as one of a [file]
         st.local = "missing"
     elif not known:
         st.local = "clean"
@@ -3798,6 +3814,12 @@ def describe(st):
     return parts or [("up to date", "green")]
 
 
+def gone_text(st):
+    """How many of the files of a directory's release are missing ('' for
+    a [file])."""
+    return f"{len(st.gone)} of {st.total} files" if st.entry.is_dir else ""
+
+
 def report_error(st):
     """An entry that couldn't be evaluated (status, pull)."""
     error(f"{st.entry.shown}: {st.error}")
@@ -3890,7 +3912,8 @@ def print_long(ctx, repo, sts, verbose):
     section("Missing files:",
             ['use "git assetsync restore <file>..." to get them back',
              'use "git assetsync unlink <file>..." to remove their entries'],
-            [("missing", st.entry.shown, "NOT ALLOWED: still an entry", "boldred")
+            [("missing", st.entry.shown, ", ".join(filter(None, [
+                gone_text(st), "NOT ALLOWED: still an entry"])), "boldred")
              for st in missing], "red")
     new = [st for st in ok if st.worktree == "added" and not st.modified]
     section("Not committed yet:", ['use "git commit" to commit them'],
@@ -4828,16 +4851,23 @@ def pull_one(ctx, repo, reg, st, args, keep):
                     raise FsError(f"{rel}: {st.error}")
     elif not entry.is_dir and entry.blob:
         base = {entry.rel}    # its file: what its release gave
-    if st.missing:            # only restore gets it back
-        raise FsError(f"{rel}: missing - NOT ALLOWED while it is an entry; get it back with "
-                      f"'git assetsync restore {path_arg(repo, rel)}', or remove the entry "
-                      f"with 'git assetsync unlink {path_arg(repo, rel)}'")
-    if not st.pending and not st.modified:
+    # missing: only restore gets it back - unless the release pull takes
+    # dropped those files too (no conflict, as the same change in a git merge)
+    fetched = None
+    if st.missing and entry.is_dir and st.pending:
+        fetched = filtered_files(repo, reg, entry, st.origin, st.release, st.assets, keep, st)
+    if st.missing and (fetched is None or set(st.gone) & fetched[1].keys()):
+        raise MissingError(f"{rel}: missing{f' ({gone_text(st)})' if entry.is_dir else ''} - "
+                           f"NOT ALLOWED while it is an entry; get it back with 'git assetsync "
+                           f"restore {path_arg(repo, rel)}', or remove the entry with 'git "
+                           f"assetsync unlink {path_arg(repo, rel)}'")
+    modified = st.modified or st.others_modified
+    if not st.pending and not modified:
         print(f"{rel}: {paint('up to date', 'green')}")
         return None
     # like `git pull` with no merge possible: local modifications are never
     # overwritten silently
-    if st.modified and not args.overwrite:
+    if modified and not args.overwrite:
         raise FsError(f"{rel}: local modifications NOT ALLOWED - it must stay what its release "
                       f"gives; discard them with 'git assetsync restore -SW "
                       f"{path_arg(repo, rel)}', or update anyway with 'git assetsync pull "
@@ -4845,16 +4875,17 @@ def pull_one(ctx, repo, reg, st, args, keep):
     for w in st.warnings:
         warn(f"{rel}: {w}")
     if args.dry_run:
-        msg = build_message(st, st.modified).splitlines()[0][len(COMMIT_PREFIX):]
-        print(f"would: {msg}" + (" - discarding local modifications" if st.modified else ""))
+        msg = build_message(st, modified).splitlines()[0][len(COMMIT_PREFIX):]
+        print(f"would: {msg}" + (" - discarding local modifications" if modified else ""))
         return None
-    if st.modified:
+    if modified:
         warn(f"{rel}: discarding local modifications")
     # before anything changes: the releases in between, the limits of the
     # notes, the tree it had (for the statistics)
-    digest, files = filtered_files(repo, reg, entry, st.origin, st.release, st.assets, keep, st)
+    digest, files = fetched or filtered_files(repo, reg, entry, st.origin, st.release,
+                                              st.assets, keep, st)
     return SimpleNamespace(
-        entry=entry, st=st, discard=st.modified, digest=digest, files=files, base=base,
+        entry=entry, st=st, discard=modified, digest=digest, files=files, base=base,
         overwrite=args.overwrite, limits=notes_limits(repo),
         between=releases_between(st) if entry.synced and st.release.tag != entry.synced else None,
         old=entry.blob if entry.is_dir and base and repo.has_tree(entry.blob or "") else None)
@@ -4916,7 +4947,7 @@ def cmd_pull(ctx, repo, args):
             report_error(st)
             rc = EXIT_ERROR
             continue
-        if args.all and st.missing:
+        if args.all and st.missing and not (entry.is_dir and st.pending):
             warn(f"{entry.shown}: missing - left out (see 'git assetsync status')")
             done += 1
             continue
@@ -4934,6 +4965,13 @@ def cmd_pull(ctx, repo, args):
             job = pull_one(ctx, repo, reg, st, args, keep)
             if args.release and (st.pending or st.modified):
                 hints.append(st)
+        except MissingError as e:
+            if not args.all:
+                error(str(e))
+                rc = EXIT_ERROR
+            else:             # its release still has a file gone: as above
+                warn(f"{entry.shown}: missing - left out (see 'git assetsync status')")
+            continue
         except FsError as e:   # report and carry on with the other files
             error(str(e))
             rc = EXIT_ERROR

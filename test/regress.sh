@@ -3167,10 +3167,22 @@ check "... pull --all leaves it out" "$(git assetsync pull --all 2>&1 | grep -c 
 quiet git assetsync restore f.txt
 check "... restore gets it back" "$(cat f.txt) $(st f.txt)" "c2  ?"
 git add f.txt && git commit -qm "f.txt back"
-# a directory: some of its release's files gone is a modification, all of them missing
+# a directory: any file of its release gone is missing, as a [file]
 git rm -q d/cm1.txt && git commit -qm "rm cm1"
-check "a directory, some files gone: modified" "$(st d)" " M"
-git rm -q d/cm2.txt && git commit -qm "rm cm2"
+check "a directory, one file gone: missing" "$(st d)" " D"
+check "... status says how many" "$(git assetsync status --no-fetch | grep 'missing:    d/')" \
+  "${TAB}missing:    d/  (1 of 2 files, NOT ALLOWED: still an entry)"
+check "... status --exit-code: 1" "$(rc git assetsync status --no-fetch --exit-code d)" "1"
+check "... pull refused, also with --overwrite" "$(git assetsync pull --overwrite d 2>&1)" \
+  "error: d/: missing (1 of 2 files) - NOT ALLOWED while it is an entry; get it back with 'git assetsync restore d/', or remove the entry with 'git assetsync unlink d/'"
+check "... pull --all leaves it out" "$(git assetsync pull --all 2>&1 | grep -c '^warning: d/: missing - left out'; git status --porcelain | oneline)" "1"
+# missing comes first: with a file changed too, restore, then it's modified
+echo changed > d/cm2.txt
+check "... and one changed: still missing" "$(st d)" " D"
+quiet git assetsync restore d
+check "... restore gets all back (modified until committed)" "$(cat d/cm1.txt d/cm2.txt | oneline)$(st d)" "c1 v2 c2  M"
+git add d && git commit -qm "d back"
+git rm -q d/cm1.txt d/cm2.txt && git commit -qm "rm cm1 cm2"
 check "... all of them (files of others stay): missing" "$(st d) $(ls d)" " D mine.txt"
 quiet git assetsync restore d && git add d && git commit -qm "d back"
 # an entry not synced yet (written by hand): new, pull takes the release as add would
@@ -3185,6 +3197,34 @@ check "pull --all --release: the others pulled, one error" \
   "$r $(printf '%s\n' "$out" | grep -c "^error: g.txt: no release with tag 'v1'") $(git diff --cached --name-only | oneline)$(cat d/cm1.txt)" \
   "2 1 .git-assetsync d/cm1.txt c1"
 git reset -q --hard
+# a directory with files gone, unless the new release dropped them too: no conflict, pull takes it
+mkdir -p "$F/dd1" "$F/dd2" "$F/dd3"
+printf 'x1\n' > "$F/dd1/x1.txt"; printf 'x2\n' > "$F/dd1/x2.txt"; printf 'x3\n' > "$F/dd1/x3.txt"
+release acme/dd v1 18 "$F/dd1/x1.txt" "$F/dd1/x2.txt" "$F/dd1/x3.txt"
+addc acme/dd e/
+printf 'x2 v2\n' > "$F/dd2/x2.txt"; release acme/dd v2 19 "$F/dd2/x2.txt" "$F/dd1/x3.txt"
+git rm -q e/x1.txt && git commit -qm "rm x1"
+echo mine > e/x3.txt
+check "dropped upstream too: pending and missing" "$(st e)" "PD"
+check "... another file changed: refused as modified" "$(git assetsync pull e 2>&1 | grep -c '^error: e/: local modifications NOT ALLOWED')" "1"
+git checkout -q e/x3.txt
+out=$(git assetsync pull --all 2>&1); r=$?
+check "... pull --all takes it" "$r $(printf '%s\n' "$out" | grep -c 'missing') $(ls e | oneline)$(cat e/x2.txt)" "0 0 x2.txt x3.txt x2 v2"
+commitp
+check "... then up to date" "$(st e)$(git status --porcelain | oneline)" ""
+# the new release still has it: missing, as before
+printf 'x2 v3\n' > "$F/dd3/x2.txt"; release acme/dd v3 20 "$F/dd3/x2.txt" "$F/dd1/x3.txt"
+rm e/x3.txt
+check "the new release still has it: refused, also with --overwrite" "$(git assetsync pull --overwrite e 2>&1 | grep -v '^Downloading')" \
+  "error: e/: missing (1 of 2 files) - NOT ALLOWED while it is an entry; get it back with 'git assetsync restore e/', or remove the entry with 'git assetsync unlink e/'"
+check "... pull -n says so too" "$(git assetsync pull -n e 2>&1 | grep -c '^error: e/: missing (1 of 2 files)')" "1"
+check "... pull --all leaves it out" "$(git assetsync pull --all 2>&1 | grep -c '^warning: e/: missing - left out') $(git status --porcelain | oneline)" "1  D e/x3.txt "
+git checkout -q e/x3.txt
+# dropped upstream too, the deletion not committed: pull stages it
+release acme/dd v4 21 "$F/dd3/x2.txt"
+rm e/x3.txt
+check "... deletion not committed: pull stages it" "$(rc git assetsync pull e) $(git status --porcelain e | oneline)$(reg dir.e.synced)" "0 M  e/x2.txt D  e/x3.txt v4"
+commitp
 
 # =============================================================================
 section "37. A step it doesn't know, cache limits of 0, verify keeps a base"
