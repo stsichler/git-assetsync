@@ -61,6 +61,8 @@
 #   37. A step it doesn't know, cache limits of 0, verify keeps a base
 #   38. Line endings: the eol step
 #   39. The synced release gone from the server
+#   40. Source code archives of releases (--sourcecode)
+#   41. Current directory reached through a link: junction, subst drive, symlink
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -80,7 +82,8 @@ fi
 # Windows as a Windows path (C:/...), which native git and Python understand.
 T=$(cd "$(mktemp -d)" && pwd -P)       # physical path (macOS: /var -> /private/var)
 HTTP_PID=
-trap '[ -n "$HTTP_PID" ] && kill $HTTP_PID 2>/dev/null; rm -rf "$T"' EXIT
+# HTTP server; a subst drive of section 41 left by an abort
+trap '[ -n "$HTTP_PID" ] && kill $HTTP_PID 2>/dev/null; [ -n "$D41" ] && cmd //c subst "$D41:" //d >/dev/null 2>&1; rm -rf "$T"' EXIT
 command -v cygpath >/dev/null && T=$(cygpath -m "$T")
 cd "$T" || exit 2
 
@@ -3349,6 +3352,57 @@ git assetsync set both --sourcecode tar.gz --asset '*' >/dev/null && git commit 
 check "... not twice with --asset" "$(git assetsync pull both 2>&1 | grep -c staged) $(ls both | oneline)" "1 bin.txt sarc-v3.tar.gz "
 git commit -qm both
 quiet git assetsync source map --unset https://github.com/acme/sarc
+
+# =============================================================================
+section "41. Current directory reached through a link: junction, subst drive, symlink"
+# =============================================================================
+
+# git names the top-level directory by its real path. Run directly (an alias
+# runs in that directory), the current directory may be reached through a
+# link, and Windows keeps the link's name for it - a subst drive is even
+# another drive than the top-level directory. Output and paths given are the
+# same as in the real directory. (Git Bash itself resolves a junction, so it
+# only shows up from cmd or PowerShell; a subst drive it keeps.)
+asset x.bin "x 1"; release acme/lnk v1 10 "$F/x.bin"
+new_repo r41
+mkdir sub && addc acme/lnk sub/x.bin --asset x.bin
+asset x.bin "x 2"; release acme/lnk v2 11 "$F/x.bin"
+EXP41=$(asd status -s 2>/dev/null)
+EXP41S=$(cd sub && asd status -s 2>/dev/null)
+EXP41L=$(cd sub && asd status 2>&1)
+check "real directory: paths relative to it" "$EXP41 | $EXP41S" "P  sub/x.bin | P  x.bin"
+
+# link41 NAME DIR - the checks, run in DIR, a link to r41
+link41() {
+  check "$1: status -s" "$(cd "$2" && asd status -s 2>/dev/null)" "$EXP41"
+  check "$1: status -s in a subdirectory" "$(cd "$2/sub" && asd status -s 2>/dev/null)" "$EXP41S"
+  check "$1: status in a subdirectory" "$(cd "$2/sub" && asd status 2>&1)" "$EXP41L"
+  check "$1: add with a path relative to it" \
+    "$(cd "$2/sub" && rc asd add acme/lnk y.bin --asset x.bin)-$(reg file.sub/y.bin.source)" "0-acme/lnk"
+  git reset -q -- .git-assetsync sub/y.bin && git checkout -q -- .git-assetsync && rm -f sub/y.bin
+}
+
+if command -v cygpath >/dev/null; then
+  cmd //c mklink //J "$(cygpath -w "$T/j41")" "$(cygpath -w "$T/r41")" >/dev/null
+  link41 "junction" "$T/j41"
+  cmd //c rmdir "$(cygpath -w "$T/j41")"          # the junction only, not its target
+  # a free drive letter for subst (session-wide: removed right away)
+  D41=
+  for l in Z Y X W V U T S R Q P O N; do
+    [ -d "$l:/" ] && continue                    # in use: never subst /d it
+    if cmd //c subst "$l:" "$(cygpath -w "$T")" >/dev/null 2>&1; then D41=$l; break; fi
+  done
+  if [ -n "$D41" ]; then
+    link41 "subst drive" "$D41:/r41"
+    cmd //c subst "$D41:" //d >/dev/null; D41=
+  else
+    echo "skipped: no free drive letter for subst"
+  fi
+elif ln -s "$T/r41" "$T/l41" 2>/dev/null; then
+  link41 "symlink" "$T/l41"
+else
+  echo "skipped: no symlinks here"
+fi
 
 # =============================================================================
 echo

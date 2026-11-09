@@ -2517,12 +2517,14 @@ class Repo:
         if p.returncode or len(lines) != 3:
             raise FsError("not inside a Git working tree")
         self.top = Path(lines[0]).resolve()
-        self.gitdir = Path(lines[1])
+        self.gitdir = Path(lines[1]).resolve()
         self.objects = Path.cwd() / lines[2]      # relative to the current directory
         # shell aliases run in the top-level dir and pass the original
-        # subdirectory in GIT_PREFIX
+        # subdirectory in GIT_PREFIX. Resolved like top (git names it by its
+        # real path): run directly, the current directory may be reached
+        # through a subst drive, junction or symlink (Windows keeps that name).
         prefix = os.environ.get("GIT_PREFIX")
-        self.base = Path.cwd() / prefix if prefix else Path.cwd()
+        self.base = (Path.cwd() / prefix if prefix else Path.cwd()).resolve()
         self.trees = {}           # see tree_entries(): {tree: its entries}
         self.scripts = {}         # see script_blob()
         self.known_trees = {}     # see has_tree(): {tree: whether it is here}
@@ -3820,7 +3822,7 @@ def short_code(st):
 def shown(repo, rel):
     """Path relative to the current directory, like git status shows it (a
     trailing '/' of a directory kept)."""
-    path = Path(os.path.relpath(repo.top / rel, repo.base)).as_posix()
+    path = shown_path(repo, repo.top / rel)
     return path + "/" if rel.endswith("/") and path != "." else path
 
 
@@ -4567,8 +4569,8 @@ def propose_message(repo, msg):
 
 
 def shown_path(repo, path):
-    """A path outside the working tree (e.g. in .git) as shown to the user:
-    relative to the current directory if possible."""
+    """A path as shown to the user: relative to the current directory if
+    possible (not across drives on Windows), else absolute."""
     try:
         return Path(os.path.relpath(path, repo.base)).as_posix()
     except ValueError:            # Windows: another drive
