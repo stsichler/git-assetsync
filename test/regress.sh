@@ -3219,7 +3219,12 @@ check "the new release still has it: refused, also with --overwrite" "$(git asse
   "error: e/: missing (1 of 2 files) - NOT ALLOWED while it is an entry; get it back with 'git assetsync restore e/', or remove the entry with 'git assetsync unlink e/'"
 check "... pull -n says so too" "$(git assetsync pull -n e 2>&1 | grep -c '^error: e/: missing (1 of 2 files)')" "1"
 check "... pull --all leaves it out" "$(git assetsync pull --all 2>&1 | grep -c '^warning: e/: missing - left out') $(git status --porcelain | oneline)" "1  D e/x3.txt "
-git checkout -q e/x3.txt
+check "... status -v: missing" "$(git assetsync status -v --no-fetch e | grep -c "^${TAB}missing:    e/  (all assets from acme/dd")" "1"
+echo mine > e/x2.txt
+check "... and another file changed: add --force refused" "$(asd add --force acme/dd e/ 2>&1 >/dev/null; cat e/x2.txt)" \
+  "error: 'e/' has local modifications - use --overwrite to discard them
+mine"
+git checkout -q e/x2.txt e/x3.txt
 # dropped upstream too, the deletion not committed: pull stages it
 release acme/dd v4 21 "$F/dd3/x2.txt"
 rm e/x3.txt

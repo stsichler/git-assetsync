@@ -466,7 +466,7 @@ class FsError(Exception):
 
 
 class MissingError(FsError):
-    """pull: an entry with files gone that the release still has."""
+    """pull: an entry missing files, refused."""
 
 
 # --------------------------------------------------------------------------
@@ -3527,7 +3527,6 @@ class State:
                               # an entry (not allowed) - deleted, committed or not
     gone: list = field(default_factory=list)    # those files (paths in the repository)
     total: int = 0            # and how many it got
-    others_modified: bool = False     # with files gone: the others modified (pull)
     unchecked: bool = False   # a directory whose base isn't in this clone: not checked
     changelog: list = field(default_factory=list)   # [(path, text)] its filter read (pull)
     unknown: Optional[str] = None     # the synced release isn't in the source: what to do
@@ -3665,10 +3664,6 @@ def local_state(repo, st):
         st.worktree = "modified"
     gone = set(paths) - set(files)
     st.gone, st.total = sorted(gone), len(paths)
-    if files and gone and known:  # the others - for pull, if its release dropped these too
-        now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths - gone).items()]
-        st.others_modified = not items_match_base(repo, st, now, drop=gone) or bool(
-            head and not items_match_base(repo, st, head, drop=gone - {p for _, _, p in head}))
     if not files or gone:         # any file of its release: as one of a [file]
         st.local = "missing"
     elif not known:
@@ -3678,6 +3673,23 @@ def local_state(repo, st):
     else:
         now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
         st.local = "clean" if items_match_base(repo, st, now) else "modified"
+
+
+def others_modified(repo, st):
+    """A directory with files of its release gone (st.gone): are the others
+    modified, committed or not? For pull (its release may drop the gone ones
+    too) and add --force - status only says missing."""
+    entry, gone = st.entry, set(st.gone)
+    if not entry.is_dir or not entry.blob or len(gone) == st.total:
+        return False
+    paths = {p for _, _, p in base_files(repo, entry) or []}
+    obj = repo.head_entry(entry.rel)
+    head = [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(obj[2])
+            if k == "blob" and f"{entry.rel}/{p}" in paths] if obj and obj[1] == "tree" else []
+    with repo.scratch():      # only looks
+        now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths - gone).items()]
+        return not items_match_base(repo, st, now, drop=gone) or bool(
+            head and not items_match_base(repo, st, head, drop=gone - {p for _, _, p in head}))
 
 
 def has_release(origin, tag):
@@ -3885,7 +3897,8 @@ def print_long(ctx, repo, sts, verbose):
         rows = []
         for st in ok:
             e = st.entry
-            label = ("not synced" if not e.blob else "modified" if st.modified else
+            label = ("not synced" if not e.blob else "missing" if st.missing else
+                     "modified" if st.modified else
                      "new" if st.worktree == "added" else "unmodified")
             rows.append((label, e.shown, origin_text(e), "dim"))
         section("Files:", [], rows, None)
@@ -4861,7 +4874,7 @@ def pull_one(ctx, repo, reg, st, args, keep):
                            f"NOT ALLOWED while it is an entry; get it back with 'git assetsync "
                            f"restore {path_arg(repo, rel)}', or remove the entry with 'git "
                            f"assetsync unlink {path_arg(repo, rel)}'")
-    modified = st.modified or st.others_modified
+    modified = st.modified or (st.missing and others_modified(repo, st))
     if not st.pending and not modified:
         print(f"{rel}: {paint('up to date', 'green')}")
         return None
@@ -5152,7 +5165,7 @@ def cmd_add(ctx, repo, args):
             old = State(entry=old_entry, rel=rel)
             with repo.scratch():      # only looks
                 local_state(repo, old)
-            if old.local == "modified":
+            if old.local == "modified" or old.local == "missing" and others_modified(repo, old):
                 raise FsError(f"'{shown_rel}' has local modifications - use --overwrite to "
                               "discard them")
     if args.dry_run:
