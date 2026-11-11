@@ -1315,7 +1315,7 @@ check "selection in the [source]: an error" "$(git assetsync status -s a.txt 2>&
 git checkout -q .git-assetsync
 # rename, set --url, set --type
 check "source rename -n" "$(git assetsync source rename -n acme/src pinned; git status --porcelain)" \
-  "would: renamed acme/src -> pinned"
+  "would rename acme/src -> pinned"
 quiet git assetsync source rename acme/src pinned
 check "rename: section and references" "$(reg source.pinned.url) $(reg file.a.txt.source) $(reg file.b.txt.source)" \
   "https://github.com/acme/src pinned pinned"
@@ -1334,11 +1334,11 @@ check "source set: what it shows changes nothing" "$(eval "$(git assetsync sourc
 check "source set: without NAME" "$(git assetsync source set 2>&1)" \
   "error: give the source to change or show (NAME), or --list for all"
 check "source set -n --url" "$(git assetsync source set -n pinned --url acme/moved; git status --porcelain)" \
-  "would: pinned: url https://github.com/acme/src -> https://github.com/acme/moved"
+  "would: source pinned: url https://github.com/acme/src -> https://github.com/acme/moved"
 OUT=$(git assetsync source set pinned --url https://github.com/acme/moved.git)
 check "source set --url" "$(reg source.pinned.url)" "https://github.com/acme/moved"
 check "source set --url: output" "$OUT" \
-  "pinned: url https://github.com/acme/src -> https://github.com/acme/moved
+  "source pinned: url https://github.com/acme/src -> https://github.com/acme/moved
 .git-assetsync staged - pending until pull (use \"git assetsync pull -n <path>...\" to see what it would do, \"git assetsync diff --upstream <path>...\" the differences)"
 check "source set --url: pending (other asset)" "$(st b.txt)" "P"
 git reset -q --hard
@@ -2057,7 +2057,7 @@ check "filter set -n" "$(git assetsync filter set -n headers --extract; git stat
   "would: filter headers: extract (used by filter sdk)"
 check "filter add/rename -n" "$(git assetsync filter add -n new --extract; git assetsync filter rename -n fw fw2; git status --porcelain)" \
   "would: filter new: extract (new)
-would: renamed filter fw -> fw2"
+would rename filter fw -> fw2"
 # a changed named filter: its users are pending
 check "filter set: output" "$(git assetsync filter set headers --extract --include 'a.h' --move '*.h' include/)" \
   "filter headers: extract, include a.h, move '*.h' include/ (used by filter sdk)
@@ -2746,7 +2746,7 @@ printf 'bin\000ary\n' > "$F/log.bin"; printf 'text\n' > "$F/log.txt"
 quiet git assetsync filter add clb --changelog 'log.*'
 check "filter test: not text skipped" "$(git assetsync filter test clb "$F/log.bin" "$F/log.txt" 2>&1 | grep '^changelog')" \
   "changelog 'log.*'  1 file read, 1 skipped (not text)"
-check "filter remove -n" "$(git assetsync filter remove -n clb; reg filter.clb.step)" "would: removed filter clb
+check "filter remove -n" "$(git assetsync filter remove -n clb; reg filter.clb.step)" "would remove filter clb
 changelog 'log.*'"
 quiet git assetsync filter remove clb
 # encodings: UTF-8, else Windows-1252; UTF-16 with a BOM

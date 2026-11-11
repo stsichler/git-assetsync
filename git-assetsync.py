@@ -6005,8 +6005,8 @@ def cmd_source(ctx, repo, args):
             raise FsError(f"source '{new}' already exists")
         reg.rename_source(args.name, new)
         reg.finish()
-        print(f"{would}{paint(f'renamed {args.name} -> {new}', 'green')}"
-              + ("" if args.dry_run else f"; {REGISTRY} staged"))
+        print(f"would rename {args.name} -> {new}" if args.dry_run else
+              f"{paint(f'renamed {args.name} -> {new}', 'green')}; {REGISTRY} staged")
         return EXIT_OK
     if args.url:
         url = source_url(args.url)
@@ -6015,12 +6015,12 @@ def cmd_source(ctx, repo, args):
             raise FsError(f"source '{other}' already has this URL - move the files to it with "
                           f"'git assetsync set <file>... --source {other}'")
         if norm_url(url) != norm_url(s.get("url", "")):
-            done.append(f"{args.name}: url {s.get('url', '')} -> {url}")
+            done.append(f"source {args.name}: url {s.get('url', '')} -> {url}")
             reg.set_source(args.name, "url", url)
     if args.type or args.no_type:
         derived = "(derived from the host)"
         if (s.get("type") or None) != args.type:
-            done.append(f"{args.name}: type {s.get('type') or derived} -> "
+            done.append(f"source {args.name}: type {s.get('type') or derived} -> "
                         f"{args.type or derived}")
             reg.set_source(args.name, "type", args.type)
     if not done:
@@ -6102,15 +6102,17 @@ def cmd_filter(ctx, repo, args):
             raise FsError(f"filter '{args.value}' already exists")
         reg.rename_filter(args.name, args.value)
         done = f"renamed filter {args.name} -> {args.value}"
+        would = f"would rename filter {args.name} -> {args.value}"
     else:   # remove
         if users:
             raise FsError(f"filter '{args.name}' is used by {and_list(users)}")
         reg.remove_filter(args.name)
         done = f"removed filter {args.name}"
+        would = f"would remove filter {args.name}"
     if action == "set" and users:
         done += f" (used by {and_list(users)})"
-    if args.dry_run:
-        print(f"would: {paint(done, 'green')}")
+    if args.dry_run:      # a change of the steps as set shows one, else as git
+        print(would if action in ("rename", "remove") else f"would: {done}")
     elif action == "set" and users:
         reg.finish()
         print(paint(done, "green"))
