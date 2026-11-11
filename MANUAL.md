@@ -252,8 +252,9 @@ index goes too (`rm -f`, `--overwrite`, `restore -S`), a staged version is
 kept as well (`discarded: lib/data.bin, as staged …`). `git gc` removes
 such objects after a while (normally two weeks).
 
-**`-n` (`--dry-run`) only leaves out the writing.** Every command that
-stages or deletes files has it. It downloads, filters and checks as
+**`-n` (`--dry-run`) only leaves out the writing.** The commands that
+stage or delete files have it, except `restore` (like `git restore`),
+`edit` and `hooks`. It downloads, filters and checks as
 without `-n`, so it finds the same errors, and needs the platform
 whenever the command does. A filter you trust when asked is trusted for
 this run only.

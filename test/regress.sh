@@ -388,6 +388,11 @@ check "status --exit-code: 1" "$(rc git assetsync status --exit-code)" "1"
 check "pull --all with paths refused" "$(git assetsync pull --all bin/tool.bin 2>&1)" "error: --all cannot be combined with paths"
 check "pull without paths refused" "$(rc git assetsync pull)" "2"
 check "pull without paths: message" "$(git assetsync pull 2>&1)" "error: specify file(s) or --all"
+# -n changes nothing: into a closed pipe it stops, like status (no download)
+reset_calls
+check "pull -n into a closed pipe: stops, exit 141" \
+  "$(PYTHONUNBUFFERED=1 git assetsync pull -n -v bin/tool.bin 2>/dev/null | (exec 0<&-); echo "${PIPESTATUS[0]}"; downloads)" "141
+0"
 # into a pipe closed early (head): the pull still finishes, exit 141 like git
 out=$(PYTHONUNBUFFERED=1 git assetsync pull -v bin/tool.bin 2>/dev/null | head -1; echo "rc=${PIPESTATUS[0]}"); commitp
 check "pull -v: where it comes from first" "$(printf '%s\n' "$out" | head -1)" \
@@ -983,6 +988,11 @@ else
   check "LFS: clean" "$(st) $(git status --porcelain)" " "
   printf 'bin\000ary 2\n' > "$F/fw.bin"
   release acme/fw v2 11 "$F/fw.bin"
+  lfsobjects() { find .git/lfs/objects -type f 2>/dev/null | lines; }
+  N=$(lfsobjects)
+  check "LFS: pull -n stores no LFS object" "$(git assetsync pull -n fw.bin >/dev/null 2>&1; lfsobjects)" "$N"
+  check "LFS: status stores none either" "$(echo changed > fw.bin; st fw.bin; lfsobjects; git checkout -q fw.bin)" "PM
+$N"
   pullc fw.bin
   check "LFS: pulled" "$(sha fw.bin)" "$(sha "$F/fw.bin")"
   check "LFS: pull clean" "$(st) $(git status --porcelain)" " "
@@ -1349,7 +1359,7 @@ check "source set --list" "$(git assetsync source set --list)" \
   "git assetsync source set acme/moved --url https://github.com/acme/moved --no-type
 git assetsync source set pinned --url https://github.com/acme/src --no-type"
 check "source set --list: no NAME" "$(git assetsync source set --list pinned 2>&1)" \
-  "error: --list takes no NAME and no options to change"
+  "error: --list takes no NAME and no options"
 git reset -q --hard HEAD~1
 check "source set --type" "$(git assetsync source set pinned --type gitlab >/dev/null; reg source.pinned.type)" "gitlab"
 check "source set --type: shown" "$(git assetsync source set pinned)" \
@@ -1392,7 +1402,7 @@ check "set: what it shows changes nothing" "$(eval "$(git assetsync set x.bin)";
 check "set --list" "$(git assetsync set --list)" \
   "git assetsync set x.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset x.bin --no-sourcecode --no-filter
 git assetsync set y.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset y.bin --no-sourcecode --no-filter"
-check "set --list: no PATH" "$(git assetsync set --list x.bin 2>&1)" "error: --list takes no PATH and no options to change"
+check "set --list: no PATH" "$(git assetsync set --list x.bin 2>&1)" "error: --list takes no PATH and no options"
 check "set: without PATH" "$(git assetsync set --latest 2>&1)" \
   "error: give the entries to change or show (PATH...), or --list for all"
 check "set --type: only with --source" "$(git assetsync set x.bin --type gitlab 2>&1)" \
@@ -1573,6 +1583,10 @@ pullc lib/zlib
 check "filter changed: pulled, the files of others kept" "$(git ls-files lib | oneline)" "lib/zlib/include/new.h lib/zlib/include/zlib.h lib/zlib/mine.h "
 check "filter changed: message" "$(git log -1 --format=%s)" "[assetsync] Update lib/zlib/ from madler/zlib v1.3.1 (2026-10-11, filter changed)"
 check "filter changed: no download (cache)" "$(downloads)" "0"
+check "set: a path in a directory entry shows the entry" "$(git assetsync set lib/zlib/include | cut -d' ' -f1-4)" \
+  "git assetsync set lib/zlib/"
+check "set: ... but changes only the whole entry" "$(git assetsync set lib/zlib/include --no-filter 2>&1)" \
+  "error: 'lib/zlib/include' is part of the directory entry lib/zlib/ - only the entry as a whole can be changed"
 check "set --no-filter" "$(git assetsync set lib/zlib --no-filter; reg dir.lib/zlib.filter)" \
   "lib/zlib/: filter zh -> (none)
 .git-assetsync staged - pending until pull (use \"git assetsync pull -n <path>...\" to see what it would do, \"git assetsync diff --upstream <path>...\" the differences)"
@@ -1866,7 +1880,9 @@ touch -t 202501011200 "$C1"
 echo x > x2.txt; git commit -qam x; quiet pullcm --overwrite x2.txt
 check "cache: automatic, not twice a day" "$(ls "$ASSETSYNC_CACHE/sha256" | lines)" "2"
 touch -t 202501011200 "$ASSETSYNC_CACHE/last-prune"; rm "$C2"
-echo y > x2.txt; git commit -qam y; quiet pullcm --overwrite x2.txt
+echo y > x2.txt; git commit -qam y
+check "cache: not cleaned up by -n" "$(git assetsync pull -n --overwrite x2.txt >/dev/null 2>&1; ls "$ASSETSYNC_CACHE/sha256" | grep -c "$(sha "$F/x1.txt")")" "1"
+rm "$C2"; quiet pullcm --overwrite x2.txt
 check "cache: automatic after a download" "$(ls "$ASSETSYNC_CACHE/sha256" | grep -c "$(sha "$F/x1.txt")")" "0"
 git config --unset assetsync.cacheMaxAge
 export ASSETSYNC_CACHE=$SAVED_CACHE
@@ -2051,6 +2067,8 @@ check "filter set --list" "$(git assetsync filter set --list)" \
   "git assetsync filter set fw --move '*' fw/
 git assetsync filter set headers --extract --include '*.h' --move '*.h' include/
 git assetsync filter set sdk --apply '*.zip' headers --apply '*.bin' fw"
+check "filter set --list: no steps" "$(git assetsync filter set --list --extract 2>&1)" \
+  "error: --list takes no NAME and no options"
 check "filter set: without NAME" "$(git assetsync filter set 2>&1)" \
   "error: give the filter to change or show (NAME), or --list for all"
 check "filter set -n" "$(git assetsync filter set -n headers --extract; git status --porcelain)" \
@@ -2058,6 +2076,12 @@ check "filter set -n" "$(git assetsync filter set -n headers --extract; git stat
 check "filter add/rename -n" "$(git assetsync filter add -n new --extract; git assetsync filter rename -n fw fw2; git status --porcelain)" \
   "would: filter new: extract (new)
 would rename filter fw -> fw2"
+# a name filter add wouldn't take (written by hand): shown, the shown command works
+git config -f .git-assetsync filter."my fw".step "move '*' fw/"
+check "filter set: a name written by hand" "$(git assetsync filter set 'my fw'; eval "$(git assetsync filter set 'my fw')")" \
+  "git assetsync filter set 'my fw' --move '*' fw/
+nothing to change"
+git checkout -q .git-assetsync
 # a changed named filter: its users are pending
 check "filter set: output" "$(git assetsync filter set headers --extract --include 'a.h' --move '*.h' include/)" \
   "filter headers: extract, include a.h, move '*.h' include/ (used by filter sdk)

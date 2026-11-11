@@ -95,10 +95,10 @@ and pull (commands that change entries refuse it). Options follow the
 command. No command commits: they change the working tree and stage, and
 you commit - add and pull with a proposed message (like git merge
 --squash: added to .git/SQUASH_MSG, which a plain `git commit` offers; a
-copy of it all in .git/ASSETSYNC_MSG). -n (--dry-run), with each command
-that stages or deletes files: done as without - downloaded, filtered,
-checked -, only nothing written (a filter trusted on the terminal: only
-for this run).
+copy of it all in .git/ASSETSYNC_MSG). -n (--dry-run), with the commands
+that stage or delete files (not restore, edit, hooks): done as without -
+downloaded, filtered, checked -, only nothing written (a filter trusted
+on the terminal: only for this run).
 
 Basic commands - what you need day to day:
 
@@ -1600,9 +1600,15 @@ def prune_cache(max_age, max_size, dry_run=False, grace=True, everything=False):
     return removed
 
 
+# auto_prune() after downloads: not with -n (set by run())
+AUTO_PRUNE = {"on": True}
+
+
 def auto_prune():
     """After a download: clean up the cache by the configured limits, at most
     once a day. Never fails a command."""
+    if not AUTO_PRUNE["on"]:
+        return
     marker = cache_root() / "last-prune"
     try:
         if marker.is_file() and time.time() - marker.stat().st_mtime < CACHE_PRUNE_EVERY:
@@ -2821,9 +2827,14 @@ class Repo:
         os.environ["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = os.pathsep.join(
             [str(objects)] + ([alternates] if alternates else []))
         self.scratch_dir = td
+        start = time.time()
         try:
             yield
         finally:
+            try:
+                self.drop_lfs_objects(td, start)
+            except (FsError, OSError):
+                pass
             self.scratch_dir = None
             for k, v in saved.items():
                 if v is None:
@@ -2831,6 +2842,24 @@ class Repo:
                 else:
                     os.environ[k] = v
             remove_tree(td)
+
+    def drop_lfs_objects(self, td, since):
+        """Git LFS keeps what it cleans in its own store, which scratch()
+        doesn't redirect: the content of pointers stored only in td (new
+        here), if written since then, goes again."""
+        oids = [d.name + f.name for d in Path(td).iterdir() if len(d.name) == 2
+                for f in d.iterdir()]
+        self.lfs_pointers(oids)
+        new = [self.pointers[o][0] for o in oids if self.pointers.get(o)]
+        if not new:
+            return
+        store = config_get("lfs.storage")
+        common = Path(out(self.git(["rev-parse", "--git-common-dir"])))
+        store = (self.top / common) / (store or "lfs")      # relative: to the git dir
+        for oid in new:
+            path = store / "objects" / oid[:2] / oid[2:4] / oid
+            if path.is_file() and path.stat().st_mtime >= since - 2:
+                path.unlink()
 
     @contextmanager
     def real(self):
@@ -4305,10 +4334,14 @@ def release_lines(release, assets, filter_name=None, stats=None):
     if filter_name:
         lines.append(f"Filter:  {filter_name}")
     if stats:
-        added, removed, changed, total = stats
-        lines.append(f"Files:   {added} added, {removed} removed, {changed} changed "
-                     f"({total} in total)")
+        lines.append(stats_text(stats))
     return lines
+
+
+def stats_text(stats):
+    """What changes in a directory (tree_stats()), as in commit messages."""
+    added, removed, changed, total = stats
+    return f"Files:   {added} added, {removed} removed, {changed} changed ({total} in total)"
 
 
 def notes_limits(repo):
@@ -4748,7 +4781,7 @@ def in_the_way(repo, rel, new, base, there):
     return sorted(found)
 
 
-def install_entries(repo, jobs, dry_run=False):
+def install_entries(repo, jobs):
     """Install what entries get, all at once - jobs [(entry, its files {path
     in the repository: (file, executable)}, base: the paths of the files it
     has from its release now, overwrite)]: of the files it had, those the
@@ -4759,8 +4792,8 @@ def install_entries(repo, jobs, dry_run=False):
     update-index) and written as git checkout writes them (one
     checkout-index): also files the repository ignores (e.g. *.lib) - the
     entry has them. Returns {entry path: its blob (a [file]) or tree, or
-    the FsError for it}; files of others there are left alone. dry_run:
-    checked and computed, nothing changed."""
+    the FsError for it}; files of others there are left alone. With -n
+    (repo.dry_run): checked and computed, nothing changed."""
     result, ready = {}, []
     seen = repo.dir_files(*[entry.rel for entry, _, _, _ in jobs]) if jobs else []
     for entry, files, base, overwrite in jobs:
@@ -4807,7 +4840,7 @@ def install_entries(repo, jobs, dry_run=False):
         jobs.append((entry, files))
     items = sorted((git_mode(v[1]), ids[p], p)
                    for _, files in jobs for p, v in files.items())
-    if dry_run:
+    if repo.dry_run:
         for entry, files in jobs:
             result[entry.rel] = release_tree(repo, entry.rel, items, files) if entry.is_dir \
                 else ids[entry.rel]
@@ -4871,7 +4904,7 @@ def one_file(files, entry_shown, rel):
 def pull_done(repo, reg, job, base):
     """The rest of pulling an entry, once its files are installed (base: its
     new blob or tree): its keys, its part of the commit message. Returns
-    (that part, the paths to commit)."""
+    (that part, the paths to commit, tree_stats() of a directory)."""
     entry, st = job.entry, job.st
     stats = tree_stats(repo, job.old, base) if entry.is_dir else None
     msg = build_message(st, job.discard, unchanged=base == entry.blob, stats=stats,
@@ -4883,7 +4916,7 @@ def pull_done(repo, reg, job, base):
     entry.set(BASE_KEY[entry.kind], base)
     if not entry.is_dir:
         entry.set("mode", git_mode(job.files[entry.rel][1]))
-    return msg, set(job.base) | set(job.files)
+    return msg, set(job.base) | set(job.files), stats
 
 
 def pull_one(ctx, repo, reg, st, args, keep):
@@ -5034,20 +5067,18 @@ def cmd_pull(ctx, repo, args):
             jobs.append(job)
     with keep:                # all at once
         installed = install_entries(repo, [(j.entry, j.files, j.base, j.overwrite)
-                                           for j in jobs], args.dry_run) if jobs else {}
+                                           for j in jobs]) if jobs else {}
     for job in jobs:
         if isinstance(installed[job.entry.rel], FsError):
             error(str(installed[job.entry.rel]))
             rc = EXIT_ERROR
             continue
-        msg, done_paths = pull_done(repo, reg, job, installed[job.entry.rel])
+        msg, done_paths, stats = pull_done(repo, reg, job, installed[job.entry.rel])
         if args.dry_run:      # what pull would do: its commit message's subject and files
-            lines = msg.splitlines()
-            print(f"would: {lines[0][len(COMMIT_PREFIX):]}"
+            print(f"would: {msg.splitlines()[0][len(COMMIT_PREFIX):]}"
                   + (" - discarding local modifications" if job.discard else ""))
-            for line in lines:
-                if line.startswith("Files:"):
-                    print(f"  {line}")
+            if stats:
+                print(f"  {stats_text(stats)}")
             continue
         pulled.append(job.entry)
         msgs.append(msg)
@@ -5223,7 +5254,7 @@ def cmd_add(ctx, repo, args):
     with ExitStack() as keep:
         digest, files = filtered_files(repo, reg, new, origin, release, assets, keep)
         mode = None if is_dir else git_mode(files[rel][1])
-        base = install_entries(repo, [(new, files, base, args.overwrite)], args.dry_run)[rel]
+        base = install_entries(repo, [(new, files, base, args.overwrite)])[rel]
     if isinstance(base, FsError):
         raise base
     stats = tree_stats(repo, old_tree, base) if is_dir else None
@@ -5232,7 +5263,7 @@ def cmd_add(ctx, repo, args):
               f"({', '.join(a.name for a in assets)}, {spec_text(spec)}"
               + (f", filter {args.filter}" if args.filter else "") + ")")
         if stats:
-            print("  " + release_lines(release, assets, stats=stats)[-1])
+            print(f"  {stats_text(stats)}")
         return EXIT_OK
     if rel in reg.files:
         reg.remove_file(rel, keep_source=named)
@@ -5361,17 +5392,16 @@ def cmd_set(ctx, repo, args):
     (synced removed). Without options: each entry as the set command that
     gives it."""
     select = args.release is not None or args.latest or args.prerelease is not None
-    change = (args.source or args.type or select or args.asset is not None or args.no_asset or
-              args.sourcecode or args.no_sourcecode or args.filter or args.no_filter)
+    change = changes(args)
     if args.list and (args.paths or change):
-        raise FsError("--list takes no PATH and no options to change")
+        raise FsError("--list takes no PATH and no options")
     if not args.list and not args.paths:
         raise FsError("give the entries to change or show (PATH...), or --list for all")
     if args.type and not args.source:
         raise FsError("--type goes with --source (the type of a source: 'git assetsync "
                       "source set NAME --type ...')")
     reg = Registry(repo)
-    entries = select_entries(repo, reg, args.paths)
+    entries = select_entries(repo, reg, args.paths, containing=not change)
     if not change:
         for e in entries:
             print(set_command(repo, e))
@@ -5978,10 +6008,10 @@ def cmd_source(ctx, repo, args):
         for name, s in sorted(reg.sources.items()):
             print(f"{name}\t{source_text(s, name, reg)}" if args.verbose else name)
         return EXIT_OK
-    change = action == "rename" or args.url or args.type or args.no_type
+    change = action == "rename" or changes(args)
     if action == "set" and args.list:
         if args.name or change:
-            raise FsError("--list takes no NAME and no options to change")
+            raise FsError("--list takes no NAME and no options")
         for name, s in sorted(reg.sources.items()):
             print(source_command(name, s))
         return EXIT_OK
@@ -6056,8 +6086,8 @@ def cmd_filter(ctx, repo, args):
             print(f"no filters in {REGISTRY}")
         return EXIT_OK
     if action == "set" and args.list:
-        if args.name or getattr(args, "steps", None):
-            raise FsError("--list takes no NAME and no steps")
+        if args.name or changes(args):
+            raise FsError("--list takes no NAME and no options")
         for name, steps in sorted(reg.filters.items()):
             print(filter_command(name, steps))
         return EXIT_OK
@@ -6079,13 +6109,13 @@ def cmd_filter(ctx, repo, args):
         return EXIT_OK
     reg.dry_run = args.dry_run
     if action in ("add", "set"):
-        if not re.fullmatch(r"[\w.+-]+", args.name):
-            raise FsError(f"invalid filter name '{args.name}' (letters, digits, '.', '+', '-', "
-                          "'_')")
         steps = filter_steps(args)
         if not steps and action == "set":
             print(filter_command(args.name, reg.filters[args.name]))
             return EXIT_OK
+        if action == "add" and not re.fullmatch(r"[\w.+-]+", args.name):     # a new name
+            raise FsError(f"invalid filter name '{args.name}' (letters, digits, '.', '+', '-', "
+                          "'_')")
         if not steps:
             raise FsError("give the steps of the filter (--extract, --include, --move, ...)")
         expand_steps(steps, dict(reg.filters, **{args.name: steps}), (args.name,))
@@ -6491,7 +6521,26 @@ def only_looks(args):
         action == "map" and not args.dir and not args.unset or \
         action == "test" and not args.output or \
         action == "trust" and not (args.names or args.all or args.revoke) or \
-        getattr(args, "list", False)            # set, source set, filter set --list
+        getattr(args, "dry_run", False) or shows(args)
+
+
+def changes(args):
+    """Does set, source set or filter set get something to change - else it
+    shows (see set_command(), source_command(), filter_command())?"""
+    if args.cmd == "set":
+        return bool(args.source or args.type or args.release is not None or args.latest or
+                    args.prerelease is not None or args.asset is not None or
+                    args.no_asset or args.sourcecode or args.no_sourcecode or args.filter or
+                    args.no_filter)
+    if args.cmd == "source":
+        return bool(args.url or args.type or args.no_type)
+    return bool(getattr(args, "steps", None))
+
+
+def shows(args):
+    """set, source set, filter set showing (also --list)."""
+    return (args.cmd == "set" or getattr(args, "action", None) == "set"
+            and args.cmd in ("source", "filter")) and not changes(args)
 
 
 def run(argv):
@@ -6904,6 +6953,7 @@ def run(argv):
             "unlink": cmd_unlink, "mv": cmd_mv, "restore": cmd_restore, "rm": cmd_rm,
             "source": cmd_source, "filter": cmd_filter, "verify": cmd_verify}[args.cmd]
         repo.dry_run = getattr(args, "dry_run", False)
+        AUTO_PRUNE["on"] = not repo.dry_run
         if repo.dry_run:      # done as without -n, only nothing is written
             with repo.scratch():
                 return command(ctx, repo, args)
