@@ -1063,7 +1063,7 @@ asset e.txt enterprise
 release --host ghe.example.com acme/ent v1 10 "$F/e.txt"
 new_repo r11
 check "unknown host without type" "$(asd add https://ghe.example.com/acme/ent e.txt --asset e.txt 2>&1)" \
-  "error: https://ghe.example.com/acme/ent: platform of ghe.example.com unknown - give its type (add --type github|gitlab, or 'git assetsync source set-type <source> github|gitlab')"
+  "error: https://ghe.example.com/acme/ent: platform of ghe.example.com unknown - give its type (add --type github|gitlab, or 'git assetsync source set <source> --type github|gitlab')"
 reset_calls
 addc https://ghe.example.com/acme/ent e.txt --asset e.txt --type github
 check "GitHub Enterprise: fetched" "$(cat e.txt)" "enterprise"
@@ -1087,15 +1087,20 @@ asset dr.txt "dr 1"
 release acme/dr v1 10 "$F/dr.txt"
 new_repo r12
 reset_calls
-check "add -n: output" "$(asd add -n acme/dr dr.txt --asset dr.txt 2>&1)" \
+objects() { find .git/objects -type f | lines; }
+OBJ=$(objects)
+check "add -n: output" "$(asd add -n acme/dr dr.txt --asset dr.txt 2>/dev/null)" \
   "would add dr.txt from acme/dr v1 (dr.txt, latest release)"
-check "add -n: nothing changed, no download" "$(git status --porcelain; ls; calls)" "1"
+check "add -n: downloaded as add does, nothing changed" "$(git status --porcelain; ls; downloads; objects)" "1
+$OBJ"
 addc acme/dr dr.txt --asset dr.txt
 asset dr.txt "dr 2"
 release acme/dr v2 11 "$F/dr.txt"
-check "pull -n: output" "$(git assetsync pull -n dr.txt 2>&1)" \
+OBJ=$(objects)
+check "pull -n: output" "$(git assetsync pull -n dr.txt 2>/dev/null)" \
   "would: Update dr.txt to acme/dr v2 (2026-10-11, was v1 of 2026-10-10)"
-check "pull -n: nothing changed" "$(git status --porcelain; cat dr.txt)" "dr 1"
+check "pull -n: nothing changed" "$(git status --porcelain; cat dr.txt; objects)" "dr 1
+$OBJ"
 check "unlink -n" "$(git assetsync unlink -n dr.txt; git status --porcelain)" "would unlink dr.txt"
 git config -f .git-assetsync source.acme/dr.note x
 check "unlink -n: nothing staged" "$(git assetsync unlink -n dr.txt >/dev/null; git status --porcelain)" " M .git-assetsync"
@@ -1243,7 +1248,7 @@ release --host code.example.org grp/sm v1 10 "$F/sm.txt"
 quiet asd add https://gitlab.example.org/grp/sm sm1.txt
 check "self-managed GitLab, 'gitlab' in the host name" "$(cat sm1.txt)" "selfmanaged"
 check "self-managed GitLab, other name: needs type" "$(asd add https://code.example.org/grp/sm sm2.txt 2>&1)" \
-  "error: https://code.example.org/grp/sm: platform of code.example.org unknown - give its type (add --type github|gitlab, or 'git assetsync source set-type <source> github|gitlab')"
+  "error: https://code.example.org/grp/sm: platform of code.example.org unknown - give its type (add --type github|gitlab, or 'git assetsync source set <source> --type github|gitlab')"
 quiet asd add https://code.example.org/grp/sm sm2.txt --type gitlab
 check "... with --type gitlab" "$(cat sm2.txt) $(reg source.grp/sm-2.type)" "selfmanaged gitlab"
 
@@ -1300,7 +1305,7 @@ check "set --no-prerelease only" "$(git assetsync set a.txt --no-prerelease >/de
 check "set --latest: latest again" "$(git assetsync set a.txt --latest >/dev/null; reg file.a.txt.release)" ""
 pullc a.txt
 check "... pulled back to the latest" "$(cat a.txt)" "s1 v1"
-check "unknown source" "$(git assetsync source set-url nope https://github.com/a/b 2>&1)" \
+check "unknown source" "$(git assetsync source set nope --url https://github.com/a/b 2>&1)" \
   "error: no source 'nope' in .git-assetsync (known: acme/src)"
 
 # a selection still in the [source] (before 0.16): an error, not the latest release
@@ -1308,29 +1313,51 @@ git config -f .git-assetsync source.acme/src.release v0
 check "selection in the [source]: an error" "$(git assetsync status -s a.txt 2>&1 | head -1)" \
   "error: a.txt: [source \"acme/src\"] has release = v0 - the release selection is the entry's now: 'git assetsync set a.txt --release v0', then remove it from the [source] ('git assetsync edit')"
 git checkout -q .git-assetsync
-# rename, set-url, set-type
+# rename, set --url, set --type
+check "source rename -n" "$(git assetsync source rename -n acme/src pinned; git status --porcelain)" \
+  "would: renamed acme/src -> pinned"
 quiet git assetsync source rename acme/src pinned
 check "rename: section and references" "$(reg source.pinned.url) $(reg file.a.txt.source) $(reg file.b.txt.source)" \
   "https://github.com/acme/src pinned pinned"
 check "rename: to an existing name" "$(git assetsync source rename pinned pinned 2>&1)" "error: source 'pinned' already exists"
 check "add --type: not for an existing source of another type" \
   "$(asd add -n acme/src c.txt --type gitlab 2>&1)" \
-  "error: source pinned is of type (derived from the host) - change it with 'git assetsync source set-type pinned gitlab'"
+  "error: source pinned is of type (derived from the host) - change it with 'git assetsync source set pinned --type gitlab'"
 git commit -q -m "rename source"
 check "rename: still clean" "$(git assetsync status -s)" ""
 asset s1.txt "moved v1"
 release acme/moved v0 10 "$F/s1.txt"
-quiet git assetsync source set-url pinned https://github.com/acme/moved.git
-check "set-url" "$(reg source.pinned.url)" "https://github.com/acme/moved"
-check "set-url: pending (other asset)" "$(st b.txt)" "P"
+check "source set: shows it" "$(git assetsync source set pinned)" \
+  "git assetsync source set pinned --url https://github.com/acme/src --no-type"
+check "source set: what it shows changes nothing" "$(eval "$(git assetsync source set pinned)"; git status --porcelain)" \
+  "nothing to change"
+check "source set: without NAME" "$(git assetsync source set 2>&1)" \
+  "error: give the source to change or show (NAME), or --list for all"
+check "source set -n --url" "$(git assetsync source set -n pinned --url acme/moved; git status --porcelain)" \
+  "would: pinned: url https://github.com/acme/src -> https://github.com/acme/moved"
+OUT=$(git assetsync source set pinned --url https://github.com/acme/moved.git)
+check "source set --url" "$(reg source.pinned.url)" "https://github.com/acme/moved"
+check "source set --url: output" "$OUT" \
+  "pinned: url https://github.com/acme/src -> https://github.com/acme/moved
+.git-assetsync staged - pending until pull (use \"git assetsync pull -n <path>...\" to see what it would do, \"git assetsync diff --upstream <path>...\" the differences)"
+check "source set --url: pending (other asset)" "$(st b.txt)" "P"
 git reset -q --hard
 addc acme/moved o.txt
-check "set-url: a URL another source has" "$(git assetsync source set-url pinned acme/moved 2>&1)" \
+check "source set --url: a URL another source has" "$(git assetsync source set pinned --url acme/moved 2>&1)" \
   "error: source 'acme/moved' already has this URL - move the files to it with 'git assetsync set <file>... --source acme/moved'"
+check "source set --list" "$(git assetsync source set --list)" \
+  "git assetsync source set acme/moved --url https://github.com/acme/moved --no-type
+git assetsync source set pinned --url https://github.com/acme/src --no-type"
+check "source set --list: no NAME" "$(git assetsync source set --list pinned 2>&1)" \
+  "error: --list takes no NAME and no options to change"
 git reset -q --hard HEAD~1
-check "set-type" "$(git assetsync source set-type pinned gitlab >/dev/null; reg source.pinned.type)" "gitlab"
-check "set-type --unset" "$(git assetsync source set-type pinned --unset >/dev/null; reg source.pinned.type)" ""
-check "set-type: unknown" "$(git assetsync source set-type pinned svn 2>&1)" "error: unknown type 'svn' (supported: github, gitlab)"
+check "source set --type" "$(git assetsync source set pinned --type gitlab >/dev/null; reg source.pinned.type)" "gitlab"
+check "source set --type: shown" "$(git assetsync source set pinned)" \
+  "git assetsync source set pinned --url https://github.com/acme/src --type gitlab"
+check "source set --type: same" "$(git assetsync source set pinned --type gitlab)" "nothing to change"
+check "source set --no-type" "$(git assetsync source set pinned --no-type >/dev/null; reg source.pinned.type)" ""
+check "source set --type: unknown" "$(git assetsync source set pinned --type svn 2>&1 | grep -c "argument --type: invalid choice: 'svn'")" "1"
+check "source set-url: gone" "$(rc git assetsync source set-url pinned acme/x)" "2"
 git reset -q --hard
 
 # the asset of a file: changed with add --force
@@ -1359,8 +1386,25 @@ release me/set-fork v2 12 "$F/x.bin" "$F/y.bin"
 new_repo r16
 addc acme/set x.bin --asset x.bin --release v1
 addc acme/set y.bin --asset y.bin --release v1
-check "nothing to change" "$(git assetsync set x.bin 2>&1)" \
-  "error: nothing to change: give --source, --release/--latest/--prerelease, --asset/--no-asset, --sourcecode/--no-sourcecode or --filter/--no-filter"
+check "set without options: shows the entry" "$(git assetsync set x.bin)" \
+  "git assetsync set x.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset x.bin --no-sourcecode --no-filter"
+check "set: what it shows changes nothing" "$(eval "$(git assetsync set x.bin)"; git status --porcelain)" "nothing to change"
+check "set --list" "$(git assetsync set --list)" \
+  "git assetsync set x.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset x.bin --no-sourcecode --no-filter
+git assetsync set y.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset y.bin --no-sourcecode --no-filter"
+check "set --list: no PATH" "$(git assetsync set --list x.bin 2>&1)" "error: --list takes no PATH and no options to change"
+check "set: without PATH" "$(git assetsync set --latest 2>&1)" \
+  "error: give the entries to change or show (PATH...), or --list for all"
+check "set --type: only with --source" "$(git assetsync set x.bin --type gitlab 2>&1)" \
+  "error: --type goes with --source (the type of a source: 'git assetsync source set NAME --type ...')"
+# shown from a subdirectory: the paths from there; another entry takes it as its template
+mkdir -p sub && check "set: shown from a subdirectory" "$(cd sub && git assetsync set ../x.bin | cut -d' ' -f1-4)" \
+  "git assetsync set ../x.bin"
+check "set: the shown command for another entry" "$(eval "$(git assetsync set x.bin | sed 's/ x.bin / y.bin /')"; reg file.y.bin.asset)" \
+  "y.bin: asset y.bin -> x.bin
+.git-assetsync staged - pending until pull (use \"git assetsync pull -n <path>...\" to see what it would do, \"git assetsync diff --upstream <path>...\" the differences)
+x.bin"
+git reset -q --hard; rmdir sub
 check "same selection: nothing to change" "$(git assetsync set x.bin --release v1)" "nothing to change"
 
 # another release selection for one file of two: only its entry
@@ -1521,6 +1565,9 @@ filt zh --extract --strip 1 --include 'include/*.h'
 quiet git assetsync set lib/zlib --filter zh
 check "set filter: staged" "$(reg dir.lib/zlib.filter) $(git status --porcelain | oneline)" "zh M  .git-assetsync "
 check "set filter: pending" "$(git assetsync status | grep -c 'pending:    lib/zlib/  (filter changed)')" "1"
+check "pull -n: a directory's files" "$(git assetsync pull -n lib/zlib)" \
+  "would: Update lib/zlib/ from madler/zlib v1.3.1 (2026-10-11, filter changed)
+  Files:   0 added, 1 removed, 0 changed (2 in total)"
 reset_calls
 pullc lib/zlib
 check "filter changed: pulled, the files of others kept" "$(git ls-files lib | oneline)" "lib/zlib/include/new.h lib/zlib/include/zlib.h lib/zlib/mine.h "
@@ -1528,7 +1575,7 @@ check "filter changed: message" "$(git log -1 --format=%s)" "[assetsync] Update 
 check "filter changed: no download (cache)" "$(downloads)" "0"
 check "set --no-filter" "$(git assetsync set lib/zlib --no-filter; reg dir.lib/zlib.filter)" \
   "lib/zlib/: filter zh -> (none)
-.git-assetsync staged (use \"git assetsync status\" to see what changes, \"git assetsync pull <file>...\" to update)"
+.git-assetsync staged - pending until pull (use \"git assetsync pull -n <path>...\" to see what it would do, \"git assetsync diff --upstream <path>...\" the differences)"
 check "set --filter: unknown" "$(git assetsync set lib/zlib --filter nope 2>&1)" \
   "error: no filter 'nope' in .git-assetsync - define it first with 'git assetsync filter add nope ...'"
 git reset -q --hard
@@ -1554,7 +1601,10 @@ check "file from an archive" "$(cat fw.bin) $(reg file.fw.bin.filter)" "fw fwbin
 check "file: several files" "$(asd add acme/bundle two.bin --filter ex 2>&1)" \
   "error: two.bin: the filter gives 2 files, a file needs exactly one - narrow the filter, or add 'two.bin/' as a directory"
 check "dir from the same archive" "$(asd add -n acme/bundle fwdir/ --filter fwsub)" \
-  "would add fwdir/ from acme/bundle v1 (bundle.zip, latest release, filter fwsub)"
+  "would add fwdir/ from acme/bundle v1 (bundle.zip, latest release, filter fwsub)
+  Files:   2 added, 0 removed, 0 changed (2 in total)"
+check "add -n: filtered as add does" "$(asd add -n acme/bundle one.bin --filter fwsub 2>&1)" \
+  "error: one.bin: the filter gives 2 files, a file needs exactly one - narrow the filter, or add 'one.bin/' as a directory"
 check "add --filter: unknown" "$(asd add acme/bundle x/ --filter nope 2>&1)" \
   "error: no filter 'nope' in .git-assetsync - define it first with 'git assetsync filter add nope ...'"
 git reset -q --hard; rm -f fw.bin
@@ -1572,7 +1622,8 @@ while [ $i -le 11 ]; do asset "m$i.txt" "m$i"; set -- "$@" "$F/m$i.txt"; i=$((i 
 release acme/eleven v1 10 "$@"
 check "more than 10 assets: all taken" "$(asd add acme/eleven many/ >/dev/null 2>&1; git ls-files many | lines)" "11"
 check "dir --asset with several matches" "$(asd add -n acme/eleven m1/ --asset 'm1*' | sed 's/(.*,/(...,/')" \
-  "would add m1/ from acme/eleven v1 (..., latest release)"
+  "would add m1/ from acme/eleven v1 (..., latest release)
+  Files:   3 added, 0 removed, 0 changed (3 in total)"
 git reset -q --hard; rm -rf many
 
 # a directory with files of others: the release's files go next to them; one
@@ -1863,7 +1914,8 @@ fi
 check "7z: 7-Zip not runnable" "$(ASSETSYNC_7Z=/nonexistent/7z asd add acme/7z-ok e/ --filter ex 2>&1 | grep '^error' | sed 's/ (.*) / /')" \
   "error: cannot run 7-Zip '/nonexistent/7z' - install it or set ASSETSYNC_7Z"
 check "7z without --filter ex: kept as it is" "$(ASSETSYNC_7Z=/nonexistent/7z asd add -n acme/7z-ok raw/)" \
-  "would add raw/ from acme/7z-ok v1 (ok.7z, latest release)"
+  "would add raw/ from acme/7z-ok v1 (ok.7z, latest release)
+  Files:   1 added, 0 removed, 0 changed (1 in total)"
 if ! command -v cygpath >/dev/null; then
   # no 7-Zip at all: a PATH with only git and Python
   mkdir -p "$T/only" && ln -sf "$(command -v git)" "$T/only/git" && ln -sf "$(command -v "$PYTHON")" "$T/only/$PYTHON"
@@ -1990,8 +2042,26 @@ check "filter list: used by" "$(git assetsync filter | grep -E '^(headers|sdk)' 
 check "filter show" "$(git assetsync filter show headers | oneline)" "extract include '*.h' move '*.h' include/ (used by filter sdk) "
 check "filter remove: refused while used" "$(git assetsync filter remove fw 2>&1)" "error: filter 'fw' is used by filter sdk"
 check "clean" "$(st v)" ""
+# filter set without steps shows it; run again, that changes nothing
+check "filter set: shows it" "$(git assetsync filter set headers)" \
+  "git assetsync filter set headers --extract --include '*.h' --move '*.h' include/"
+check "filter set: what it shows changes nothing" "$(eval "$(git assetsync filter set headers)"; git status --porcelain)" \
+  "nothing to change"
+check "filter set --list" "$(git assetsync filter set --list)" \
+  "git assetsync filter set fw --move '*' fw/
+git assetsync filter set headers --extract --include '*.h' --move '*.h' include/
+git assetsync filter set sdk --apply '*.zip' headers --apply '*.bin' fw"
+check "filter set: without NAME" "$(git assetsync filter set 2>&1)" \
+  "error: give the filter to change or show (NAME), or --list for all"
+check "filter set -n" "$(git assetsync filter set -n headers --extract; git status --porcelain)" \
+  "would: filter headers: extract (used by filter sdk)"
+check "filter add/rename -n" "$(git assetsync filter add -n new --extract; git assetsync filter rename -n fw fw2; git status --porcelain)" \
+  "would: filter new: extract (new)
+would: renamed filter fw -> fw2"
 # a changed named filter: its users are pending
-quiet git assetsync filter set headers --extract --include 'a.h' --move '*.h' include/
+check "filter set: output" "$(git assetsync filter set headers --extract --include 'a.h' --move '*.h' include/)" \
+  "filter headers: extract, include a.h, move '*.h' include/ (used by filter sdk)
+.git-assetsync staged - pending until pull (use \"git assetsync pull -n <path>...\" to see what it would do, \"git assetsync diff --upstream <path>...\" the differences)"
 check "changed filter: user pending" "$(git assetsync status | grep -c 'pending:    v/  (filter changed)')" "1"
 pullc v
 check "changed filter: pulled" "$(git ls-files v | oneline)" "v/fw/fw.bin v/include/a.h "
@@ -2676,6 +2746,8 @@ printf 'bin\000ary\n' > "$F/log.bin"; printf 'text\n' > "$F/log.txt"
 quiet git assetsync filter add clb --changelog 'log.*'
 check "filter test: not text skipped" "$(git assetsync filter test clb "$F/log.bin" "$F/log.txt" 2>&1 | grep '^changelog')" \
   "changelog 'log.*'  1 file read, 1 skipped (not text)"
+check "filter remove -n" "$(git assetsync filter remove -n clb; reg filter.clb.step)" "would: removed filter clb
+changelog 'log.*'"
 quiet git assetsync filter remove clb
 # encodings: UTF-8, else Windows-1252; UTF-16 with a BOM
 mkdir -p "$F/enc1" "$F/enc2"
@@ -2890,6 +2962,12 @@ vendor/: restored (acme/ov v3) a2 changed "
 git checkout -q vendor
 cd "$T" && rm -rf r31c && git clone -q --no-local r31 r31c && cd r31c
 echo changed > vendor/include/a.h
+check "clone: pull -n --overwrite gets the base, keeps nothing" \
+  "$(git assetsync pull -n --overwrite vendor 2>/dev/null; git for-each-ref refs/assetsync | lines; cat vendor/include/a.h)" \
+  "would: Restore vendor/ from acme/ov v3 (2026-10-12) - discarding local modifications
+  Files:   0 added, 0 removed, 0 changed (4 in total)
+0
+changed"
 check "clone: pull --overwrite gets the base" "$(pullcm --overwrite vendor 2>/dev/null | tail -1; cat vendor/include/a.h)" \
   "vendor/: restored - the same as committed, nothing to commit
 a2"
@@ -2967,6 +3045,10 @@ cd "$T" && git clone -q --no-local r32 r32c && cd r32c
 check "rm -n: base not in the clone: nothing got, nothing kept" \
   "$(git assetsync rm -n d; git for-each-ref refs/assetsync | lines; git status --porcelain)" "would remove d/
 0"
+echo changed > d/ig.txt
+check "rm -n: base not in the clone: changes found as rm finds them" "$(git assetsync rm -n d 2>&1)" \
+  "error: d/: has uncommitted changes - use -f to remove it anyway"
+git checkout -q d
 # restore -S: only the index goes - a staged version named, the working tree stays
 echo staged > f.txt && git add f.txt 2>/dev/null && echo work > f.txt
 out=$(git assetsync restore -S f.txt)

@@ -203,9 +203,9 @@ Basic commands – what you need day to day:
 
 | Command | Purpose |
 |---|---|
-| [`set PATH… OPTIONS`](#set) | change entries: source, release selection, asset, filter |
+| [`set PATH… [OPTIONS]`](#set) | change entries: source, release selection, asset, filter; without options: show them |
 | [`edit`](#edit) | open `.git-assetsync` in the editor, then check and stage it |
-| [`source [ACTION …]`](#source) | list sources; rename them, change URL or type |
+| [`source [ACTION …]`](#source) | list sources; rename them, show or change URL and type |
 | [`source map [URL\|SOURCE [DIR]]`](#source-map) | take the releases of a source from a local folder |
 | [`source releases URL\|SOURCE`](#source-releases) | list the releases of a project, with their assets |
 | [`filter [ACTION …]`](#filter) | list filters; show, test, add, set, rename or remove them |
@@ -215,9 +215,9 @@ Basic commands – what you need day to day:
 | [`hooks [install\|uninstall]`](#hooks) | reminder hooks and the push check |
 
 Commands named like a Git command behave like it (`status`, `pull`,
-`diff`, `difftool`, `restore`, `add`, `rm`, `mv`; `source` like `git
-remote`): the same kind of output and exit codes, the same caution with
-uncommitted changes.
+`diff`, `difftool`, `restore`, `add`, `rm`, `mv`; `source` lists and
+renames like `git remote`): the same kind of output and exit codes, the
+same caution with uncommitted changes.
 
 **No command commits.** They change the working tree or stage, like `git
 add` – `pull` like `git merge --squash` – and you commit. `pull` and
@@ -251,6 +251,12 @@ discarded: lib/data.bin (git show 1a2b3c4d5e6f to get it back)
 index goes too (`rm -f`, `--overwrite`, `restore -S`), a staged version is
 kept as well (`discarded: lib/data.bin, as staged …`). `git gc` removes
 such objects after a while (normally two weeks).
+
+**`-n` (`--dry-run`) only leaves out the writing.** Every command that
+stages or deletes files has it. It downloads, filters and checks as
+without `-n`, so it finds the same errors, and needs the platform
+whenever the command does. A filter you trust when asked is trusted for
+this run only.
 
 ### Common options
 
@@ -346,7 +352,7 @@ would.
 | `--release TAG\|PATTERN` | this release instead of the selected one, once – see below; prereleases count for a pattern only if the entry takes them |
 | `--overwrite` | discard local modifications and files of yours in the way |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` does |
-| `-n`, `--dry-run` | only report what would happen |
+| `-n`, `--dry-run` | only report what would happen: the subject of the proposed commit message, for a directory with its files (`Files: 3 added, 1 removed, 0 changed (52 in total)`) |
 
 **Another release, once:** `pull --release TAG PATH…` takes that release
 instead of the selected one – also an older one, to go back after a
@@ -502,7 +508,7 @@ the entry in `.git-assetsync` and stages both, like `git add`. A plain
 | `--filter NAME` | apply the named [filter](#filters) (define it first with [`filter add`](#filter)) |
 | `--force` | replace an existing entry, with its file or directory; a file stays a file, a directory a directory |
 | `--overwrite` | replace files in the way that differ from the release's; with `--force` also local modifications of the entry |
-| `-n`, `--dry-run` | only show which release, assets and filter would be taken |
+| `-n`, `--dry-run` | only show which release, assets and filter would be taken, for a directory with its files |
 
 An existing file at `PATH`, or a file of yours in a directory, is only
 replaced with `--overwrite` – unless it already is what the release
@@ -574,12 +580,28 @@ git assetsync set PATH… [--source URL|SOURCE [--type github|gitlab]] [--releas
                         [--prerelease | --no-prerelease]
                         [--asset PATTERN | --no-asset] [--sourcecode FORMAT | --no-sourcecode]
                         [--filter NAME | --no-filter] [-n]
+git assetsync set PATH…
+git assetsync set --list
 ```
 
 Changes entries – source, release selection, asset or filter – where `add`
-would need `--force`. Only `.git-assetsync` changes (staged); `status`
-then shows what changes, and `pull` updates the files, for one commit
-with the change.
+would need `--force`. Only `.git-assetsync` changes (staged); the change
+is pending until `pull` updates the files, for one commit with the
+change. `pull -n` shows what it would do, `diff --upstream` the
+differences.
+
+Without options, `set` shows each entry as the `set` command that gives
+it, with every option written out; `--list` shows all entries. Run
+again, that command changes nothing (`nothing to change`); with another
+path, it is a template for another entry:
+
+```console
+$ git assetsync set bin/tool
+git assetsync set bin/tool --source https://github.com/acme/tool --release 'v2.*' --no-prerelease --asset 'tool-*-linux-x64' --no-sourcecode --no-filter
+```
+
+The quoting is that of a POSIX shell (also Git Bash, mostly PowerShell;
+not cmd.exe).
 
 | Option | Effect |
 |---|---|
@@ -633,24 +655,25 @@ write, also a changed base.
 
 ```
 git assetsync source [-v]
-git assetsync source rename OLD NEW
-git assetsync source set-url NAME URL
-git assetsync source set-type NAME (github|gitlab | --unset)
+git assetsync source rename OLD NEW [-n]
+git assetsync source set NAME [--url URL] [--type github|gitlab | --no-type] [-n]
+git assetsync source set --list
 ```
 
-Lists and changes the `[source]` sections, like `git remote`. The changes
-are staged; `status` then shows what changes for the entries, and `pull`
-updates them, for one commit.
+Lists and changes the `[source]` sections; listing and renaming work like
+`git remote`. The changes are staged; the entries are pending until
+`pull` updates them, for one commit.
 
 | Action | Meaning |
 |---|---|
 | (none) | list the sources; `-v`: with URL, type and number of entries |
 | `rename OLD NEW` | rename a source and all references to it |
-| `set-url NAME URL` | change the URL, e.g. after the project moved |
-| `set-type NAME github\|gitlab` | the platform of the host; `--unset`: derived from the host again |
+| `set NAME --url URL` | change the URL, e.g. after the project moved |
+| `set NAME --type github\|gitlab` | the platform of the host; `--no-type`: derived from the host again |
+| `set NAME` | show the source as the `source set` command that gives it (as for [`set`](#set)); `--list`: all sources |
 
-There is one source per URL: `set-url` to the URL of another source is
-refused, with a hint to move the entries there (`set <file>... --source
+There is one source per URL: `set --url` with the URL of another source
+is refused, with a hint to move the entries there (`set <file>... --source
 <source>`). The release selection is the entries' own: change it with
 [`set`](#set).
 
@@ -755,14 +778,15 @@ git assetsync filter
 git assetsync filter show NAME
 git assetsync filter test NAME (FILE… | --source SOURCE [--release …] [--prerelease] [--type …] [--asset PATTERN]
                            [--sourcecode FORMAT]) [-o DIR]
-git assetsync filter add NAME STEP-OPTIONS…
-git assetsync filter set NAME STEP-OPTIONS…
-git assetsync filter rename OLD NEW
-git assetsync filter remove NAME
+git assetsync filter add NAME STEP-OPTIONS… [-n]
+git assetsync filter set NAME [STEP-OPTIONS…] [-n]
+git assetsync filter set --list
+git assetsync filter rename OLD NEW [-n]
+git assetsync filter remove NAME [-n]
 ```
 
 Lists and changes the [filters](#filters). Changes are staged; entries
-using a changed filter show as pending.
+using a changed filter are pending until `pull`.
 
 | Action | Meaning |
 |---|---|
@@ -772,6 +796,7 @@ using a changed filter show as pending.
 | `test NAME --source SOURCE` | the same with the assets of a release (`--release`, `--prerelease`, `--type`, `--sourcecode` as for [`add`](#add); `--asset`: only the matching ones) |
 | `add NAME STEP-OPTIONS…` | define a filter with the [step options](#filters), in the order given; names consist of letters, digits, `.`, `+`, `-` and `_` |
 | `set NAME STEP-OPTIONS…` | replace the steps of a filter |
+| `set NAME` | show the filter as the `filter set` command that gives it (as for [`set`](#set)); `--list`: all filters |
 | `rename OLD NEW` | rename a filter and its references |
 | `remove NAME` | remove a filter nothing uses |
 

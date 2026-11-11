@@ -95,7 +95,10 @@ and pull (commands that change entries refuse it). Options follow the
 command. No command commits: they change the working tree and stage, and
 you commit - add and pull with a proposed message (like git merge
 --squash: added to .git/SQUASH_MSG, which a plain `git commit` offers; a
-copy of it all in .git/ASSETSYNC_MSG).
+copy of it all in .git/ASSETSYNC_MSG). -n (--dry-run), with each command
+that stages or deletes files: done as without - downloaded, filtered,
+checked -, only nothing written (a filter trusted on the terminal: only
+for this run).
 
 Basic commands - what you need day to day:
 
@@ -141,7 +144,11 @@ Basic commands - what you need day to day:
         -v, --verbose           first name where each entry comes from: its
                                 asset(s), source, release selection, filter,
                                 the release synced (as status -v)
-        -n, --dry-run           only report what would happen
+        -n, --dry-run           only report what would happen: done as
+                                without (downloaded, filtered), only
+                                nothing written; the subject of the commit
+                                message, for a directory its files (added,
+                                removed, changed)
 
     diff [PATH...] [-- OPTS]    local modifications: what the release gave
                                 (synced) -> working tree; as one `git diff`
@@ -221,16 +228,23 @@ Basic commands - what you need day to day:
         -n, --dry-run           only show what would be removed
     unlink PATH...              remove entries (the files are kept); also
                                 broken ones, by their name
+        -n, --dry-run           only show what would be done
     mv OLD NEW                  move a file or directory (git mv), keeping its
                                 entry; a directory with entries in it moves
                                 with all of them; as git mv, the directory
                                 NEW goes into must exist (NEW/: NEW itself)
-        -n, --dry-run           (both) only show what would be done
+        -n, --dry-run           only show what would be done
 
 Advanced commands - change entries, sources and filters; set up:
 
     set PATH... OPTIONS         change entries: only .git-assetsync is
-                                staged, pull updates
+                                staged; pending until pull (pull -n shows
+                                what it would do)
+    set PATH...                 show each entry as the set command that
+                                gives it, every option written out: run
+                                again, it changes nothing; a template for
+                                other entries (POSIX shell quoting)
+    set --list                  the same for all entries
         --source URL|SOURCE     take the files from another project (a fork,
                                 moved) or [source], as for add (--type: of a
                                 new one)
@@ -250,11 +264,15 @@ Advanced commands - change entries, sources and filters; set up:
     source                      list the [source]s (-v: with URL, type and
                                 file count)
     source rename OLD NEW       rename a [source] and all references to it
-    source set-url NAME URL     change the URL of a [source]
-    source set-type NAME github|gitlab | --unset
-                                platform of the host (--unset: derived)
-                                (all: only .git-assetsync is staged; pull
-                                updates and stages the files)
+    source set NAME OPTIONS     change a [source] (only .git-assetsync is
+                                staged; pull updates and stages the files)
+        --url URL               another URL, e.g. after the project moved
+        --type github|gitlab, --no-type  platform of the host, or derived
+                                from it
+    source set NAME             show it as the source set command that
+                                gives it
+    source set --list           the same for all sources
+        -n, --dry-run           (rename, set) only show what would change
     source map [URL|SOURCE [DIR]]
                                 take the releases of a source from the local
                                 folder DIR instead (local development and
@@ -302,8 +320,13 @@ Advanced commands - change entries, sources and filters; set up:
         --convert PATTERN TARGET COMMAND, --run PATTERN COMMAND
                                 (each option one step)
     filter set NAME STEP-OPTIONS...  replace the steps of a filter
+    filter set NAME             show it as the filter set command that
+                                gives it
+    filter set --list           the same for all filters
     filter rename OLD NEW       rename a filter, also where it is used
     filter remove NAME          remove a filter nothing uses
+        -n, --dry-run           (add, set, rename, remove) only show what
+                                would change
     filter trust                list the filters that run commands, with their
                                 state (trusted, not trusted, changed since
                                 trusted) and the scripts they run; asks on a
@@ -418,6 +441,10 @@ __version__ = "0.25.0"
 REGISTRY = ".git-assetsync"
 REGISTRY_STAGED = (f'{REGISTRY} staged (use "git assetsync status" to see what changes, '
                    '"git assetsync pull <file>..." to update)')
+# after set, filter set, source set: pull applies the change
+REGISTRY_PENDING = (f'{REGISTRY} staged - pending until pull (use "git assetsync pull -n '
+                    '<path>..." to see what it would do, "git assetsync diff --upstream '
+                    '<path>..." the differences)')
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
 EXIT_PIPE = 141           # output into a closed pipe: like a program ended by SIGPIPE, as git
 EXIT_REFUSED = 3          # hook pre-push: refuse the push (assetsync.pushCheck = error)
@@ -1263,7 +1290,7 @@ def new_origin(url, kind, remote):
             raise FsError(f"{url}: unknown type '{kind}' (supported: "
                           f"{', '.join(sorted(PLATFORMS))})")
         raise FsError(f"{url}: platform of {host} unknown - give its type (add --type "
-                      "github|gitlab, or 'git assetsync source set-type <source> "
+                      "github|gitlab, or 'git assetsync source set <source> --type "
                       "github|gitlab')")
     if kind == "github" and path.count("/") != 1:
         raise FsError(f"'{url}' is not a GitHub repository URL (https://{host}/owner/repo)")
@@ -2130,7 +2157,7 @@ def trusted_values():
 
 def is_trusted(repo, name, filters):
     h = trust_hash(name, filters, repo)
-    return any(v.split(" ", 1)[0] == h for v in trusted_values())
+    return h in repo.trusted_once or any(v.split(" ", 1)[0] == h for v in trusted_values())
 
 
 def set_trust(repo, name, filters, trust=True):
@@ -2185,7 +2212,10 @@ def ensure_trusted(repo, steps, filters):
             if not ask(f"Trust filter {name} in this repository? [y/N] "):
                 raise FsError(f"filter {name} not trusted - check with 'git assetsync filter trust', "
                               f"then trust with 'git assetsync filter trust {name}'")
-            set_trust(repo, name, filters)
+            if repo.dry_run:          # -n: asked as without, but not kept
+                repo.trusted_once.add(trust_hash(name, filters, repo))
+            else:
+                set_trust(repo, name, filters)
     return set(used_filters(steps, filters))
 
 
@@ -2540,6 +2570,10 @@ class Repo:
         self.now = {}             # see items_match_base(): {(blob, path): stored_now()}
         self.pointers = {}        # see lfs_pointers()
         self.missing = set()
+        # -n: only writing is left out - a base built again isn't kept, a
+        # filter trusted on the terminal only for this run (trusted_once)
+        self.dry_run = False
+        self.trusted_once = set()
 
     def git(self, args, **kw):
         return git(args, cwd=self.top, **kw)
@@ -3604,6 +3638,8 @@ def ensure_base(repo, reg, entry):
     if paths is not None:
         return paths
     what = f"which files are those of {entry.synced} isn't known in this clone"
+    if repo.dry_run:          # -n: built for this run only
+        return rebuild_base(repo, reg, entry, what)
     with repo.real():         # kept: written to the repository
         return rebuild_base(repo, reg, entry, what)
 
@@ -3621,7 +3657,10 @@ def rebuild_base(repo, reg, entry, what):
     tree = release_tree(repo, entry.rel, items)
     if digest != (entry.digest or "").lower() or tree != entry.blob:
         raise FsError(f"{what}, and {release.tag} gives something else now")
-    repo.keep_tree(tree)
+    if repo.dry_run:
+        repo.known_trees[tree] = True       # there for this run
+    else:
+        repo.keep_tree(tree)
     return base_paths(repo, entry)
 
 
@@ -4709,7 +4748,7 @@ def in_the_way(repo, rel, new, base, there):
     return sorted(found)
 
 
-def install_entries(repo, jobs):
+def install_entries(repo, jobs, dry_run=False):
     """Install what entries get, all at once - jobs [(entry, its files {path
     in the repository: (file, executable)}, base: the paths of the files it
     has from its release now, overwrite)]: of the files it had, those the
@@ -4720,7 +4759,8 @@ def install_entries(repo, jobs):
     update-index) and written as git checkout writes them (one
     checkout-index): also files the repository ignores (e.g. *.lib) - the
     entry has them. Returns {entry path: its blob (a [file]) or tree, or
-    the FsError for it}; files of others there are left alone."""
+    the FsError for it}; files of others there are left alone. dry_run:
+    checked and computed, nothing changed."""
     result, ready = {}, []
     seen = repo.dir_files(*[entry.rel for entry, _, _, _ in jobs]) if jobs else []
     for entry, files, base, overwrite in jobs:
@@ -4765,6 +4805,13 @@ def install_entries(repo, jobs):
         gone_all += gone
         theirs_all += others
         jobs.append((entry, files))
+    items = sorted((git_mode(v[1]), ids[p], p)
+                   for _, files in jobs for p, v in files.items())
+    if dry_run:
+        for entry, files in jobs:
+            result[entry.rel] = release_tree(repo, entry.rel, items, files) if entry.is_dir \
+                else ids[entry.rel]
+        return result
     save_discarded(repo, worktree, index, {p: o for p, (_, o) in there.items()})
     for path in theirs_all:
         full = repo.top / path
@@ -4785,8 +4832,6 @@ def install_entries(repo, jobs):
     if gone_all:
         repo.git(["update-index", "-z", "--force-remove", "--stdin"],
                  data="\0".join(gone_all).encode("utf-8"))
-    items = sorted((git_mode(v[1]), ids[p], p)
-                   for _, files in jobs for p, v in files.items())
     for _, _, p in items:
         (repo.top / p).parent.mkdir(parents=True, exist_ok=True)
         repo.forget(p)                      # changes now
@@ -4849,7 +4894,7 @@ def pull_one(ctx, repo, reg, st, args, keep):
     # a directory: which files are those of its release (its base) - to be
     # replaced or deleted - and are they unmodified? Built again if not here
     base = ()
-    if entry.is_dir and entry.blob and (st.pending or args.overwrite) and not args.dry_run:
+    if entry.is_dir and entry.blob and (st.pending or args.overwrite):
         try:
             base = ensure_base(repo, reg, entry)
         except FsError as e:
@@ -4887,11 +4932,7 @@ def pull_one(ctx, repo, reg, st, args, keep):
                       f"--overwrite {path_arg(repo, rel)}'")
     for w in st.warnings:
         warn(f"{rel}: {w}")
-    if args.dry_run:
-        msg = build_message(st, modified).splitlines()[0][len(COMMIT_PREFIX):]
-        print(f"would: {msg}" + (" - discarding local modifications" if modified else ""))
-        return None
-    if modified:
+    if modified and not args.dry_run:
         warn(f"{rel}: discarding local modifications")
     # before anything changes: the releases in between, the limits of the
     # notes, the tree it had (for the statistics)
@@ -4993,13 +5034,21 @@ def cmd_pull(ctx, repo, args):
             jobs.append(job)
     with keep:                # all at once
         installed = install_entries(repo, [(j.entry, j.files, j.base, j.overwrite)
-                                           for j in jobs]) if jobs else {}
+                                           for j in jobs], args.dry_run) if jobs else {}
     for job in jobs:
         if isinstance(installed[job.entry.rel], FsError):
             error(str(installed[job.entry.rel]))
             rc = EXIT_ERROR
             continue
         msg, done_paths = pull_done(repo, reg, job, installed[job.entry.rel])
+        if args.dry_run:      # what pull would do: its commit message's subject and files
+            lines = msg.splitlines()
+            print(f"would: {lines[0][len(COMMIT_PREFIX):]}"
+                  + (" - discarding local modifications" if job.discard else ""))
+            for line in lines:
+                if line.startswith("Files:"):
+                    print(f"  {line}")
+            continue
         pulled.append(job.entry)
         msgs.append(msg)
         paths |= done_paths
@@ -5029,7 +5078,7 @@ def given_source(reg, args):
     args.source names - a [source] or a URL (owner/repo: github.com) - and
     the release selection the options ask for. name: of its [source] (one
     per URL), None if there is none yet (add creates it, with --type). The
-    type of an existing source is changed with 'source set-type' only."""
+    type of an existing source is changed with 'source set' only."""
     spec = {"release": args.release, "prerelease": "true" if args.prerelease else None}
     spec = {k: v for k, v in spec.items() if v}
     if args.source in reg.sources:            # name of an existing [source]
@@ -5042,7 +5091,7 @@ def given_source(reg, args):
     kind = reg.sources[name].get("type") if name else None
     if args.type and name and args.type != kind:
         raise FsError(f"source {name} is of type {kind or '(derived from the host)'} - change "
-                      f"it with 'git assetsync source set-type {name} {args.type}'")
+                      f"it with 'git assetsync source set {name} --type {args.type}'")
     if kind or args.type:
         spec["type"] = kind or args.type
     return url, spec, name
@@ -5152,7 +5201,7 @@ def cmd_add(ctx, repo, args):
             base = {rel}      # its file: what its release gave
         else:                 # the files it has from its release: replaced or deleted
             base = base_paths(repo, old_entry)
-            if base is None and not args.dry_run:
+            if base is None:
                 try:
                     base = ensure_base(repo, reg, old_entry)
                 except FsError as e:
@@ -5168,21 +5217,23 @@ def cmd_add(ctx, repo, args):
             if old.local == "modified" or old.local == "missing" and others_modified(repo, old):
                 raise FsError(f"'{shown_rel}' has local modifications - use --overwrite to "
                               "discard them")
-    if args.dry_run:
-        print(f"would add {shown_rel} from {name} {release.tag} "
-              f"({', '.join(a.name for a in assets)}, {spec_text(spec)}"
-              + (f", filter {args.filter}" if args.filter else "") + ")")
-        return EXIT_OK
     new = SimpleNamespace(shown=shown_rel, rel=rel, target=target, is_dir=is_dir,
                           blob=old_blob, steps=steps)
     old_tree = old_blob if is_dir and base and repo.has_tree(old_blob or "") else None
     with ExitStack() as keep:
         digest, files = filtered_files(repo, reg, new, origin, release, assets, keep)
         mode = None if is_dir else git_mode(files[rel][1])
-        base = install_entries(repo, [(new, files, base, args.overwrite)])[rel]
+        base = install_entries(repo, [(new, files, base, args.overwrite)], args.dry_run)[rel]
     if isinstance(base, FsError):
         raise base
     stats = tree_stats(repo, old_tree, base) if is_dir else None
+    if args.dry_run:
+        print(f"would add {shown_rel} from {name} {release.tag} "
+              f"({', '.join(a.name for a in assets)}, {spec_text(spec)}"
+              + (f", filter {args.filter}" if args.filter else "") + ")")
+        if stats:
+            print("  " + release_lines(release, assets, stats=stats)[-1])
+        return EXIT_OK
     if rel in reg.files:
         reg.remove_file(rel, keep_source=named)
     name = named or reg.add_source(url, spec.get("type"))
@@ -5287,22 +5338,46 @@ def cmd_edit(ctx, repo, args):
     return EXIT_OK
 
 
+def set_command(repo, e):
+    """The set command that gives entry e as it is, every aspect given: run
+    again it changes nothing."""
+    words = ["git", "assetsync", "set", shown(repo, e.shown), "--source", e.url]
+    if e.source.get("type"):
+        words += ["--type", e.source["type"]]
+    words += ["--release", e.v["release"]] if e.v.get("release") else ["--latest"]
+    words.append("--prerelease" if is_true(e.v.get("prerelease")) else "--no-prerelease")
+    words += ["--asset", e.asset] if e.asset else ["--no-asset"]
+    words += ["--sourcecode", e.sourcecode] if e.sourcecode else ["--no-sourcecode"]
+    words += ["--filter", e.filter] if e.filter else ["--no-filter"]
+    return shlex.join(words)
+
+
 def cmd_set(ctx, repo, args):
     """Change entries - their source, release selection, asset or filter -
     where add would need --force. Only .git-assetsync is changed (and
     staged); pull then updates the files. The base (blob, digest) is kept,
     so local modifications stay recognized; with another source or asset,
     which release asset the file comes from is unknown until the next pull
-    (synced removed)."""
+    (synced removed). Without options: each entry as the set command that
+    gives it."""
     select = args.release is not None or args.latest or args.prerelease is not None
-    if not (args.source or select or args.asset is not None or args.no_asset or
-            args.sourcecode or args.no_sourcecode or args.filter or args.no_filter):
-        raise FsError("nothing to change: give --source, --release/--latest/--prerelease, "
-                      "--asset/--no-asset, --sourcecode/--no-sourcecode or --filter/--no-filter")
+    change = (args.source or args.type or select or args.asset is not None or args.no_asset or
+              args.sourcecode or args.no_sourcecode or args.filter or args.no_filter)
+    if args.list and (args.paths or change):
+        raise FsError("--list takes no PATH and no options to change")
+    if not args.list and not args.paths:
+        raise FsError("give the entries to change or show (PATH...), or --list for all")
+    if args.type and not args.source:
+        raise FsError("--type goes with --source (the type of a source: 'git assetsync "
+                      "source set NAME --type ...')")
     reg = Registry(repo)
+    entries = select_entries(repo, reg, args.paths)
+    if not change:
+        for e in entries:
+            print(set_command(repo, e))
+        return EXIT_OK
     reg.need_filter(args.filter)
     reg.dry_run = args.dry_run
-    entries = select_entries(repo, reg, args.paths)
     if args.source:           # another project (fork, moved) or [source]
         url, spec, named = given_source(reg, SimpleNamespace(
             source=args.source, release=None, prerelease=None, type=args.type))
@@ -5379,7 +5454,7 @@ def cmd_set(ctx, repo, args):
         print("nothing to change")
     elif not args.dry_run:
         reg.finish()
-        print(REGISTRY_STAGED)
+        print(REGISTRY_PENDING)
     return EXIT_OK
 
 
@@ -5792,12 +5867,7 @@ def cmd_rm(ctx, repo, args):
             raise FsError(f"{entry.shown}: {problem} - remove its entry with 'git assetsync "
                           f"unlink {shlex.quote(entry.rel)}'")
         try:
-            if not entry.is_dir:
-                own[entry.rel] = {entry.rel}
-            elif args.dry_run:      # changes nothing: no base got (and kept) for it
-                own[entry.rel] = base_paths(repo, entry) or set()
-            else:
-                own[entry.rel] = ensure_base(repo, reg, entry)
+            own[entry.rel] = ensure_base(repo, reg, entry) if entry.is_dir else {entry.rel}
         except FsError as e:
             raise FsError(f"{entry.shown}: {e} - remove its entry with 'git assetsync unlink "
                           f"{path_arg(repo, entry.shown)}' and its files by hand")
@@ -5892,19 +5962,41 @@ def source_text(s, name, reg):
             + f"{plural(len(reg.source_files(name)), 'file')})")
 
 
+def source_command(name, s):
+    """The source set command that gives [source] name as it is."""
+    return shlex.join(["git", "assetsync", "source", "set", name, "--url", s.get("url", "")]
+                      + (["--type", s["type"]] if s.get("type") else ["--no-type"]))
+
+
 def cmd_source(ctx, repo, args):
-    """Like `git remote`: list, rename and change the [source]s. Only
-    .git-assetsync is changed (and staged); `pull` then updates and stages
-    the files."""
+    """List, rename and change the [source]s. Only .git-assetsync is
+    changed (and staged); `pull` then updates and stages the files.
+    source set without options: the source set command that gives it."""
     reg = Registry(repo)
     action = args.action
     if not action:
         for name, s in sorted(reg.sources.items()):
             print(f"{name}\t{source_text(s, name, reg)}" if args.verbose else name)
         return EXIT_OK
+    change = action == "rename" or args.url or args.type or args.no_type
+    if action == "set" and args.list:
+        if args.name or change:
+            raise FsError("--list takes no NAME and no options to change")
+        for name, s in sorted(reg.sources.items()):
+            print(source_command(name, s))
+        return EXIT_OK
+    if not args.name:
+        raise FsError("give the source to change or show (NAME), or --list for all")
     if args.name not in reg.sources:
         raise FsError(f"no source '{args.name}' in {REGISTRY}"
                       + (f" (known: {', '.join(sorted(reg.sources))})" if reg.sources else ""))
+    s = reg.sources[args.name]
+    if not change:
+        print(source_command(args.name, s))
+        return EXIT_OK
+    reg.dry_run = args.dry_run
+    would = "would: " if args.dry_run else ""
+    done = []
     if action == "rename":
         new = args.value
         if not new or "\n" in new:
@@ -5912,30 +6004,41 @@ def cmd_source(ctx, repo, args):
         if new in reg.sources:
             raise FsError(f"source '{new}' already exists")
         reg.rename_source(args.name, new)
-        done = f"renamed {args.name} -> {new}"
-    elif action == "set-url":
-        url = source_url(args.value)
+        reg.finish()
+        print(f"{would}{paint(f'renamed {args.name} -> {new}', 'green')}"
+              + ("" if args.dry_run else f"; {REGISTRY} staged"))
+        return EXIT_OK
+    if args.url:
+        url = source_url(args.url)
         other = reg.find_source(url, exclude=args.name)
         if other:
             raise FsError(f"source '{other}' already has this URL - move the files to it with "
                           f"'git assetsync set <file>... --source {other}'")
-        reg.set_source(args.name, "url", url)
-        done = f"{args.name}: url {url}"
-    else:   # set-type
-        if bool(args.unset) == bool(args.value):
-            raise FsError("give either github|gitlab or --unset")
-        if args.value and args.value not in PLATFORMS:
-            raise FsError(f"unknown type '{args.value}' (supported: "
-                          f"{', '.join(sorted(PLATFORMS))})")
-        reg.set_source(args.name, "type", args.value or None)
-        done = f"{args.name}: type {args.value or '(derived from the host)'}"
-    reg.finish()
-    print(f"{paint(done, 'green')}; {REGISTRY} staged")
-    files = reg.source_files(args.value if action == "rename" else args.name)
-    if action != "rename" and files:
-        print(f'  (use "git assetsync status" to see what changes for its '
-              f'{plural(len(files), "file")}, "git assetsync pull <file>..." to update them)')
+        if norm_url(url) != norm_url(s.get("url", "")):
+            done.append(f"{args.name}: url {s.get('url', '')} -> {url}")
+            reg.set_source(args.name, "url", url)
+    if args.type or args.no_type:
+        derived = "(derived from the host)"
+        if (s.get("type") or None) != args.type:
+            done.append(f"{args.name}: type {s.get('type') or derived} -> "
+                        f"{args.type or derived}")
+            reg.set_source(args.name, "type", args.type)
+    if not done:
+        print("nothing to change")
+        return EXIT_OK
+    for line in done:
+        print(f"{would}{paint(line, 'green')}")
+    if not args.dry_run:
+        reg.finish()
+        print(REGISTRY_PENDING if reg.source_files(args.name) else f"{REGISTRY} staged")
     return EXIT_OK
+
+
+def filter_command(name, steps):
+    """The filter set command that gives the filter name with its steps:
+    each step as its option."""
+    return " ".join([shlex.join(["git", "assetsync", "filter", "set", name])]
+                    + [shlex.join(["--" + w[0]] + w[1:]) for w in map(shlex.split, steps)])
 
 
 def cmd_filter(ctx, repo, args):
@@ -5952,6 +6055,14 @@ def cmd_filter(ctx, repo, args):
         if not reg.filters:
             print(f"no filters in {REGISTRY}")
         return EXIT_OK
+    if action == "set" and args.list:
+        if args.name or getattr(args, "steps", None):
+            raise FsError("--list takes no NAME and no steps")
+        for name, steps in sorted(reg.filters.items()):
+            print(filter_command(name, steps))
+        return EXIT_OK
+    if not args.name:
+        raise FsError("give the filter to change or show (NAME), or --list for all")
     if action == "add" and args.name in reg.filters:
         raise FsError(f"filter '{args.name}' already exists (change it with 'git assetsync "
                       f"filter set {args.name} ...')")
@@ -5966,14 +6077,22 @@ def cmd_filter(ctx, repo, args):
             print(step)
         print(f"({'used by ' + and_list(users) if users else 'not used'})")
         return EXIT_OK
+    reg.dry_run = args.dry_run
     if action in ("add", "set"):
         if not re.fullmatch(r"[\w.+-]+", args.name):
             raise FsError(f"invalid filter name '{args.name}' (letters, digits, '.', '+', '-', "
                           "'_')")
         steps = filter_steps(args)
+        if not steps and action == "set":
+            print(filter_command(args.name, reg.filters[args.name]))
+            return EXIT_OK
         if not steps:
             raise FsError("give the steps of the filter (--extract, --include, --move, ...)")
         expand_steps(steps, dict(reg.filters, **{args.name: steps}), (args.name,))
+        if action == "set" and [shlex.split(x) for x in steps] == \
+                [shlex.split(x) for x in reg.filters[args.name]]:
+            print("nothing to change")
+            return EXIT_OK
         reg.set_filter(args.name, steps)
         done = f"filter {args.name}: {', '.join(steps)}" + (" (new)" if action == "add" else "")
     elif action == "rename":
@@ -5988,11 +6107,17 @@ def cmd_filter(ctx, repo, args):
             raise FsError(f"filter '{args.name}' is used by {and_list(users)}")
         reg.remove_filter(args.name)
         done = f"removed filter {args.name}"
-    reg.finish()
-    print(f"{paint(done, 'green')}; {REGISTRY} staged")
     if action == "set" and users:
-        print(f'  (used by {and_list(users)}: use "git assetsync status" to see what '
-              'changes, "git assetsync pull <file>..." to update)')
+        done += f" (used by {and_list(users)})"
+    if args.dry_run:
+        print(f"would: {paint(done, 'green')}")
+    elif action == "set" and users:
+        reg.finish()
+        print(paint(done, "green"))
+        print(REGISTRY_PENDING)
+    else:
+        reg.finish()
+        print(f"{paint(done, 'green')}; {REGISTRY} staged")
     return EXIT_OK
 
 
@@ -6363,7 +6488,8 @@ def only_looks(args):
         action in ("releases", "show", "list", "dir") or \
         action == "map" and not args.dir and not args.unset or \
         action == "test" and not args.output or \
-        action == "trust" and not (args.names or args.all or args.revoke)
+        action == "trust" and not (args.names or args.all or args.revoke) or \
+        getattr(args, "list", False)            # set, source set, filter set --list
 
 
 def run(argv):
@@ -6524,8 +6650,13 @@ def run(argv):
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
     p = sub.add_parser("set", parents=[colorp],
-                       help="change entries: source, release selection, asset or filter")
-    p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
+                       help="change entries: source, release selection, asset or filter",
+                       description="Change entries: source, release selection, asset or "
+                                   "filter. Without options: show each entry as the set "
+                                   "command that gives it.")
+    p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories")
+    p.add_argument("--list", action="store_true",
+                   help="show all entries as set commands, one per line")
     p.add_argument("--source", metavar="URL|SOURCE",
                    help="take the files from another source (URL or name, as for add)")
     g = p.add_mutually_exclusive_group()
@@ -6588,16 +6719,20 @@ def run(argv):
                            help="rename a source and all references to it")
     a.add_argument("name", metavar="OLD", help="key of the [source]")
     a.add_argument("value", metavar="NEW")
-    a = actions.add_parser("set-url", parents=[colorp], help="change the URL of a source")
-    a.add_argument("name", metavar="NAME", help="key of the [source]")
-    a.add_argument("value", metavar="URL")
-    a = actions.add_parser("set-type", parents=[colorp],
-                           help="platform of the source's host (--unset: derived from it)",
-                           description="Set the platform of the source's host (--unset: "
-                                       "derived from it).")
-    a.add_argument("name", metavar="NAME", help="key of the [source]")
-    a.add_argument("value", metavar="github|gitlab", nargs="?")
-    a.add_argument("--unset", action="store_true", help="derive the platform from the host")
+    a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
+    a = actions.add_parser("set", parents=[colorp],
+                           help="change the URL or type of a source; without options: show it",
+                           description="Change the URL or type of a source. Without options: "
+                                       "show it as the source set command that gives it.")
+    a.add_argument("name", nargs="?", metavar="NAME", help="key of the [source]")
+    a.add_argument("--url", metavar="URL", help="another URL, e.g. after the project moved")
+    g = a.add_mutually_exclusive_group()
+    g.add_argument("--type", choices=sorted(PLATFORMS), help="platform of the URL's host")
+    g.add_argument("--no-type", action="store_true",
+                   help="derive the platform from the host again")
+    a.add_argument("--list", action="store_true",
+                   help="show all sources as source set commands, one per line")
+    a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("map", parents=[colorp],
                            help="take the releases of a source from a local folder (local "
                                 "development, tests); this repository's config, --global: all")
@@ -6642,9 +6777,17 @@ def run(argv):
     a = actions.add_parser("add", parents=[colorp, filterp],
                            help="define a new filter with the steps given (in this order)")
     a.add_argument("name", metavar="NAME")
+    a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("set", parents=[colorp, filterp],
-                           help="replace the steps of a filter (in the order given)")
-    a.add_argument("name", metavar="NAME")
+                           help="replace the steps of a filter (in the order given); "
+                                "without steps: show it",
+                           description="Replace the steps of a filter (in the order given). "
+                                       "Without steps: show it as the filter set command "
+                                       "that gives it.")
+    a.add_argument("name", nargs="?", metavar="NAME")
+    a.add_argument("--list", action="store_true",
+                   help="show all filters as filter set commands, one per line")
+    a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("test", parents=[colorp, remotep],
                            help="apply a filter to local files or to the assets of a release, "
                                 "and list or write the result (nothing else changes)")
@@ -6667,8 +6810,10 @@ def run(argv):
                            help="rename a filter and the steps using it")
     a.add_argument("name", metavar="OLD")
     a.add_argument("value", metavar="NEW")
+    a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("remove", parents=[colorp], help="remove an unused filter")
     a.add_argument("name", metavar="NAME")
+    a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("trust", parents=[colorp],
                            help="list the filters that run commands; trust them in this repository")
     a.add_argument("names", nargs="*", metavar="NAME", help="filters to trust")
@@ -6756,6 +6901,10 @@ def run(argv):
             "pull": cmd_pull, "add": cmd_add, "edit": cmd_edit, "set": cmd_set,
             "unlink": cmd_unlink, "mv": cmd_mv, "restore": cmd_restore, "rm": cmd_rm,
             "source": cmd_source, "filter": cmd_filter, "verify": cmd_verify}[args.cmd]
+        repo.dry_run = getattr(args, "dry_run", False)
+        if repo.dry_run:      # done as without -n, only nothing is written
+            with repo.scratch():
+                return command(ctx, repo, args)
         return command(ctx, repo, args)
     except FsError as e:
         error(str(e))
