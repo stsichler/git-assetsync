@@ -154,8 +154,8 @@ repository](MANUAL.md#shipping-git-assetsync-with-your-repository).
 cd my-repo
 
 # 1. Take a file from a release asset (once). It is staged like git add;
-#    git commit offers the proposed message. --asset (a glob) must match
-#    exactly one asset - not needed if the release has only one.
+#    git commit offers the proposed message. --asset (a glob) chooses
+#    the asset - not needed if the release has only one.
 git assetsync add https://github.com/acme/tool bin/tool --asset 'tool-*-linux-x64'
 git commit
 

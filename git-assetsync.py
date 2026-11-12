@@ -25,10 +25,13 @@ assets of a project on GitHub or GitLab:
                                    ; latest release
         prerelease = true          ; optional: prereleases (GitLab: upcoming
                                    ; releases) count too
-        asset = tool-*-linux.bin   ; optional: asset of the release (glob, must
-                                   ; match one); without: its only asset
+        asset = 'tool-*-linux.bin' ; optional: the assets (globs, quoted as in
+                                   ; a shell: '*.zip' '*.hex' - any may
+                                   ; match); without: all - a file needs
+                                   ; exactly one file in the end
+        exclude-asset = '*.sha256' ; optional: but not these (globs)
         synced = <tag of the release the file comes from>
-        digest = sha256:<hash of that asset>
+        digest = sha256:<hash of that asset; of several: over all>
         assetid = sha256:<...>     ; only without digests from the platform:
                                    ; which upload it was (id, URL, size)
         blob = <id of the file as committed>
@@ -36,7 +39,7 @@ assets of a project on GitHub or GitLab:
                                    ; or 100755 (executable)
     [dir "third_party/zlib"]       ; files of a directory (others may be there)
         source = madler/zlib
-        asset = zlib-*.tar.gz      ; optional: the assets (glob); without: all
+        asset = 'zlib-*.tar.gz'    ; optional: the assets (glob); without: all
         sourcecode = tar.gz        ; optional: the source code archive (then
                                    ; without asset: no assets)
         filter = zlib-headers      ; optional: the filter applied to the assets
@@ -196,14 +199,16 @@ Basic commands - what you need day to day:
                                 proposed message; like cp, no directory is
                                 made: the one PATH goes into must exist (a
                                 directory PATH/ itself may be new)
-        --asset PATTERN         the asset (glob; a file: exactly one match,
-                                default the release's only asset; a
-                                directory: all matching, default all)
+        --asset PATTERN         the assets matching the glob (repeat for
+                                more; default: all); a file needs exactly
+                                one file in the end: one asset, or a
+                                filter that leaves one
+        --exclude-asset PATTERN  but not those matching the glob (repeat
+                                for more), e.g. '*.sha256'
         --sourcecode FORMAT     the release's source code archive (zip,
                                 tar.gz; GitLab also tar.bz2, tar) as an
-                                asset REPO-TAG.FORMAT; a directory also
-                                takes the assets matching --asset (without:
-                                none)
+                                asset REPO-TAG.FORMAT; also the assets
+                                matching --asset (without: none)
         --filter NAME           the filter to apply to the assets
         --release TAG|PATTERN   release to take (exact tag: pinned) or the
                                 newest one matching (default: the latest)
@@ -250,8 +255,9 @@ Advanced commands - change entries, sources and filters; set up:
                                 new one)
         --release TAG|PATTERN, --latest, --prerelease, --no-prerelease
                                 another release selection
-        --asset PATTERN, --no-asset  another asset (--no-asset: the only one,
-                                for a directory all - with sourcecode none)
+        --asset PATTERN, --no-asset  other assets (repeat for more; --no-asset:
+                                all - with sourcecode none)
+        --exclude-asset PATTERN, --no-exclude-asset  assets left out, or none
         --sourcecode FORMAT, --no-sourcecode  the source code archive, or not
         --filter NAME, --no-filter  another filter, or none
         -n, --dry-run           only show what would change
@@ -308,7 +314,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 nothing else changes
         --source SOURCE         instead: the assets of its release (with
                                 --release, --prerelease, --type as for add;
-                                --asset PATTERN: only the matching ones;
+                                --asset / --exclude-asset PATTERN: only /
+                                not the matching ones;
                                 --sourcecode FORMAT as for add)
         -o, --output DIR        write the result to DIR (new or empty)
     filter add NAME STEP-OPTIONS...  define a new filter; the steps in the
@@ -490,6 +497,10 @@ CACHE_MAX_AGE, CACHE_PRUNE_EVERY, CACHE_GRACE = 90, 86400, 600
 
 class FsError(Exception):
     pass
+
+
+class NamedError(FsError):
+    """An error whose message names its entry already: shown as it is."""
 
 
 class MissingError(FsError):
@@ -1327,40 +1338,23 @@ def select_release(origin, rule, prerelease):
     return max(cands, key=lambda r: r.order)
 
 
-def match_asset(release, pattern, label, choose="--asset PATTERN"):
-    """The one asset of release whose name matches pattern; without
-    pattern, the release's only asset. choose: how to give a pattern."""
-    if not pattern:
-        if len(release.assets) == 1:
-            return release.assets[0]
-        names = ", ".join(a.name for a in release.assets)
-        raise FsError(f"release {release.tag} of {label} has "
-                      + (f"{len(release.assets)} assets: {names} - choose one with {choose}"
-                         if names else "no assets"))
-    found = [a for a in release.assets if fnmatch.fnmatchcase(a.name, pattern)]
-    if len(found) == 1:
-        return found[0]
-    if not found:
-        names = ", ".join(a.name for a in release.assets) or "none"
-        raise FsError(f"release {release.tag} of {label} has no asset matching "
-                      f"'{pattern}' (assets: {names})")
-    raise FsError(f"'{pattern}' matches {len(found)} assets of release {release.tag} of "
-                  f"{label}: {', '.join(a.name for a in found)} - use a more specific pattern")
-
-
-def select_assets(release, pattern, label, is_dir, choose="--asset PATTERN"):
-    """The assets an entry takes: for a file the one matching pattern (or
-    the release's only one); for a directory all matching (or all)."""
-    if not is_dir:
-        return [match_asset(release, pattern, label, choose)]
-    found = [a for a in release.assets if not pattern or fnmatch.fnmatchcase(a.name, pattern)]
-    if not found and pattern:
-        names = ", ".join(a.name for a in release.assets) or "none"
-        raise FsError(f"release {release.tag} of {label} has no asset matching '{pattern}' "
-                      f"(assets: {names})")
-    if not found:
+def select_assets(release, patterns, label, excludes=()):
+    """The assets an entry takes: all matching one of patterns (a list), or
+    all without patterns - but none matching one of excludes (as git-filesync's
+    include / exclude). An error if that is none."""
+    def matches(name, globs):
+        return any(fnmatch.fnmatchcase(name, p) for p in globs)
+    found = [a for a in release.assets if (not patterns or matches(a.name, patterns))
+             and not matches(a.name, excludes)]
+    if found:
+        return found
+    if not release.assets:
         raise FsError(f"release {release.tag} of {label} has no assets")
-    return found
+    what = " and ".join(([f"matching {', '.join(repr(p) for p in patterns)}"] if patterns else [])
+                        + ([f"not matching {', '.join(repr(p) for p in excludes)}"]
+                           if excludes else []))
+    raise FsError(f"release {release.tag} of {label} has no asset {what} "
+                  f"(assets: {', '.join(a.name for a in release.assets)})")
 
 
 def check_sourcecode(url, kind, fmt):
@@ -1372,18 +1366,16 @@ def check_sourcecode(url, kind, fmt):
                       f"{', '.join(platform.SOURCE_FORMATS)})")
 
 
-def entry_assets(origin, release, pattern, sourcecode, is_dir, choose="--asset PATTERN"):
+def entry_assets(origin, release, patterns, sourcecode, excludes=()):
     """The assets an entry takes (see select_assets()); with sourcecode,
     the release's source code archive in that format too - and the
-    uploaded assets only with a pattern (without: none)."""
+    uploaded assets only with patterns (without: none)."""
     if not sourcecode:
-        return select_assets(release, pattern, origin.label, is_dir, choose)
-    if pattern and not is_dir:
-        raise FsError("a file takes one asset: an asset pattern or the source code, not both")
+        return select_assets(release, patterns, origin.label, excludes)
     archive = origin.source_archive(release, sourcecode)
     # a local folder's archive is one of its files: not twice
-    assets = [a for a in select_assets(release, pattern, origin.label, True, choose)
-              if a is not archive] if pattern else []
+    assets = [a for a in select_assets(release, patterns, origin.label, excludes)
+              if a is not archive] if patterns else []
     if any(a.name == archive.name for a in assets):
         raise FsError(f"the source code archive and an asset of release {release.tag} of "
                       f"{origin.label} are both named {archive.name} - take them with two entries")
@@ -3007,6 +2999,44 @@ BASE_KEY = {"file": "blob", "dir": "tree"}
 SPEC_KEYS = ("release", "prerelease")
 
 
+@functools.lru_cache(maxsize=None)
+def split_words(key, value):
+    """The patterns of the value of key (asset, exclude-asset): separated by
+    blanks, quoted like in a shell - read with shlex.split, written with
+    shlex.join (as filter steps and git-filesync's include / exclude). A
+    tuple: cached."""
+    try:
+        words = tuple(shlex.split(value or ""))
+        if not all(words):
+            raise ValueError("a pattern must not be empty")
+    except ValueError as e:
+        raise FsError(f"cannot read {key} = {value}: {e} - correct it with "
+                      "'git assetsync edit'") from None
+    return words
+
+
+def entry_patterns(entry, key):
+    """The patterns of an entry's asset or exclude-asset; None if unreadable."""
+    try:
+        return list(split_words(key, entry.v.get(key)))
+    except FsError:
+        return None
+
+
+def patterns_text(entry, key):
+    """The patterns of an entry's asset or exclude-asset as shown: quoted as
+    in a shell ('' for none); an unreadable value as it is."""
+    patterns = entry_patterns(entry, key)
+    return entry.v.get(key, "") if patterns is None else shlex.join(patterns)
+
+
+def given_patterns(patterns, option="--asset"):
+    """The patterns of --asset PATTERN (repeated; None: none), each once."""
+    if not all(patterns or []):
+        raise FsError(f"{option}: a pattern must not be empty")
+    return list(dict.fromkeys(patterns or []))
+
+
 def parse_registry(raw):
     """{section: {subsection: {key: value}}} from `git config --list -z`."""
     result = {s: {} for s in SECTIONS}
@@ -3066,9 +3096,13 @@ def origin_text(entry):
     """Where an entry comes from, as status -v, pull -v and verify -v show it:
     'tool-*.bin from acme/tool, latest release, filter x; synced v1.2'."""
     synced = f"synced {entry.synced}" if entry.synced else "not synced yet"
-    what = entry.asset or ("all assets" if entry.is_dir else "only asset")
+    patterns, excludes = patterns_text(entry, "asset"), patterns_text(entry, "exclude-asset")
     if entry.sourcecode:
-        what = f"source code ({entry.sourcecode})" + (f" and {entry.asset}" if entry.asset else "")
+        what = f"source code ({entry.sourcecode})" + (f" and {patterns}" if patterns else "")
+    else:
+        what = patterns or "all assets"
+    # the source archive isn't an uploaded asset: excludes don't apply to it
+    what += f" except {excludes}" if excludes and (patterns or not entry.sourcecode) else ""
     steps = f", filter {entry.filter}" if entry.filter else ""
     return f"{what} from {entry.name}, {spec_text(entry.spec)}{steps}; {synced}"
 
@@ -3513,7 +3547,9 @@ class Entry:
     name = property(lambda self: self.v.get("source", ""))   # key of the [source]
     url = property(lambda self: self.source.get("url", ""))
     spec = property(lambda self: entry_spec(self.v, self.source))
-    asset = property(lambda self: self.v.get("asset", ""))
+    asset = property(lambda self: list(split_words("asset", self.v.get("asset"))))   # patterns
+    exclude_asset = property(lambda self: list(split_words("exclude-asset",
+                                                           self.v.get("exclude-asset"))))
     sourcecode = property(lambda self: self.v.get("sourcecode", ""))   # format of the archive
     synced = property(lambda self: self.v.get("synced", ""))
     digest = property(lambda self: self.v.get("digest", ""))
@@ -3681,7 +3717,7 @@ def rebuild_base(repo, reg, entry, what):
     release = origin.by_tag(entry.synced)
     if not release:
         raise FsError(f"{what}, and release {entry.synced} of {origin.label} no longer exists")
-    assets = entry_assets(origin, release, entry.asset, entry.sourcecode, True)
+    assets = entry_assets(origin, release, entry.asset, entry.sourcecode, entry.exclude_asset)
     digest, items = filter_items(repo, reg, entry, origin, release, assets)
     tree = release_tree(repo, entry.rel, items)
     if digest != (entry.digest or "").lower() or tree != entry.blob:
@@ -3824,8 +3860,10 @@ def evaluate(ctx, repo, entry):
         try:
             st.origin, st.release = ctx.release(entry.url, entry.spec)
             st.assets = entry_assets(st.origin, st.release, entry.asset, entry.sourcecode,
-                                     entry.is_dir,
-                                     f"'git assetsync set {path_arg(repo, entry.rel)} --asset PATTERN'")
+                                     entry.exclude_asset)
+            problem = too_many_assets(entry, st.assets)
+            if problem:
+                raise FsError(problem)
         except FsError as e:
             st.error = str(e)
             return st
@@ -3898,6 +3936,11 @@ def gone_text(st):
     """How many of the files of a directory's release are missing ('' for
     a [file])."""
     return f"{len(st.gone)} of {st.total} files" if st.entry.is_dir else ""
+
+
+def entry_error(entry, e):
+    """The message of an error of an entry: it named once."""
+    return str(e) if isinstance(e, NamedError) else f"{entry.shown}: {e}"
 
 
 def report_error(st):
@@ -4242,8 +4285,9 @@ def push_check(repo, args):
                 _, v, _ = items[0]
                 if v.get("sourcecode"):      # made by the server: no digest to compare
                     continue
-                assets = select_assets(release, v.get("asset", ""), origin.label,
-                                       any(rel.endswith("/") for rel, _, _ in items))
+                assets = select_assets(release, list(split_words("asset", v.get("asset"))),
+                                       origin.label,
+                                       list(split_words("exclude-asset", v.get("exclude-asset"))))
                 now = assets_digest([(a.name, a.digest) for a in assets])
                 if not (now and digest and now != digest):
                     continue
@@ -4531,7 +4575,7 @@ def diff_items(ctx, repo, reg, args):
             differing(entry, st, [(m, o, p) for p, (m, o)
                                   in repo.worktree_items(base_paths(repo, entry) or set()).items()])
         except FsError as e:
-            error(f"{entry.shown}: {e}")
+            error(entry_error(entry, e))
             rc = EXIT_ERROR
     with keep:
         for (entry, st, _), other in zip(upstream, stored_items(repo, [f for _, _, f in upstream])):
@@ -4893,12 +4937,22 @@ def tree_stats(repo, old, new):
         sum(1 for p in after.keys() & before if after[p] != before[p]), len(after)
 
 
-def one_file(files, entry_shown, rel):
+def one_file(files, entry):
     """The files of a [file] entry: exactly one."""
     if len(files) != 1:
-        raise FsError(f"{entry_shown}: the filter gives {len(files)} files, a file needs exactly "
-                      f"one - narrow the filter, or add '{rel}/' as a directory")
+        raise NamedError(f"{entry.shown}: the filter gives {len(files)} files, a file needs exactly "
+                      f"one - narrow the filter, or add '{entry.rel}/' as a directory")
     return files
+
+
+def too_many_assets(entry, assets):
+    """What is wrong if a [file] without a filter has more than one asset
+    (they are its files as they are, it needs exactly one) - known before
+    downloading; else None."""
+    if entry.is_dir or entry.steps or len(assets) < 2:
+        return None
+    return (f"{len(assets)} assets ({', '.join(a.name for a in assets)}), a file needs exactly "
+            "one - narrow them with --asset / --exclude-asset (add, set), or give a filter")
 
 
 def pull_done(repo, reg, job, base):
@@ -5213,13 +5267,16 @@ def cmd_add(ctx, repo, args):
         raise FsError(f"directory '{parent}' does not exist")
     reg.need_filter(args.filter)
     steps = named_steps(args.filter) if args.filter else []
+    patterns = given_patterns(args.asset)
+    excludes = given_patterns(args.exclude_asset, "--exclude-asset")
     url, spec, named = given_source(reg, args)
     check_sourcecode(url, spec.get("type"), args.sourcecode)
     origin, release = ctx.release(url, spec)
-    assets = entry_assets(origin, release, args.asset, args.sourcecode, is_dir)
+    assets = entry_assets(origin, release, patterns, args.sourcecode, excludes)
     name = named or reg.source_name(url)
-    if is_dir and not args.asset and not args.sourcecode and len(assets) > 1:
-        print(f"{shown_rel}: all {plural(len(assets), 'asset')} of {name} {release.tag}: "
+    if not patterns and not args.sourcecode and len(assets) > 1 and (is_dir or steps):
+        print(f"{shown_rel}: {'' if excludes else 'all '}{plural(len(assets), 'asset')} of "
+              f"{name} {release.tag}: "
               + ", ".join(a.name + (f" ({human_size(a.size)})" if a.size is not None else "")
                           for a in assets), flush=True)
     # what an entry being replaced has from its release may go; anything else (files
@@ -5271,7 +5328,8 @@ def cmd_add(ctx, repo, args):
     reg.new_entry(rel, kind)
     entry = Entry(reg, rel)
     for k, v in (("source", name), ("release", spec.get("release")),
-                 ("prerelease", spec.get("prerelease")), ("asset", args.asset),
+                 ("prerelease", spec.get("prerelease")),
+                 ("asset", shlex.join(patterns)), ("exclude-asset", shlex.join(excludes)),
                  ("sourcecode", args.sourcecode), ("filter", args.filter),
                  ("synced", release.tag), ("digest", digest), ("assetid", assets_id(assets)),
                  ("filterhash", filter_hash(steps, reg.filters, repo)), (BASE_KEY[kind], base),
@@ -5377,7 +5435,9 @@ def set_command(repo, e):
         words += ["--type", e.source["type"]]
     words += ["--release", e.v["release"]] if e.v.get("release") else ["--latest"]
     words.append("--prerelease" if is_true(e.v.get("prerelease")) else "--no-prerelease")
-    words += ["--asset", e.asset] if e.asset else ["--no-asset"]
+    words += [w for p in e.asset for w in ("--asset", p)] or ["--no-asset"]
+    words += [w for p in e.exclude_asset for w in ("--exclude-asset", p)] or \
+        ["--no-exclude-asset"]
     words += ["--sourcecode", e.sourcecode] if e.sourcecode else ["--no-sourcecode"]
     words += ["--filter", e.filter] if e.filter else ["--no-filter"]
     return shlex.join(words)
@@ -5403,21 +5463,27 @@ def cmd_set(ctx, repo, args):
     reg = Registry(repo)
     entries = select_entries(repo, reg, args.paths, containing=not change)
     if not change:
+        rc = EXIT_OK
         for e in entries:
-            print(set_command(repo, e))
-        return EXIT_OK
+            try:
+                print(set_command(repo, e))
+            except FsError as err:
+                error(f"{e.shown}: {err}")
+                rc = EXIT_ERROR
+        return rc
     reg.need_filter(args.filter)
+    patterns = {key: [] if none else given_patterns(given, f"--{key}")     # {key: [new]}
+                for key, given, none in (("asset", args.asset, args.no_asset),
+                                         ("exclude-asset", args.exclude_asset,
+                                          args.no_exclude_asset))
+                if given is not None or none}
     reg.dry_run = args.dry_run
     if args.source:           # another project (fork, moved) or [source]
         url, spec, named = given_source(reg, SimpleNamespace(
             source=args.source, release=None, prerelease=None, type=args.type))
         platform_of(url, spec.get("type"))       # a usable URL and type
     for e in entries:
-        asset = None if args.no_asset else e.asset if args.asset is None else args.asset
         sourcecode = None if args.no_sourcecode else args.sourcecode or e.sourcecode
-        if asset and sourcecode and not e.is_dir:
-            raise FsError(f"{e.shown}: a file takes one asset: --asset or --sourcecode, not "
-                          "both")
         if sourcecode and (args.sourcecode or args.source):
             if args.source:
                 check_sourcecode(url, spec.get("type"), sourcecode)
@@ -5455,14 +5521,15 @@ def cmd_set(ctx, repo, args):
                 for k in SPEC_KEYS:
                     e.set(k, new.get(k))
                 changed = True
-    if args.asset is not None or args.no_asset:
-        new = None if args.no_asset else args.asset
+    for key, new in patterns.items():
         for e in entries:
-            if (e.asset or None) != new:
+            old = entry_patterns(e, key)          # unreadable (None): replaced
+            if old is None or set(old) != set(new):
                 sourcecode = None if args.no_sourcecode else args.sourcecode or e.sourcecode
-                every = "(the only one)" if not e.is_dir else "(none)" if sourcecode else "(all)"
-                print(f"{would}{e.shown}: asset {e.asset or every} -> {new or every}")
-                e.set("asset", new)
+                none = "(all)" if key == "asset" and not sourcecode else "(none)"
+                print(f"{would}{e.shown}: {key} {patterns_text(e, key) or none} -> "
+                      f"{shlex.join(new) or none}")
+                e.set(key, shlex.join(new) if new else None)
                 e.set("synced", None)
                 changed = True
     if args.sourcecode or args.no_sourcecode:
@@ -5504,6 +5571,9 @@ def filtered_files(repo, reg, entry, origin, release, assets, keep, st=None):
     repository: (file, executable)}), the files kept (keep: an ExitStack)
     until stored or installed, for many entries at once. st: gets what a
     changelog step read (pull's commit message)."""
+    problem = too_many_assets(entry, assets)
+    if problem:
+        raise NamedError(f"{entry.shown}: {problem}")
     trusted = ensure_trusted(repo, entry.steps, reg.filters)
     env = {"ASSETSYNC_RELEASE": release.tag, "ASSETSYNC_SOURCE": origin.label,
            "ASSETSYNC_ENTRY": entry.shown}
@@ -5512,7 +5582,7 @@ def filtered_files(repo, reg, entry, origin, release, assets, keep, st=None):
     if st:
         st.changelog = work.changelog
     if not entry.is_dir:
-        return digest, {entry.rel: f for f in one_file(files, entry.shown, entry.rel).values()}
+        return digest, {entry.rel: f for f in one_file(files, entry).values()}
     return digest, {f"{entry.rel}/{name}": f for name, f in files.items()}
 
 
@@ -5545,7 +5615,7 @@ def verify_plan(repo, reg, entry, keep):
     release = origin.by_tag(entry.synced)
     if not release:
         raise FsError(f"release {entry.synced} of {origin.label} no longer exists")
-    assets = entry_assets(origin, release, entry.asset, entry.sourcecode, entry.is_dir)
+    assets = entry_assets(origin, release, entry.asset, entry.sourcecode, entry.exclude_asset)
     digest, files = filtered_files(repo, reg, entry, origin, release, assets, keep)
     if digest != (entry.digest or "").lower():
         return False, (f"the assets of {release.tag} differ from those it was synced with "
@@ -5613,7 +5683,7 @@ def cmd_verify(ctx, repo, args):
                 ok, text = verify_compare(repo, entry, result[0], next(items), result[2]) \
                     if len(result) == 3 else result
             except FsError as e:
-                error(f"{entry.shown}: {e}")
+                error(entry_error(entry, e))
                 rc = EXIT_ERROR
                 continue
             style = "green" if ok else "dim" if ok is None else "boldred"
@@ -5813,7 +5883,7 @@ def cmd_restore(ctx, repo, args):
                 ensure_base(repo, reg, entry)
             plans.append((entry, restore_plan(repo, entry, index, worktree)))
         except FsError as e:
-            error(f"{entry.shown}: {e}")
+            error(entry_error(entry, e))
             rc = EXIT_ERROR
     try:
         now = repo.stored_now(set().union(*(plan[2] for _, plan in plans)))
@@ -6171,7 +6241,8 @@ def filter_test(ctx, repo, reg, args):
             url, spec, _ = given_source(reg, args)
             check_sourcecode(url, spec.get("type"), args.sourcecode)
             origin, release = ctx.release(url, spec)
-            assets = entry_assets(origin, release, args.asset, args.sourcecode, True)
+            assets = entry_assets(origin, release, given_patterns(args.asset), args.sourcecode,
+                                  given_patterns(args.exclude_asset, "--exclude-asset"))
             for a in assets:
                 add_member(files, safe_path(a.name, f"{what}: asset"),
                            (get_asset(origin, release, a)[0], False), what)
@@ -6530,7 +6601,8 @@ def changes(args):
     if args.cmd == "set":
         return bool(args.source or args.type or args.release is not None or args.latest or
                     args.prerelease is not None or args.asset is not None or
-                    args.no_asset or args.sourcecode or args.no_sourcecode or args.filter or
+                    args.no_asset or args.exclude_asset is not None or args.no_exclude_asset or
+                    args.sourcecode or args.no_sourcecode or args.filter or
                     args.no_filter)
     if args.cmd == "source":
         return bool(args.url or args.type or args.no_type)
@@ -6680,13 +6752,14 @@ def run(argv):
                    help="file in this repository; with a trailing '/' or an existing "
                         "directory: a directory for the files of the release (files of "
                         "others there stay)")
-    p.add_argument("--asset", metavar="PATTERN",
-                   help="asset of the release (glob pattern; a file: must match exactly one, "
-                        "default the release's only asset; a directory: all matching, "
-                        "default all)")
+    p.add_argument("--asset", metavar="PATTERN", action="append",
+                   help="the assets of the release to take: those matching the glob pattern "
+                        "(repeat for more; default: all)")
+    p.add_argument("--exclude-asset", metavar="PATTERN", action="append",
+                   help="but not the assets matching the glob pattern (repeat for more)")
     p.add_argument("--sourcecode", metavar="FORMAT",
                    help="the release's source code archive (zip, tar.gz; GitLab also tar.bz2, "
-                        "tar) - assets then only with --asset (a directory)")
+                        "tar) - assets then only with --asset")
     p.add_argument("--release", metavar="TAG|PATTERN",
                    help="release to take: an exact tag (pinned) or the newest matching "
                         "(default: the latest release)")
@@ -6722,10 +6795,14 @@ def run(argv):
     p.add_argument("--type", choices=sorted(PLATFORMS),
                    help="with --source, a new one: platform of its host")
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--asset", metavar="PATTERN", help="another asset (glob, exactly one match)")
+    g.add_argument("--asset", metavar="PATTERN", action="append",
+                   help="other assets: those matching the glob pattern (repeat for more)")
     g.add_argument("--no-asset", action="store_true",
-                   help="no pattern: the release's only asset (a directory: all; "
-                        "with --sourcecode none)")
+                   help="no pattern: all assets (with --sourcecode none)")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--exclude-asset", metavar="PATTERN", action="append",
+                   help="but not the assets matching the pattern (repeat for more)")
+    g.add_argument("--no-exclude-asset", action="store_true", help="exclude no assets")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--sourcecode", metavar="FORMAT",
                    help="the release's source code archive in FORMAT (zip, tar.gz, ...)")
@@ -6851,8 +6928,11 @@ def run(argv):
     a.add_argument("--release", metavar="TAG|PATTERN", help="with --source: as for add")
     a.add_argument("--prerelease", action="store_true", help="with --source: as for add")
     a.add_argument("--type", choices=sorted(PLATFORMS), help="with --source: as for add")
-    a.add_argument("--asset", metavar="PATTERN",
-                   help="with --source: only the matching assets (default: all)")
+    a.add_argument("--asset", metavar="PATTERN", action="append",
+                   help="with --source: only the assets matching the pattern (repeat for "
+                        "more; default: all)")
+    a.add_argument("--exclude-asset", metavar="PATTERN", action="append",
+                   help="with --source: not the assets matching the pattern (repeat for more)")
     a.add_argument("--sourcecode", metavar="FORMAT",
                    help="with --source: the source code archive (as for add)")
     a.add_argument("-o", "--output", metavar="DIR",

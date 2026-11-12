@@ -364,7 +364,7 @@ check "... a section of its own" "$(git assetsync status --no-fetch | grep -A2 '
 check "add: source" "$(reg source.acme/tool.url)" "https://github.com/acme/tool"
 check "add: no release key (latest)" "$(reg file.bin/tool.bin.release)" ""
 check "add: entry" "$(reg file.bin/tool.bin.source) $(reg file.bin/tool.bin.asset) $(reg file.bin/tool.bin.synced)" \
-  "acme/tool tool-*.bin v1.0"
+  "acme/tool 'tool-*.bin' v1.0"
 check "add: digest" "$(reg file.bin/tool.bin.digest)" "sha256:$(sha "$F/tool-1.0.bin")"
 check "add: blob as git add stores it" "$(reg file.bin/tool.bin.blob)" "$(git rev-parse :bin/tool.bin)"
 git commit -q --no-edit
@@ -374,7 +374,7 @@ check "add + commit: file and entry" "$(git show --name-only --format= HEAD | so
 check "status: clean" "$(st)" ""
 check "status: nothing to pull" "$(git assetsync status | tail -1)" "nothing to pull, 1 file unmodified"
 check "no command = status" "$(git assetsync | tail -1)" "nothing to pull, 1 file unmodified"
-check "status -v" "$(git assetsync status -v | grep -cE "^${TAB}unmodified: bin/tool\.bin  \(tool-\*\.bin from acme/tool, latest release; synced v1\.0\)")" "1"
+check "status -v" "$(git assetsync status -v | grep -cE "^${TAB}unmodified: bin/tool\.bin  \('tool-\*\.bin' from acme/tool, latest release; synced v1\.0\)")" "1"
 
 asset tool-1.1.bin "tool 1.1"
 release acme/tool v1.1 11 "$F/tool-1.1.bin"
@@ -396,7 +396,7 @@ check "pull -n into a closed pipe: stops, exit 141" \
 # into a pipe closed early (head): the pull still finishes, exit 141 like git
 out=$(PYTHONUNBUFFERED=1 git assetsync pull -v bin/tool.bin 2>/dev/null | head -1; echo "rc=${PIPESTATUS[0]}"); commitp
 check "pull -v: where it comes from first" "$(printf '%s\n' "$out" | head -1)" \
-  "bin/tool.bin: tool-*.bin from acme/tool, latest release; synced v1.0"
+  "bin/tool.bin: 'tool-*.bin' from acme/tool, latest release; synced v1.0"
 check "pull into a closed pipe: finished, exit 141" "$(printf '%s\n' "$out" | tail -1)" "rc=141"
 check "pull: content" "$(cat bin/tool.bin)" "tool 1.1"
 check "pull: commit message" "$(msg)" \
@@ -586,13 +586,15 @@ release acme/app v3 10 "$F/app-linux.tar.gz" "$F/app-windows.zip" "$F/app-macos.
 new_repo r3
 check "asset glob with no match" "$(asd add acme/app x.deb --asset 'app-*.deb' 2>&1)" \
   "error: release v3 of acme/app has no asset matching 'app-*.deb' (assets: app-linux.tar.gz, app-macos.tar.gz, app-windows.zip)"
-check "asset glob with 2 matches" "$(asd add acme/app x.tgz --asset 'app-*.tar.gz' 2>&1)" \
-  "error: 'app-*.tar.gz' matches 2 assets of release v3 of acme/app: app-linux.tar.gz, app-macos.tar.gz - use a more specific pattern"
+reset_calls
+check "asset glob with 2 matches, no filter" "$(asd add acme/app x.tgz --asset 'app-*.tar.gz' 2>&1)" \
+  "error: x.tgz: 2 assets (app-linux.tar.gz, app-macos.tar.gz), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
+check "... nothing downloaded" "$(downloads)" "0"
 check "nothing written on error" "$(git status --porcelain)" ""
 quiet asd add acme/app app.tgz --asset 'app-linux.*' && git commit -q --no-edit
 check "asset glob with 1 match" "$(cat app.tgz)" "linux"
 check "no --asset, several assets" "$(asd add acme/app y.tgz 2>&1)" \
-  "error: release v3 of acme/app has 3 assets: app-linux.tar.gz, app-macos.tar.gz, app-windows.zip - choose one with --asset PATTERN"
+  "error: y.tgz: 3 assets (app-linux.tar.gz, app-macos.tar.gz, app-windows.zip), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
 
 # the newest release lacks the asset: an error, no fallback to older ones
 asset other.txt other
@@ -611,7 +613,7 @@ new_repo r3a
 addc acme/single single.bin
 check "no --asset, one asset: taken" "$(cat single.bin)" "single 1"
 check "no --asset: no asset key" "$(reg file.single.bin.asset)" ""
-check "no --asset: status -v" "$(git assetsync status -v | grep -c '(only asset from acme/single, latest release; synced v1)')" "1"
+check "no --asset: status -v" "$(git assetsync status -v | grep -c '(all assets from acme/single, latest release; synced v1)')" "1"
 asset single.bin "single 2"
 release acme/single v2 11 "$F/single.bin"
 pullc single.bin
@@ -620,7 +622,7 @@ asset single.bin "single 3"
 asset extra.txt extra
 release acme/single v3 12 "$F/single.bin" "$F/extra.txt"
 check "no --asset, more assets later: error" "$(git assetsync status 2>&1 | head -1)" \
-  "error: single.bin: release v3 of acme/single has 2 assets: extra.txt, single.bin - choose one with 'git assetsync set single.bin --asset PATTERN'"
+  "error: single.bin: 2 assets (extra.txt, single.bin), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
 cd "$T"
 
 # a re-uploaded asset (same tag, other content) is an upstream change
@@ -1199,7 +1201,7 @@ check "GitLab: URL of a page of the project" "$(rc asd add https://gitlab.com/gr
 check "... same source" "$(reg file.gl2.txt.source)" "grp/proj"
 git reset -q --hard; rm -f gl2.txt
 check "GitLab: several assets need --asset" "$(asd add https://gitlab.com/grp/proj x.bin 2>&1)" \
-  "error: release v1 of grp/proj has 2 assets: gl.bin, gl.txt - choose one with --asset PATTERN"
+  "error: x.bin: 2 assets (gl.bin, gl.txt), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
 
 # a new release: pending, pull with release notes
 asset gl.bin "gl 2"
@@ -1374,10 +1376,10 @@ git reset -q --hard
 asset other.txt other
 release acme/src v3 12 "$F/s1.txt" "$F/other.txt"
 check "two assets now: hint at set" "$(git assetsync status a.txt 2>&1 | head -1)" \
-  "error: a.txt: release v3 of acme/src has 2 assets: other.txt, s1.txt - choose one with 'git assetsync set a.txt --asset PATTERN'"
+  "error: a.txt: 2 assets (other.txt, s1.txt), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
 quiet asd add --force acme/src a.txt --asset 's1*'
 git commit -q --no-edit
-check "add --force: asset chosen" "$(reg file.a.txt.asset) $(st a.txt)" "s1* "
+check "add --force: asset chosen" "$(reg file.a.txt.asset) $(st a.txt)" "'s1*' "
 
 
 # =============================================================================
@@ -1397,11 +1399,11 @@ new_repo r16
 addc acme/set x.bin --asset x.bin --release v1
 addc acme/set y.bin --asset y.bin --release v1
 check "set without options: shows the entry" "$(git assetsync set x.bin)" \
-  "git assetsync set x.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset x.bin --no-sourcecode --no-filter"
+  "git assetsync set x.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset x.bin --no-exclude-asset --no-sourcecode --no-filter"
 check "set: what it shows changes nothing" "$(eval "$(git assetsync set x.bin)"; git status --porcelain)" "nothing to change"
 check "set --list" "$(git assetsync set --list)" \
-  "git assetsync set x.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset x.bin --no-sourcecode --no-filter
-git assetsync set y.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset y.bin --no-sourcecode --no-filter"
+  "git assetsync set x.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset x.bin --no-exclude-asset --no-sourcecode --no-filter
+git assetsync set y.bin --source https://github.com/acme/set --release v1 --no-prerelease --asset y.bin --no-exclude-asset --no-sourcecode --no-filter"
 check "set --list: no PATH" "$(git assetsync set --list x.bin 2>&1)" "error: --list takes no PATH and no options"
 check "set: without PATH" "$(git assetsync set --latest 2>&1)" \
   "error: give the entries to change or show (PATH...), or --list for all"
@@ -1450,7 +1452,7 @@ git reset -q --hard HEAD~1
 quiet git assetsync set y.bin --asset 'y*'
 pullc y.bin
 check "set --asset, same file: recorded" "$(git log -1 --format=%s) $(reg file.y.bin.asset)" \
-  "[assetsync] Record y.bin as acme/set v1 (2026-10-10, file unchanged) y*"
+  "[assetsync] Record y.bin as acme/set v1 (2026-10-10, file unchanged) 'y*'"
 quiet git assetsync set y.bin --asset x.bin
 check "set --asset: pending" "$(st y.bin)" "P"
 pullc y.bin
@@ -1525,7 +1527,7 @@ check "dir: message" "$(git log -1 --format=%B | grep -E '^(\[assetsync\] Add|Fi
   "[assetsync] Add lib/zlib/ from madler/zlib v1.3 (2026-10-10) Filter:  zwin Files:   3 added, 0 removed, 0 changed (3 in total) "
 check "dir: clean" "$(st) $(git status --porcelain)" " "
 check "dir: nothing to pull" "$(git assetsync status | tail -1)" "nothing to pull, 1 directory unmodified"
-check "dir: status -v" "$(git assetsync status -v | grep -c "unmodified: lib/zlib/  (zlib-\*-win64.zip from madler/zlib, latest release, filter zwin;")" "1"
+check "dir: status -v" "$(git assetsync status -v | grep -c "unmodified: lib/zlib/  ('zlib-\*-win64.zip' from madler/zlib, latest release, filter zwin;")" "1"
 check "dir: shown with /" "$(cd lib && git assetsync status -v | grep -c 'unmodified: zlib/ ')" "1"
 
 # a new release: files changed, removed, added
@@ -3452,15 +3454,18 @@ rm -rf "$GH/github.com/acme/sarc/1/source" && cp -R "$F/sc2" "$GH/github.com/acm
 check "tag moved: pending" "$(git assetsync status -s)|$(git assetsync status | grep -c 'asset replaced in release v1')" "P  d/|1"
 pullc d
 check "... pull takes it" "$(cat d/lib/a.c) $(st)" "two "
-# with assets: both; a file takes one
+# with assets: both; a file needs one file in the end
 addc acme/sarc both/ --sourcecode zip --asset '*'
 check "with --asset: both" "$(ls both | oneline)" "bin.txt sarc-v1.zip "
 check "file: one archive" "$(rc git assetsync add acme/sarc s.zip --sourcecode zip)|$(head -c 2 s.zip)" "0|PK"
 git commit -qm s.zip
-check "file: not with --asset" "$(git assetsync add acme/sarc s2.zip --sourcecode zip --asset 'bin*' 2>&1)" \
-  "error: a file takes one asset: an asset pattern or the source code, not both"
-check "set: not both for a file" "$(git assetsync set s.zip --asset 'bin*' 2>&1)" \
-  "error: s.zip: a file takes one asset: --asset or --sourcecode, not both"
+check "file: with --asset, no filter" "$(git assetsync add acme/sarc s2.zip --sourcecode zip --asset 'bin*' 2>&1)" \
+  "error: s2.zip: 2 assets (bin.txt, sarc-v1.zip), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
+filt only-bin --include bin.txt
+addc acme/sarc s2.txt --sourcecode zip --asset 'bin*' --filter only-bin
+check "file: with --asset and a filter" "$(cat s2.txt)|$(reg file.s2.txt.asset)" "$(cat "$F/bin.txt")|'bin*'"
+check "set: --asset for a file with sourcecode, no filter: taken" "$(git assetsync set -n s.zip --asset 'bin*')" \
+  "would: s.zip: asset (none) -> 'bin*'"
 check "format not offered" "$(git assetsync add acme/sarc x.7z --sourcecode 7z 2>&1)" \
   "error: https://github.com/acme/sarc: no source code archive '7z' (formats: zip, tar.gz)"
 check "set: format checked" "$(git assetsync set d --sourcecode tgz 2>&1)" \
@@ -3470,9 +3475,9 @@ asset sarc-v2.zip "not the source"; release --src "$F/sc2" acme/sarc v2 11 "$F/b
 check "name taken by an asset" "$(git assetsync pull both 2>&1)" \
   "error: both/: the source code archive and an asset of release v2 of acme/sarc are both named sarc-v2.zip - take them with two entries"
 check "set --no-asset with sourcecode: none" "$(git assetsync set -n both --no-asset)" \
-  "would: both/: asset * -> (none)"
+  "would: both/: asset '*' -> (none)"
 check "set --no-sourcecode: the assets" "$(git assetsync set both --no-sourcecode --no-asset | head -2)" \
-  "both/: asset * -> (all)
+  "both/: asset '*' -> (all)
 both/: source code zip -> (none)"
 git commit -qm set
 pullc both
@@ -3554,6 +3559,104 @@ elif ln -s "$T/r41" "$T/l41" 2>/dev/null; then
 else
   echo "skipped: no symlinks here"
 fi
+
+# =============================================================================
+section "42. Several asset patterns; a file takes all matching assets"
+# =============================================================================
+cd "$T"
+mkdir -p "$T/fw1"; printf 'hex 1\n' > "$T/fw1/app.hex"; printf 'notes\n' > "$T/fw1/notes.txt"
+mkarchive "$F/app-1.zip" "$T/fw1"
+asset app-1.txt "readme 1"
+release acme/hexfw v1 10 "$F/app-1.zip" "$F/app-1.txt"
+new_repo r42
+filt fw --extract '*.zip' --include '*.hex'
+addc acme/hexfw app.hex --asset 'app-*.zip' --filter fw --asset 'app-*.hex'
+check "zip: the hex from it" "$(cat app.hex)" "hex 1"
+check "... one value, quoted as in a shell" "$(reg file.app.hex.asset)" "'app-*.zip' 'app-*.hex'"
+check "... status -v" "$(git assetsync status -v | grep -c "'app-\*.zip' 'app-\*.hex' from acme/hexfw")" "1"
+check "... set shows it" "$(git assetsync set app.hex | grep -o -- '--asset .* --no-sourcecode')" \
+  "--asset 'app-*.zip' --asset 'app-*.hex' --no-exclude-asset --no-sourcecode"
+printf 'hex 2\n' > "$F/app-2.hex"
+release acme/hexfw v2 11 "$F/app-2.hex" "$F/app-1.txt"
+pullc app.hex
+check "hex: the asset itself" "$(cat app.hex)|$(st)" "hex 2|"
+check "... verify" "$(git assetsync verify app.hex)" "app.hex: verified (v2)"
+check "none matching: all patterns named" "$(asd add acme/hexfw x.bin --asset '*.deb' --asset '*.rpm' 2>&1)" \
+  "error: release v2 of acme/hexfw has no asset matching '*.deb', '*.rpm' (assets: app-1.txt, app-2.hex)"
+check "a pattern twice: once" "$(asd add -n acme/hexfw y.hex --asset '*.hex' --asset '*.hex' | head -1)" \
+  "would add y.hex from acme/hexfw v2 (app-2.hex, latest release)"
+check "empty pattern: refused" "$(asd add acme/hexfw y.hex --asset '' 2>&1)" \
+  "error: --asset: a pattern must not be empty"
+check "a file, all assets, a filter leaves one" \
+  "$(rc asd add acme/hexfw z.hex --filter fw)|$(cat z.hex)|$(reg file.z.hex.asset)" "0|hex 2|"
+git reset -q --hard
+check "set --asset: several, replaced" "$(asd set app.hex --asset '*.hex' --asset 'my app*.zip' | head -1)" \
+  "app.hex: asset 'app-*.zip' 'app-*.hex' -> '*.hex' 'my app*.zip'"
+check "... quoted as in a shell" "$(reg file.app.hex.asset)" "'*.hex' 'my app*.zip'"
+check "... the same in another order: no change" "$(asd set app.hex --asset 'my app*.zip' --asset '*.hex')" "nothing to change"
+check "... set --no-asset: all" "$(asd set app.hex --no-asset | head -1; reg file.app.hex.asset)" \
+  "app.hex: asset '*.hex' 'my app*.zip' -> (all)"
+git reset -q --hard
+# --exclude-asset: all assets except those (exclude beats --asset)
+quiet asd add acme/hexfw all/ --exclude-asset '*.txt' && git commit -q --no-edit
+check "exclude-asset: all but those" "$(ls all | oneline)|$(reg dir.all.exclude-asset)" "app-2.hex |'*.txt'"
+check "... status -v" "$(git assetsync status -v | grep -c "all assets except '\*.txt' from acme/hexfw")" "1"
+check "... set shows it" "$(asd set all | grep -o -- '--no-asset .* --no-sourcecode')" \
+  "--no-asset --exclude-asset '*.txt' --no-sourcecode"
+check "... a file without filter: one left" "$(asd add -n acme/hexfw only.hex --exclude-asset '*.txt' | head -1)" \
+  "would add only.hex from acme/hexfw v2 (app-2.hex, latest release)"
+check "... beats --asset: none left" "$(asd add acme/hexfw n.bin --asset '*.txt' --exclude-asset 'app-*' 2>&1)" \
+  "error: release v2 of acme/hexfw has no asset matching '*.txt' and not matching 'app-*' (assets: app-1.txt, app-2.hex)"
+check "... set: replaced" "$(asd set -n all --exclude-asset '*.hex' --exclude-asset '*.sig')" \
+  "would: all/: exclude-asset '*.txt' -> '*.hex' '*.sig'"
+check "... set --no-exclude-asset" "$(asd set all --no-exclude-asset | head -1; reg dir.all.exclude-asset)" \
+  "all/: exclude-asset '*.txt' -> (none)"
+check "... then pending" "$(st all)" "P"
+check "... empty pattern: refused" "$(asd add acme/hexfw e/ --exclude-asset '' 2>&1)" \
+  "error: --exclude-asset: a pattern must not be empty"
+git reset -q --hard
+# an older value: a single pattern without quotes; a bad one: an error
+check "unquoted single pattern" "$(git config -f .git-assetsync file.app.hex.asset 'app-*.hex'; st)" ""
+git config -f .git-assetsync file.app.hex.asset "'app-*.hex"
+check "unbalanced quote: an error" "$(git assetsync status 2>&1 | head -1)" \
+  "error: app.hex: cannot read asset = 'app-*.hex: No closing quotation - correct it with 'git assetsync edit'"
+check "... status -v: only that entry" "$(git assetsync status -v --no-fetch 2>&1 | grep -c "'app-\*.hex from acme/hexfw")" "1"
+check "... set --list: an error for it" "$(git assetsync set --list 2>&1 | grep -c '^error: app.hex: ')" "1"
+check "... set: exit code" "$(rc git assetsync set --list)" "2"
+check "... set of something else: not blocked" "$(rc asd set -n app.hex --release v2)" "0"
+check "... set --asset replaces it" "$(asd set -n app.hex --asset '*.hex')" \
+  "would: app.hex: asset 'app-*.hex -> '*.hex'"
+git config -f .git-assetsync file.app.hex.asset "'' '*.hex'"
+check "empty pattern in the registry: an error" "$(git assetsync status 2>&1 | head -1)" \
+  "error: app.hex: cannot read asset = '' '*.hex': a pattern must not be empty - correct it with 'git assetsync edit'"
+git checkout -q -- .git-assetsync
+# --asset takes one pattern: a PATH after it stays a PATH
+check "--asset, then PATH" "$(asd set -n --asset '*.hex' app.hex | head -1)" \
+  "would: app.hex: asset 'app-*.zip' 'app-*.hex' -> '*.hex'"
+check "add: --asset before SOURCE PATH" "$(rc asd add -n --asset '*.hex' acme/hexfw w.hex)" "0"
+# patterns checked first: no request, nothing shown before
+reset_calls
+check "add: empty pattern, nothing asked" "$(asd add acme/hexfw y.hex --asset '' 2>&1; calls)" \
+  "error: --asset: a pattern must not be empty
+0"
+check "set: empty pattern, nothing shown" "$(asd set -n app.hex --release v1 --exclude-asset '' 2>&1)" \
+  "error: --exclude-asset: a pattern must not be empty"
+# verify: an entry named once
+addc acme/hexfw h.hex --asset '*.hex'
+git config -f .git-assetsync file.h.hex.asset '*'
+check "verify: 2 assets, named once" "$(git assetsync verify h.hex 2>&1)" \
+  "error: h.hex: 2 assets (app-1.txt, app-2.hex), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
+git checkout -q -- .git-assetsync
+filt every --include '*'
+addc acme/hexfw h2.hex --asset '*.hex' --filter every
+git config -f .git-assetsync file.h2.hex.asset '*'
+check "verify: 2 files, named once" "$(git assetsync verify h2.hex 2>&1)" \
+  "error: h2.hex: the filter gives 2 files, a file needs exactly one - narrow the filter, or add 'h2.hex/' as a directory"
+git checkout -q -- .git-assetsync
+# the source archive isn't an uploaded asset: --exclude-asset doesn't apply to it
+quiet asd add acme/sarc sc/ --sourcecode zip --exclude-asset '*.zip'
+check "source code, exclude-asset: not shown" \
+  "$(git assetsync status -v --no-fetch | grep -c 'source code (zip) from acme/sarc,')" "1"
 
 # =============================================================================
 echo
