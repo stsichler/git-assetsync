@@ -143,7 +143,7 @@ assetsync --version`. To update, download the script again; the
 changes.
 
 You can also clone the repository and point the alias at the script:
-`main` is the development state, a tag like `v0.27.0` a release. Or let
+`main` is the development state, a tag like `v0.27.1` a release. Or let
 git-assetsync keep a copy of itself in your project – see [Shipping
 git-assetsync with your
 repository](MANUAL.md#shipping-git-assetsync-with-your-repository).
