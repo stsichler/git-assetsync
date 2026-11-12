@@ -4172,7 +4172,8 @@ def cmd_map(args, repo):
             print(f"now using [{rest[-1].scope}] {mapping_text(rest[-1])}")
         return EXIT_OK
     base = repo.base if repo else Path.cwd()
-    d = (base / os.path.expanduser(args.dir)).resolve()
+    # as given, only made absolute: a link on the way stays ('..' by name)
+    d = Path(os.path.abspath(base / os.path.expanduser(args.dir)))
     if not d.is_dir():
         raise FsError(f"{d} is not a directory")
     remove()

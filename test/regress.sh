@@ -2516,6 +2516,24 @@ check "map: --unset by source name" "$(git assetsync source map loc --unset)" \
 check "map: by source name" "$(git assetsync source map loc "$L" | cut -d' ' -f1-2)" \
   "[local] https://github.com/acme/loc"
 check "map: not a directory" "$(git assetsync source map loc "$L/v1/t.bin" 2>&1 | grep -c 'is not a directory')" "1"
+# a link on the way stays in the mapping, absolute or relative (junction on
+# Windows, symlink elsewhere): the path as given, not resolved
+LNL=
+if command -v cygpath >/dev/null; then
+  cmd //c mklink //J "$(cygpath -w "$T/lnL")" "$(cygpath -w "$L")" >/dev/null && LNL=1
+elif ln -s "$L" "$T/lnL" 2>/dev/null; then
+  LNL=1
+fi
+if [ -n "$LNL" ]; then
+  check "map: a link in the path kept" "$(git assetsync source map loc "$T/lnL" | grep -c 'lnL$')" "1"
+  check "map: through the link, the folder used" "$(git assetsync status -s)" ""
+  check "map: a link in a relative path kept" \
+    "$(git assetsync source map loc ../x/../lnL/. | grep -c '[/\\]lnL$')" "1"
+  quiet git assetsync source map loc "$L"
+  if command -v cygpath >/dev/null; then cmd //c rmdir "$(cygpath -w "$T/lnL")"; else rm "$T/lnL"; fi
+else
+  echo "skipped: no symlinks here"
+fi
 # flat: the files of all releases in one folder, rel20260410.7z -> rel20260410
 FL=$T/flatrel
 mkdir -p "$FL/sub" && printf 'ignored\n' > "$FL/sub/x.xml"

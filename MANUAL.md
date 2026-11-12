@@ -707,7 +707,9 @@ GitHub or GitLab – to try a new build in another repository before
 publishing it. The mapping applies to every source with that URL and is
 kept in `.git/config` (`assetsync.<url>.localpath`), with `--global` in
 your global Git config – never in `.git-assetsync`, which keeps the real
-URL.
+URL. DIR is kept as given, only made absolute: a junction, symlink or drive
+letter on the way stays. A relative DIR counts from the real current
+directory; reached through a junction, give DIR absolute.
 
 ```
 ~/build/tool-releases/
