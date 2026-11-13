@@ -812,6 +812,29 @@ git commit -qm edit
 check "... emptied by hand: said" "$(git assetsync add acme/lm lm2.txt --asset lm.txt 2>&1 | grep -c '^warning: .git-assetsync had changes')" "1"
 git reset -q --hard
 
+# a pull staged, not committed yet: no modification - what is committed is
+# compared with the base HEAD's .git-assetsync has
+cd "$T"
+asset sp.txt "sp 1"; release acme/sp v1 10 "$F/sp.txt"
+asset sp.txt "sp 2"; release acme/sp v2 11 "$F/sp.txt"
+asset sp.txt "sp 3"; release acme/sp v3 12 "$F/sp.txt"
+mkdir -p "$T/spd1" "$T/spd2" && echo a > "$T/spd1/a.txt" && echo b > "$T/spd1/b.txt" && echo a2 > "$T/spd2/a.txt"
+mkarchive "$F/spd-1.zip" "$T/spd1" && mkarchive "$F/spd-2.zip" "$T/spd2"
+release acme/spd v1 10 "$F/spd-1.zip"
+new_repo r4s
+addc acme/sp sp.txt --asset sp.txt --release v1
+filt spd --extract
+addc acme/spd spd/ --asset 'spd-*.zip' --filter spd
+release acme/spd v2 11 "$F/spd-2.zip"
+quiet git assetsync pull --release v2 sp.txt
+quiet git assetsync pull spd
+check "pull staged: not modified" "$(git assetsync status -s | oneline)" "P  sp.txt "
+check "... a second pull, nothing discarded" \
+  "$(git assetsync pull --release v3 sp.txt 2>&1 | grep -c discard) $(cat sp.txt)" "0 sp 3"
+git commit -q --no-edit
+check "... committed: the note isn't in the message" "$(msg | grep -c 'were discarded')" "0"
+check "... then: pending only (selects v1)" "$(git assetsync status -s | oneline)" "P  sp.txt "
+
 # an entry written by hand (no base yet): pull fetches it
 cd "$T"
 asset hand.txt hand
