@@ -354,7 +354,8 @@ from the [download cache](#download-cache) if possible.
 `pull` refuses an entry with local modifications or a missing one (see
 [No local modifications](#no-local-modifications)); the others are pulled
 anyway, and the exit code is 2. An entry not synced yet is taken as `add`
-would.
+would. What `pull` staged is no modification: pulling again before the
+commit works.
 
 | Option | Meaning |
 |---|---|

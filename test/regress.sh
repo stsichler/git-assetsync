@@ -877,6 +877,12 @@ echo staged > spd/a.txt && git add spd/a.txt && echo a3 > spd/a.txt
 check "missing file and a staged change: pull refused" \
   "$(git assetsync pull spd 2>&1 | grep -c 'local modifications NOT ALLOWED')" "1"
 git reset -q --hard
+# add --overwrite over committed files (not an entry in HEAD yet): no modification
+echo mine > ow.txt && mkdir -p owd && echo x > owd/a.txt && git add ow.txt owd && git commit -qm mine
+quiet git assetsync add --overwrite acme/sp ow.txt --asset sp.txt
+quiet git assetsync add --overwrite acme/spd owd/ --asset spd-1.zip --release v1 --filter spd
+check "add --overwrite over committed files: not modified" "$(git assetsync status -s ow.txt owd)" ""
+check "... after the commit neither" "$(git commit -q --no-edit; git assetsync status -s ow.txt owd)" ""
 
 # an entry written by hand (no base yet): pull fetches it
 cd "$T"

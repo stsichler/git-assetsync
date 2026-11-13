@@ -3691,7 +3691,7 @@ def base_files(repo, entry):
             if k == "blob"]
 
 
-def items_match_base(repo, st, items, drop=(), entry=None):
+def items_match_base(repo, st, items, drop=(), entry=None, quiet=False):
     """Are these files [(mode, id, path in the repository)] - of HEAD, or of
     the working tree - the base recorded in .git-assetsync (without the
     paths in drop): the same paths,
@@ -3699,7 +3699,8 @@ def items_match_base(repo, st, items, drop=(), entry=None):
     its base blob that blob stored as it would be now (.gitattributes
     changed since: LFS, line endings)? Re-storing reads the whole content
     (through the LFS filters too): only for the files that differ, all at
-    once (stored_now). entry: whose base (default: st.entry)."""
+    once (stored_now). entry: whose base (default: st.entry). quiet: a
+    base that can't be read is no match, without a warning."""
     entry = entry or st.entry
     if not entry.blob:
         return False
@@ -3721,7 +3722,7 @@ def items_match_base(repo, st, items, drop=(), entry=None):
         repo.now.update(repo.stored_now(todo))
         return all(now[p][1] == repo.now[(base[p][1], p)] for p in differ)
     except FsError as e:
-        return base_unavailable(st, e)
+        return False if quiet else base_unavailable(st, e)
 
 
 def base_paths(repo, entry):
@@ -3776,14 +3777,17 @@ def release_tree(repo, rel, items, paths=None):
 def committed_entry(repo, entry):
     """The entry as HEAD's .git-assetsync has it if its base is another
     there (a pull staged, not committed yet) and here - what the committed
-    files are compared with; else entry itself."""
+    files are compared with; None if it has none there (not an entry of
+    that kind, not synced: added since); else entry itself."""
     if repo.committed_reg is None:          # read once
         repo.committed_reg = Registry(repo, committed=True)
     reg = repo.committed_reg
     if reg.kinds.get(entry.rel) != entry.reg.kinds.get(entry.rel):
-        return entry
+        return None
     old = Entry(reg, entry.rel)
-    if not old.blob or old.blob == entry.blob or base_files(repo, old) is None:
+    if not old.blob:
+        return None
+    if old.blob == entry.blob or base_files(repo, old) is None:
         return entry
     return old
 
@@ -3809,13 +3813,17 @@ def index_items(repo, head, paths):
 
 def synced_staged(repo, st, obj, index, drop=()):
     """Committed files that differ from the base: is it a sync staged, not
-    committed yet? The index (index_items) is the base and HEAD is the
-    base of the entry in HEAD's .git-assetsync (another one)."""
+    committed yet? The index (index_items) is the base, and HEAD is the
+    base of the entry in HEAD's .git-assetsync (another one) - or it has
+    none there (e.g. add --overwrite over a committed file). An old base
+    that can't be read: not (no warning, the entry has another one now)."""
     old = committed_entry(repo, st.entry)
     if old is st.entry or not items_match_base(repo, st, index, drop=drop):
         return False
+    if old is None:
+        return True
     head = head_items(repo, st.entry, obj, {p for _, _, p in base_files(repo, old)})
-    return bool(head) and items_match_base(repo, st, head, entry=old)
+    return bool(head) and items_match_base(repo, st, head, entry=old, quiet=True)
 
 
 def local_state(repo, st):
