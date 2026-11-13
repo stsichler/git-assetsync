@@ -3002,9 +3002,9 @@ SPEC_KEYS = ("release", "prerelease")
 @functools.lru_cache(maxsize=None)
 def split_words(key, value):
     """The patterns of the value of key (asset, exclude-asset): separated by
-    blanks, quoted like in a shell - read with shlex.split, written with
-    shlex.join (as filter steps and git-filesync's include / exclude). A
-    tuple: cached."""
+    blanks, quoted like in a shell ('my file'; git config itself removes
+    "..." before) - read with shlex.split, written with shlex.join (as
+    filter steps and git-filesync's include / exclude). A tuple: cached."""
     try:
         words = tuple(shlex.split(value or ""))
         if not all(words):
