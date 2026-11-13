@@ -848,6 +848,35 @@ check "... the note isn't in the message (never committed)" "$(msg | grep -c 'we
 echo x > spd/b.txt && git add spd/b.txt && rm spd/b.txt
 check "a directory: a file only staged (not one of its release's)" "$(git assetsync status -s spd)" ""
 git reset -q --hard
+# ... but not if the files aren't what the staged registry says
+asset sp.txt "sp 4"; release acme/sp v4 13 "$F/sp.txt"
+quiet git assetsync pull --release v4 sp.txt
+git restore --source=HEAD -SW sp.txt
+check "registry staged, the file back as committed: modified" "$(git assetsync status -s sp.txt) $(git assetsync pull --release v4 sp.txt 2>&1 | grep -c 'up to date')" "PM sp.txt 0"
+git reset -q --hard
+quiet git assetsync pull --release v4 sp.txt
+git restore --staged sp.txt
+check "... the file not staged: modified" "$(git assetsync status -s sp.txt)" "PM sp.txt"
+git reset -q --hard
+git config -f .git-assetsync file.sp.txt.blob "$(echo other | git hash-object -w --stdin)"
+check "... only the registry changed (by hand): modified" "$(git assetsync status -s sp.txt)" "PM sp.txt"
+git reset -q --hard
+# pull -W --overwrite: committed modifications stay
+echo mine > sp.txt && git commit -qam mine
+check "pull -W --overwrite: committed modifications aren't discarded" \
+  "$(git assetsync pull -W --overwrite --release v4 sp.txt 2>&1 | grep -c discard) $(cat sp.txt)" "0 sp 4"
+git reset -q --hard HEAD~1
+# a directory with a file missing, another only staged: not pulled over it
+mkdir -p "$T/spd3" && echo a3 > "$T/spd3/a.txt" && echo b3 > "$T/spd3/b.txt"
+mkarchive "$F/spd-3.zip" "$T/spd3"
+release acme/spd v3 12 "$F/spd-3.zip"
+pullc spd
+release acme/spd v4 13 "$F/spd-2.zip"
+rm spd/b.txt
+echo staged > spd/a.txt && git add spd/a.txt && echo a3 > spd/a.txt
+check "missing file and a staged change: pull refused" \
+  "$(git assetsync pull spd 2>&1 | grep -c 'local modifications NOT ALLOWED')" "1"
+git reset -q --hard
 
 # an entry written by hand (no base yet): pull fetches it
 cd "$T"
@@ -2830,7 +2859,11 @@ printf 'printf "[file\\n" >> "$1"\n' > "$T/ed-broken.sh"
 OUT=$(GIT_EDITOR="sh '$T/ed-broken.sh'" git assetsync edit 2>&1); RC=$?
 check "edit: broken file" "$RC $(echo "$OUT" | grep -c "not staged; fix it with 'git assetsync edit'")" "2 1"
 check "edit: broken: nothing staged" "$(git diff --cached --name-only)" ""
-git checkout -q .git-assetsync
+printf 'grep -v "^\\[file\$" "$1" > "$1.tmp" && mv "$1.tmp" "$1" && echo "# fixed" >> "$1"\n' > "$T/ed-fix.sh"
+check "edit: a broken file can be fixed with it" \
+  "$(GIT_EDITOR="sh '$T/ed-fix.sh'" git assetsync edit 2>&1 | grep -c 'cannot parse') $(git status --porcelain .git-assetsync)" \
+  "0 M  .git-assetsync"
+git reset -q --hard
 check "edit: editor fails" "$(GIT_EDITOR=false git assetsync edit 2>&1)" "error: the editor failed; nothing staged"
 printf ': > "$1"\n' > "$T/ed-empty.sh"
 GIT_EDITOR="sh '$T/ed-empty.sh'" git assetsync edit >/dev/null 2>&1

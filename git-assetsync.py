@@ -2659,6 +2659,7 @@ class Repo:
     def forget(self, rel):
         """The working tree file rel changes: what is known about it goes."""
         self.work.pop(rel, None)
+        self.index_changes = None             # the index changes too
         if self.diffs:
             self.diffs[0].discard(rel)
 
@@ -3310,6 +3311,13 @@ def edit_config(text, items, ops):
     return "\n".join(lines).rstrip("\n") + "\n", items
 
 
+def registry_unstaged(repo):
+    """Has .git-assetsync changes that aren't staged (also untracked or
+    deleted)? Asked of git, as it compares (line endings) - not parsed."""
+    p = repo.git(["status", "--porcelain", "-z", "--", lit(REGISTRY)], check=False)
+    return p.returncode == 0 and p.stdout[1:2] not in (b"", b" ")
+
+
 class Registry:
     """The repository's .git-assetsync: [source], [file] and [dir] sections.
     files holds the entries of both kinds, kinds their kind."""
@@ -3522,12 +3530,6 @@ class Registry:
         self.files[new] = self.files.pop(old)
         self.kinds[new] = self.kinds.pop(old)
 
-    def unstaged(self):
-        """Has the registry changes that aren't staged (also untracked or
-        deleted)? Asked of git, as it compares (line endings)."""
-        p = self.repo.git(["status", "--porcelain", "-z", "--", lit(REGISTRY)], check=False)
-        return p.returncode == 0 and p.stdout[1:2] not in (b"", b" ")
-
     def finish(self, unstaged=None):
         """Stage the registry (or its removal when empty), written in working
         tree form - line endings as .gitattributes / core.autocrlf say.
@@ -3536,7 +3538,7 @@ class Registry:
         staged too: said."""
         if self.dry_run:
             return
-        if self.unstaged() if unstaged is None else unstaged:
+        if registry_unstaged(self.repo) if unstaged is None else unstaged:
             warn(f"{REGISTRY} had changes that were not staged - they are staged now too")
         self.flush()
         if self.path.exists():
@@ -3786,6 +3788,36 @@ def committed_entry(repo, entry):
     return old
 
 
+def head_items(repo, entry, obj, paths):
+    """The committed files [(mode, id, path)] of these paths of an entry -
+    obj: what HEAD has at its path (head_entry)."""
+    if not obj or obj[1] != ("tree" if entry.is_dir else "blob"):
+        return []
+    if not entry.is_dir:
+        return [(obj[0], obj[2], entry.rel)]
+    return [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(obj[2])
+            if k == "blob" and f"{entry.rel}/{p}" in paths]
+
+
+def index_items(repo, head, paths):
+    """What a commit would take of these paths: HEAD's files (head) where
+    nothing is staged, else the staged ones."""
+    staged = repo.staged()
+    return [i for i in head if i[2] not in staged] + \
+        [(v[0], v[1], p) for p, v in staged.items() if p in paths and v]
+
+
+def synced_staged(repo, st, obj, index, drop=()):
+    """Committed files that differ from the base: is it a sync staged, not
+    committed yet? The index (index_items) is the base and HEAD is the
+    base of the entry in HEAD's .git-assetsync (another one)."""
+    old = committed_entry(repo, st.entry)
+    if old is st.entry or not items_match_base(repo, st, index, drop=drop):
+        return False
+    head = head_items(repo, st.entry, obj, {p for _, _, p in base_files(repo, old)})
+    return bool(head) and items_match_base(repo, st, head, entry=old)
+
+
 def local_state(repo, st):
     """The committed and working tree state of an entry: of the files it
     got from its release (its base) - in a directory only those, other
@@ -3799,25 +3831,11 @@ def local_state(repo, st):
     known = bool(entry.blob)
     paths = {p for _, _, p in base} if entry.is_dir else {entry.rel}
     obj = repo.head_entry(entry.rel)          # (mode, type, id)
-    head = []                 # the committed files of the release [(mode, id, path)]
-    if obj and obj[1] == ("tree" if entry.is_dir else "blob"):
-        head = [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(obj[2])
-                if k == "blob" and f"{entry.rel}/{p}" in paths] if entry.is_dir else \
-            [(obj[0], obj[2], entry.rel)]
+    head = head_items(repo, entry, obj, paths)    # the committed files of the release
     if obj and entry.is_dir and obj[1] != "tree":
         st.committed = "adapted"             # committed as a file
-    elif obj and known:
-        # compared with the base HEAD's registry has: a pull staged isn't a modification
-        old = committed_entry(repo, entry)
-        if old is not entry and entry.is_dir:
-            ours = {p for _, _, p in base_files(repo, old)}
-            head_old = [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(obj[2])
-                        if k == "blob" and f"{entry.rel}/{p}" in ours]
-        else:
-            head_old = head
-        if head_old:
-            st.committed = "unmodified" if items_match_base(repo, st, head_old, entry=old) \
-                else "adapted"
+    elif head and known:
+        st.committed = "unmodified" if items_match_base(repo, st, head) else "adapted"
     files = [p for p in paths if (repo.top / p).is_file()]
     if not files:
         st.worktree = "deleted" if head else "missing"
@@ -3836,29 +3854,34 @@ def local_state(repo, st):
         st.local = "clean" if st.committed == "unmodified" else "modified"
     else:
         now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
-        # the index too: what a commit would take (HEAD where nothing is staged)
-        staged = repo.staged()
-        index = [i for i in head if i[2] not in staged] + \
-            [(v[0], v[1], p) for p, v in staged.items() if p in paths and v]
+        # the index too: what a commit would take
+        index = index_items(repo, head, paths)
         st.local = "clean" if items_match_base(repo, st, now) and (
-            not paths & staged.keys() or items_match_base(repo, st, index)) else "modified"
+            not paths & repo.staged().keys() or items_match_base(repo, st, index)) else "modified"
+        if st.local == "clean" and st.committed == "adapted" and \
+                synced_staged(repo, st, obj, index):
+            st.committed = "unmodified"
 
 
 def others_modified(repo, st):
     """A directory with files of its release gone (st.gone): are the others
-    modified, committed or not? For pull (its release may drop the gone ones
-    too) and add --force - status only says missing."""
+    modified - committed, staged or not? For pull (its release may drop the
+    gone ones too) and add --force - status only says missing."""
     entry, gone = st.entry, set(st.gone)
     if not entry.is_dir or not entry.blob or len(gone) == st.total:
         return False
     paths = {p for _, _, p in base_files(repo, entry) or []}
     obj = repo.head_entry(entry.rel)
-    head = [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(obj[2])
-            if k == "blob" and f"{entry.rel}/{p}" in paths] if obj and obj[1] == "tree" else []
+    head = head_items(repo, entry, obj, paths)
     with repo.scratch():      # only looks
         now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths - gone).items()]
-        return not items_match_base(repo, st, now, drop=gone) or bool(
-            head and not items_match_base(repo, st, head, drop=gone - {p for _, _, p in head}))
+        index = [i for i in index_items(repo, head, paths) if i[2] not in gone]
+        if not items_match_base(repo, st, now, drop=gone) or (
+                paths & repo.staged().keys() and not items_match_base(repo, st, index, drop=gone)):
+            return True
+        return bool(head) and not items_match_base(
+            repo, st, head, drop=gone - {p for _, _, p in head}) and \
+            not synced_staged(repo, st, obj, index, drop=gone)
 
 
 def has_release(origin, tag):
@@ -4803,22 +4826,26 @@ def report_staged(repo, name, msg, done):
           f"message; a copy stays in {copy})")
 
 
-def save_discarded(repo, worktree, index=(), known=None, before=None, synced=None):
+def save_discarded(repo, worktree, index=(), known=None):
     """Before files are replaced or deleted - in the working tree (paths
-    worktree) and in the index (paths index): content that would be lost -
-    not committed, not staged where the index stays, not in the working
-    tree where that stays - is kept as an object (a staged version already
-    is one), and how to get it back is printed (restore, rm -f,
-    --overwrite). known: {path: blob} of working tree files already hashed.
-    before(paths): called first with the paths of that content. With -n
-    (repo.dry_run) only that. synced: {path: blob} of what releases gave
-    (the base of entries) - not lost, pull gets it again."""
+    worktree) and in the index (paths index): content that would be lost
+    (find_discarded) is kept as an object, and how to get it back is
+    printed (restore, rm -f, --overwrite)."""
+    keep_discarded(repo, find_discarded(repo, worktree, index, known))
+
+
+def find_discarded(repo, worktree, index=(), known=None, synced=None):
+    """Content that replacing or deleting these files - in the working tree
+    (paths worktree) and in the index (paths index) - would lose: not
+    committed, not staged where the index stays, not in the working tree
+    where that stays, not what a release gave (synced: {path: blob} of the
+    entries' bases - pull gets it again). known: {path: blob} of working
+    tree files already hashed. Returns [(path, how, blob)]: blob None for a
+    working tree file (not stored yet), a staged version's ", as staged"."""
     worktree, index = set(worktree), set(index)
     paths = sorted(worktree | index)
     if not paths:
-        if before:
-            before(set())
-        return
+        return []
     files = [p for p in paths if (repo.top / p).is_file() and not (repo.top / p).is_symlink()]
     known = dict(known or {})
     rest = [p for p in files if p not in known]
@@ -4838,15 +4865,17 @@ def save_discarded(repo, worktree, index=(), known=None, before=None, synced=Non
     # a staged version that is in the working tree stays there or is kept with it
     gone = [p for p in index if staged.get(p)
             and staged[p] not in (head.get(p), known.get(p), synced.get(p))]
-    if before:
-        before(set(lost) | set(gone))
-    if repo.dry_run:
-        return
-    # as they are (no filters): `git show` gives the file back exactly
-    ids = repo.git(["hash-object", "-w", "--no-filters", "--stdin-paths"],
-                   data="\n".join(lost).encode("utf-8")).stdout.decode().split() if lost else []
-    named = sorted([(p, "", oid) for p, oid in zip(lost, ids)]
-                   + [(p, ", as staged", staged[p]) for p in gone])
+    return [(p, "", None) for p in lost] + [(p, ", as staged", staged[p]) for p in gone]
+
+
+def keep_discarded(repo, found):
+    """Keep what find_discarded() found (working tree files as they are, no
+    filters: `git show` gives them back exactly), and say so."""
+    lost = [p for p, _, oid in found if oid is None]
+    ids = dict(zip(lost, repo.git(["hash-object", "-w", "--no-filters", "--stdin-paths"],
+                                  data="\n".join(lost).encode("utf-8")).stdout.decode().split())) \
+        if lost else {}
+    named = sorted((p, how, oid or ids[p]) for p, how, oid in found)
     for path, how, oid in named:
         print(f"{paint('discarded:', 'yellow')} {path}{how} (git show {oid[:12]} to get it back)")
 
@@ -4902,7 +4931,7 @@ def in_the_way(repo, rel, new, base, there):
     return sorted(found)
 
 
-def install_entries(repo, jobs, discarding=None, worktree_only=False, synced=None):
+def install_entries(repo, jobs, modified=None, worktree_only=False, synced=None):
     """Install what entries get, all at once - jobs [(entry, its files {path
     in the repository: (file, executable)}, base: the paths of the files it
     has from its release now, overwrite)]: of the files it had, those the
@@ -4915,12 +4944,12 @@ def install_entries(repo, jobs, discarding=None, worktree_only=False, synced=Non
     entry has them. Returns {entry path: its blob (a [file]) or tree, or
     the FsError for it}; files of others there are left alone. With -n
     (repo.dry_run): checked and computed, nothing changed.
-    discarding: {entry path: are committed modifications discarded} of the
-    entries whose local modifications go (pull --overwrite) - each set to
-    whether anything is lost (else the working tree already has what the
-    release gives), with a warning if so. worktree_only (pull -W): the
-    index stays as it is. synced: {path: blob} of the entries' bases - not
-    lost (see save_discarded)."""
+    modified: {entry path: do committed modifications go} of the entries
+    whose local modifications go (pull --overwrite) - those that lose
+    something (else the working tree has what the release gives already)
+    are warned about. worktree_only (pull -W): the index stays as it is.
+    synced: {path: blob} of the entries' bases - not lost (find_discarded).
+    Returns (that, the paths of the entries that lose something)."""
     result, ready = {}, []
     seen = repo.dir_files(*[entry.rel for entry, _, _, _ in jobs]) if jobs else []
     for entry, files, base, overwrite in jobs:
@@ -4944,6 +4973,7 @@ def install_entries(repo, jobs, discarding=None, worktree_only=False, synced=Non
     there = repo.worktree_items([p for _, files, base, _, others in ready
                                  for p in files if p in base or p in others])
     jobs, worktree, index, gone_all, theirs_all = [], [], [], [], []
+    theirs_of = {}            # {entry path: files of others in its way}
     for entry, files, base, overwrite, others in ready:
         # a file in the way that is what the release gives - also its mode: the
         # entry's now
@@ -4964,25 +4994,27 @@ def install_entries(repo, jobs, discarding=None, worktree_only=False, synced=Non
         index += theirs + gone + list(files)
         gone_all += gone
         theirs_all += others
+        theirs_of[entry.rel] = set(theirs)
         jobs.append((entry, files))
     items = sorted((git_mode(v[1]), ids[p], p)
                    for _, files in jobs for p, v in files.items())
-
-    def lose(lost):           # before it is saved and named
-        for entry, _ in jobs:
-            if entry.rel in (discarding or {}):
-                discarding[entry.rel] = discarding[entry.rel] or any(
-                    p == entry.rel or p.startswith(entry.rel + "/") for p in lost)
-                if discarding[entry.rel] and not repo.dry_run:
-                    warn(f"{entry.shown}: discarding local modifications")
-    if worktree_only:
-        index = []
-    save_discarded(repo, worktree, index, {p: o for p, (_, o) in there.items()}, lose, synced)
+    found = find_discarded(repo, worktree, [] if worktree_only else index,
+                           {p: o for p, (_, o) in there.items()}, synced)
+    lost = {p for p, _, _ in found}
+    modified = modified or {}
+    # of its own files, not those of others in its way
+    discarding = {entry.rel for entry, _ in jobs if entry.rel in modified and (
+        modified[entry.rel] or any(p not in theirs_of[entry.rel] and (
+            p == entry.rel or p.startswith(entry.rel + "/")) for p in lost))}
     if repo.dry_run:
         for entry, files in jobs:
             result[entry.rel] = release_tree(repo, entry.rel, items, files) if entry.is_dir \
                 else ids[entry.rel]
-        return result
+        return result, discarding
+    for entry, _ in jobs:
+        if entry.rel in discarding:
+            warn(f"{entry.shown}: discarding local modifications")
+    keep_discarded(repo, found)
     for path in theirs_all:
         full = repo.top / path
         if full.is_dir() and not full.is_symlink():
@@ -5019,7 +5051,7 @@ def install_entries(repo, jobs, discarding=None, worktree_only=False, synced=Non
             result[entry.rel] = tree
         else:
             result[entry.rel] = ids[entry.rel]
-    return result
+    return result, discarding
 
 
 def tree_stats(repo, old, new):
@@ -5215,15 +5247,16 @@ def cmd_pull(ctx, repo, args):
         if job:
             jobs.append(job)
     with keep:                # all at once
-        discarding = {j.entry.rel: j.st.committed == "adapted" for j in jobs if j.discard}
-        installed = install_entries(repo, [(j.entry, j.files, j.base, j.overwrite)
-                                           for j in jobs], discarding,
-                                    worktree_only=args.worktree,
-                                    synced={p: o for j in jobs
-                                            for _, o, p in base_files(repo, j.entry) or []}) \
-            if jobs else {}
+        # committed modifications go - not with -W: HEAD and the index stay
+        modified = {j.entry.rel: j.st.committed == "adapted" and not args.worktree
+                    for j in jobs if j.discard}
+        installed, discarding = install_entries(
+            repo, [(j.entry, j.files, j.base, j.overwrite) for j in jobs], modified,
+            worktree_only=args.worktree,
+            synced={p: o for j in jobs for _, o, p in base_files(repo, j.entry) or []}) \
+            if jobs else ({}, set())
         for job in jobs:      # only if something is lost
-            job.discard = discarding.get(job.entry.rel, False)
+            job.discard = job.entry.rel in discarding
     for job in jobs:
         if isinstance(installed[job.entry.rel], FsError):
             error(str(installed[job.entry.rel]))
@@ -5416,7 +5449,7 @@ def cmd_add(ctx, repo, args):
     with ExitStack() as keep:
         digest, files = filtered_files(repo, reg, new, origin, release, assets, keep)
         mode = None if is_dir else git_mode(files[rel][1])
-        base = install_entries(repo, [(new, files, base, args.overwrite)])[rel]
+        base = install_entries(repo, [(new, files, base, args.overwrite)])[0][rel]
     if isinstance(base, FsError):
         raise base
     stats = tree_stats(repo, old_tree, base) if is_dir else None
@@ -5512,7 +5545,7 @@ def cmd_edit(ctx, repo, args):
         raise FsError(f"no {REGISTRY} yet - take files from release assets with "
                       "'git assetsync add'")
     before = path.read_bytes()
-    unstaged = Registry(repo).unstaged()     # changes by hand before: said when staged
+    unstaged = registry_unstaged(repo)      # changes by hand before: said when staged
     # run like git runs its editor ('git config --edit' exits with 0 even if
     # the editor fails): GIT_EDITOR, core.editor, VISUAL, EDITOR, via sh
     editor = out(repo.git(["var", "GIT_EDITOR"]))
