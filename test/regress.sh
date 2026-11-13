@@ -733,6 +733,85 @@ check "... listed once, NOT ALLOWED" \
 git commit -qam "back"
 check "committed back: clean" "$(st)" ""
 
+# the working tree already has what pull gives (e.g. tried out): nothing is
+# lost - no warning, nothing named, no note in the message
+asset lm.txt "lm 3"
+release acme/lm v3 12 "$F/lm.txt"
+cp "$F/lm.txt" lm.txt
+check "worktree has the release: pull -n --overwrite doesn't say discarding" \
+  "$(git assetsync pull -n --overwrite lm.txt 2>&1 | grep -c discard)" "0"
+check "... pull --overwrite neither" "$(pullcm --overwrite lm.txt 2>&1 | grep -c discard)" "0"
+check "... message without the note" "$(msg | grep -c 'were discarded')" "0"
+check "... taken" "$(cat lm.txt) $(st)" "lm 3 "
+asset lm.txt "lm 4"
+release acme/lm v4 13 "$F/lm.txt"
+cp "$F/lm.txt" lm.txt && git add lm.txt
+check "... staged too: nothing discarded" "$(pullcm --overwrite lm.txt 2>&1 | grep -c discard) $(msg | grep -c 'were discarded') $(cat lm.txt) $(st)" "0 0 lm 4 "
+asset lm.txt "lm 5"
+release acme/lm v5 14 "$F/lm.txt"
+echo staged > lm.txt && git add lm.txt && cp "$F/lm.txt" lm.txt
+check "... but another staged version is lost: said" \
+  "$(pullcm --overwrite lm.txt 2>&1 | grep -cE '^warning: lm.txt: discarding local modifications|^discarded: lm.txt, as staged')" "2"
+check "... not noted in the message (never committed)" "$(msg | grep -c 'were discarded') $(cat lm.txt) $(st)" "0 lm 5 "
+
+# a directory: a file its new release no longer has deleted too
+mkdir -p "$T/lmd1" "$T/lmd2" && echo a > "$T/lmd1/a.txt" && echo b > "$T/lmd1/b.txt" && echo a2 > "$T/lmd2/a.txt"
+mkarchive "$F/lmd-1.zip" "$T/lmd1" && mkarchive "$F/lmd-2.zip" "$T/lmd2"
+release acme/lmd v1 10 "$F/lmd-1.zip"
+filt lmd --extract
+addc acme/lmd lmd/ --asset 'lmd-*.zip' --filter lmd
+release acme/lmd v2 11 "$F/lmd-2.zip"
+echo a2 > lmd/a.txt && rm lmd/b.txt
+check "directory with the release's files: pull --overwrite, nothing discarded" \
+  "$(pullcm --overwrite lmd 2>&1 | grep -c discard) $(msg | grep -c 'were discarded') $(ls lmd | oneline)$(st lmd)" "0 0 a.txt "
+
+# pull -W: to try a release - written to the working tree only
+asset lm.txt "lm 6"
+release acme/lm v6 15 "$F/lm.txt"
+check "pull -W: one line" "$(git assetsync pull -W lm.txt 2>/dev/null)" "lm.txt: updated in the working tree only"
+check "... nothing staged, registry unchanged" \
+  "$(cat lm.txt) $(git status --porcelain | oneline)$(reg file.lm.txt.synced)" "lm 6  M lm.txt v5"
+check "... status: pending and modified" "$(st lm.txt)" "PM"
+check "... pull refuses it" "$(rc git assetsync pull lm.txt)" "2"
+check "... pull -W refuses it as well" "$(rc git assetsync pull -W lm.txt)" "2"
+check "... pull --overwrite takes it, nothing discarded" \
+  "$(pullcm --overwrite lm.txt 2>&1 | grep -c discard) $(cat lm.txt) $(reg file.lm.txt.synced)$(st lm.txt)" "0 lm 6 v6"
+check "pull -W --release: no note on the selection" \
+  "$(git assetsync pull -W --release v5 lm.txt 2>&1)" "lm.txt: updated in the working tree only"
+git restore lm.txt
+check "... git restore goes back" "$(cat lm.txt)$(st lm.txt)" "lm 6"
+check "pull -n -W: as pull -n" "$(git assetsync pull -n -W --release v5 lm.txt 2>&1 | cut -c1-30)" \
+  "would: Update lm.txt to acme/l"
+mkdir -p "$T/lmd3" && echo a3 > "$T/lmd3/a.txt" && echo c > "$T/lmd3/c.txt"
+mkarchive "$F/lmd-3.zip" "$T/lmd3"
+release acme/lmd v3 12 "$F/lmd-3.zip"
+check "pull -W of a directory" "$(git assetsync pull -W lmd 2>/dev/null) $(cat lmd/a.txt) $(git status --porcelain lmd | oneline)" \
+  "lmd/: updated in the working tree only a3  M lmd/a.txt ?? lmd/c.txt "
+check "... pull --overwrite takes it" \
+  "$(pullcm --overwrite lmd 2>&1 | grep -c discard) $(git ls-files lmd | oneline)$(st lmd)" "0 lmd/a.txt lmd/c.txt "
+
+# changes of the registry not staged: staged along, said
+printf '# mine\n' >> .git-assetsync
+asset lm.txt "lm 7"
+release acme/lm v7 16 "$F/lm.txt"
+check "registry changed by hand: pull -n doesn't warn" "$(git assetsync pull -n lm.txt 2>&1 | grep -c '^warning')" "0"
+check "... pull stages it too, says so" "$(git assetsync pull lm.txt 2>&1 | grep '^warning')" \
+  "warning: .git-assetsync had changes that were not staged - they are staged now too"
+check "... staged" "$(git status --porcelain .git-assetsync)" "M  .git-assetsync"
+check "... another command after it: no warning" \
+  "$(git assetsync set lm.txt --release v7 2>&1 | grep -c '^warning')" "0"
+git commit -qm v7
+check "... edit: its own changes not warned about" \
+  "$(GIT_EDITOR='f() { echo "# edited" >> "$1"; }; f' git assetsync edit 2>&1 | grep -c '^warning') $(git status --porcelain .git-assetsync)" "0 M  .git-assetsync"
+git commit -qm edit
+printf '# mine 2\n' >> .git-assetsync
+check "... but those made before" \
+  "$(GIT_EDITOR='f() { echo "# edited" >> "$1"; }; f' git assetsync edit 2>&1 | grep -c '^warning: .git-assetsync had changes that were not staged')" "1"
+git commit -qm edit
+: > .git-assetsync
+check "... emptied by hand: said" "$(git assetsync add acme/lm lm2.txt --asset lm.txt 2>&1 | grep -c '^warning: .git-assetsync had changes')" "1"
+git reset -q --hard
+
 # an entry written by hand (no base yet): pull fetches it
 cd "$T"
 asset hand.txt hand

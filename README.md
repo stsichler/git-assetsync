@@ -202,7 +202,7 @@ Basic commands – what you need day to day:
 | Command | Purpose |
 |---|---|
 | `status [PATH…]` | state of the entries, like `git status`: new releases, local modifications |
-| `pull PATH…`, `pull --all` | update to the selected release (`--release`: once another one) and stage, with a proposed commit message |
+| `pull PATH…`, `pull --all` | update to the selected release (`--release`: once another one) and stage, with a proposed commit message; `-W`: only the working tree, to try it |
 | `diff [PATH…]`, `difftool [PATH…]` | local modifications; `--upstream`: what `pull` would bring |
 | `restore PATH…` | discard local modifications, like `git restore` |
 | `add SOURCE PATH` | take a file or directory from release assets |

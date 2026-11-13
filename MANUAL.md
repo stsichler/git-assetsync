@@ -146,7 +146,9 @@ binary or generated file can't be merged. A file that differs, committed
 or not, is **NOT ALLOWED**: `status` reports it, `status --exit-code`
 exits with 1, `pull` refuses to update it. [`diff`](#diff) shows the
 modification, [`restore`](#restore) brings back what the release gave,
-and `pull --overwrite` updates anyway (with a note in the commit message).
+and `pull --overwrite` updates anyway: with a warning if anything is lost
+(not if the working tree already has what the release gives), with a
+note in the commit message if committed modifications go.
 
 A file that is gone – deleted, committed or not – is **missing**, also
 not allowed while it is an entry. `pull` refuses it, also with
@@ -228,7 +230,8 @@ same caution with uncommitted changes.
 add` – `pull` like `git merge --squash` – and you commit. `pull` and
 `add` prepare a [proposed commit message](#proposed-commit-messages) that
 a plain `git commit` offers. Whatever else is staged goes into the same
-commit.
+commit. A command that stages `.git-assetsync` stages your unstaged
+changes to it as well, with a warning (`edit`: those made before it).
 
 Without a command, `status` runs. `PATH` is a file or a directory (all
 entries below it), relative to the current directory. A path inside a
@@ -330,7 +333,7 @@ It exits with 0 unless `--exit-code` is given, and with 2 on errors.
 ### `pull`
 
 ```
-git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [-v] [-n]
+git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [-W] [-v] [-n]
 ```
 
 Updates the entries to what their selected release gives (after the
@@ -358,6 +361,7 @@ would.
 | `--all` | all entries with something to pull (with `--overwrite` also modified ones); left out are missing ones (see [above](#no-local-modifications)) and those whose [synced release isn't found](#selecting-the-release); not with paths |
 | `--release TAG\|PATTERN` | this release instead of the selected one, once – see below; prereleases count for a pattern only if the entry takes them |
 | `--overwrite` | discard local modifications and files of yours in the way |
+| `-W`, `--worktree` | write to the working tree only: nothing staged, `.git-assetsync` unchanged – see below |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` does |
 | `-n`, `--dry-run` | only report what would happen: the subject of the proposed commit message, for a directory with its files (`Files: 3 added, 1 removed, 0 changed (52 in total)`) |
 
@@ -377,6 +381,13 @@ note: bin/tool: it still selects v1.1 - 'git assetsync pull bin/tool' goes back 
 To stay on a release, pin it with [`set --release`](#set). [`diff
 --upstream --release TAG PATH…`](#diff) shows beforehand what `pull
 --release` would bring.
+
+**Trying a release:** `pull -W PATH…` writes what `pull` would (also with
+`--release`) to the working tree only, so it can't be committed by
+accident – e.g. to see whether everything still builds. `status` keeps
+showing it as pending and modified. `git restore PATH…` goes back (new
+files of a directory stay, untracked); `pull --overwrite PATH…` takes it
+(with the same `--release`), nothing is lost.
 
 ### `diff`
 
