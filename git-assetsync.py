@@ -2567,6 +2567,7 @@ class Repo:
         self.known_trees = {}     # see has_tree(): {tree: whether it is here}
         self.heads = {}           # see head_entry(): {path: (mode, type, id) | None}
         self.committed_reg = None     # see committed_entry()
+        self.index_changes = None     # see staged()
         self.diffs = None         # see prefetch(): (paths asked, files differing from HEAD)
         self.work = {}            # see worktree_items(): {path: (mode, id) | None}
         self.now = {}             # see items_match_base(): {(blob, path): stored_now()}
@@ -2899,6 +2900,18 @@ class Repo:
             p = self.git(["ls-tree", "-r", "-z", tree])
             self.trees[tree] = [(*info, path) for info, path in ls_items(p.stdout)]
         return self.trees[tree]
+
+    def staged(self):
+        """{path: (mode, blob) | None (a deletion)} of what is staged - the
+        index where it differs from HEAD; one git command per run."""
+        if self.index_changes is None:
+            p = self.git(["diff-index", "--cached", "--raw", "-z", "--no-renames", "HEAD"],
+                         check=False)
+            words = p.stdout.decode("utf-8", "replace").split("\0") if not p.returncode else []
+            self.index_changes = {
+                path: None if info.split()[4] == "D" else (info.split()[1], info.split()[3])
+                for info, path in zip(words[0::2], words[1::2]) if info.startswith(":")}
+        return self.index_changes
 
     def changed_files(self, rel):
         """Paths at or below rel whose working tree file differs from HEAD
@@ -3810,9 +3823,9 @@ def local_state(repo, st):
         st.worktree = "deleted" if head else "missing"
     elif not head:
         st.worktree = "added"
-    elif repo.changed_files(entry.rel) & paths or \
+    elif repo.changed_files(entry.rel) & paths or paths & repo.staged().keys() or \
             any(repo.work.get(p, (m, o)) not in (None, (m, o)) for m, o, p in head):
-        st.worktree = "modified"
+        st.worktree = "modified"          # not committed: staged or not
     gone = set(paths) - set(files)
     st.gone, st.total = sorted(gone), len(paths)
     if not files or gone:         # any file of its release: as one of a [file]
@@ -3823,7 +3836,12 @@ def local_state(repo, st):
         st.local = "clean" if st.committed == "unmodified" else "modified"
     else:
         now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
-        st.local = "clean" if items_match_base(repo, st, now) else "modified"
+        # the index too: what a commit would take (HEAD where nothing is staged)
+        staged = repo.staged()
+        index = [i for i in head if i[2] not in staged] + \
+            [(v[0], v[1], p) for p, v in staged.items() if p in paths and v]
+        st.local = "clean" if items_match_base(repo, st, now) and (
+            not paths & staged.keys() or items_match_base(repo, st, index)) else "modified"
 
 
 def others_modified(repo, st):

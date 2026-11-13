@@ -835,6 +835,20 @@ git commit -q --no-edit
 check "... committed: the note isn't in the message" "$(msg | grep -c 'were discarded')" "0"
 check "... then: pending only (selects v1)" "$(git assetsync status -s | oneline)" "P  sp.txt "
 
+# only staged, the working file as committed: modified all the same (a commit
+# would take it)
+echo other > sp.txt && git add sp.txt && git show HEAD:sp.txt > sp.txt
+check "only staged: modified" "$(git assetsync status -s sp.txt) $(rc git assetsync status --exit-code)" "PM sp.txt 1"
+check "... pull refuses it" "$(git assetsync pull sp.txt 2>&1 | grep -c 'local modifications NOT ALLOWED')" "1"
+check "... -n --overwrite says discarding" "$(git assetsync pull -n --overwrite --release v3 sp.txt 2>&1 | grep -c 'discarding local modifications')" "1"
+check "... --overwrite keeps it" "$(git assetsync pull --overwrite --release v3 sp.txt 2>&1 | grep -cE '^warning: sp.txt: discarding|^discarded: sp.txt, as staged')" "2"
+commitp
+check "... then clean (pending: selects v1)" "$(git assetsync status -s | oneline)" "P  sp.txt "
+check "... the note isn't in the message (never committed)" "$(msg | grep -c 'were discarded')" "0"
+echo x > spd/b.txt && git add spd/b.txt && rm spd/b.txt
+check "a directory: a file only staged (not one of its release's)" "$(git assetsync status -s spd)" ""
+git reset -q --hard
+
 # an entry written by hand (no base yet): pull fetches it
 cd "$T"
 asset hand.txt hand

@@ -142,8 +142,8 @@ synced yet, and the next `pull` fetches it.
 ### No local modifications
 
 A file taken from an asset must stay exactly what the release gives – a
-binary or generated file can't be merged. A file that differs, committed
-or not, is **NOT ALLOWED**: `status` reports it, `status --exit-code`
+binary or generated file can't be merged. A file that differs – committed,
+staged or only in the working tree – is **NOT ALLOWED**: `status` reports it, `status --exit-code`
 exits with 1, `pull` refuses to update it. [`diff`](#diff) shows the
 modification, [`restore`](#restore) brings back what the release gave,
 and `pull --overwrite` updates anyway: with a warning if anything is lost
@@ -397,7 +397,9 @@ git assetsync diff [PATH…] [--upstream [--release TAG|PATTERN]] [--exit-code |
 
 Shows the local modifications of the entries (default: all): what the
 release gave (the recorded `blob` / `tree`) against the working tree. In
-a directory only the release's files are compared. Works offline.
+a directory only the release's files are compared. Works offline. A
+change only staged, with the working file as in HEAD, shows `git diff
+--cached`.
 
 | Option | Shows |
 |---|---|
