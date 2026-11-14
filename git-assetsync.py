@@ -464,7 +464,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 from urllib.parse import quote, unquote, urlparse
 
-__version__ = "0.27.3"
+__version__ = "0.28.0"
 REGISTRY = ".git-assetsync"
 REGISTRY_STAGED = (f'{REGISTRY} staged (use "git assetsync status" to see what changes, '
                    '"git assetsync pull <file>..." to update)')
