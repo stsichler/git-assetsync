@@ -813,6 +813,10 @@ quiet git assetsync pull -W lmd
 check "... add --force as well" \
   "$(quiet git assetsync add --force acme/lmd lmd/ --asset 'lmd-*.zip' --filter lmd; git ls-files lmd | oneline)" "lmd/a.txt "
 git reset -q --hard
+quiet git assetsync pull -W lmd
+check "... rm -f as well, nothing discarded" \
+  "$(git assetsync rm -f lmd 2>&1 | grep -c discarded) $(git ls-files lmd | oneline)" "0 "
+git reset -q --hard
 quiet git assetsync add acme/tool t1.bin --asset 'tool-*.bin'
 quiet git assetsync add acme/tool t2.bin --asset 'tool-*.bin'
 check "restore -S of two new entries of one source: the source goes too" \
@@ -871,7 +875,9 @@ printf '100644 %s 1\t.git-assetsync\n100644 %s 2\t.git-assetsync\n100644 %s 3\t.
   git update-index --index-info
 check "registry with a merge conflict: refused, nothing changed" \
   "$(rc git assetsync set lm.txt --release v6) $(git assetsync status 2>&1) $(rc git assetsync restore lm.txt) $(git ls-files -u .git-assetsync | wc -l | tr -d ' ')" \
-  "2 error: .git-assetsync has a merge conflict - resolve it, then 'git add .git-assetsync' 2 3"
+  "2 error: .git-assetsync has a merge conflict - resolve it with 'git assetsync edit' (or by hand, then 'git add .git-assetsync') 2 3"
+check "... edit resolves it" "$(GIT_EDITOR=true git assetsync edit 2>&1) $(git ls-files -u .git-assetsync | wc -l | tr -d ' ') $(rc git assetsync status)" \
+  ".git-assetsync: conflict resolved and staged 0 0"
 git reset -q --hard
 # R2: only what a command changes is staged - not what is only in the working
 # tree (pull -W, add -W), nor changes made by hand
@@ -892,6 +898,23 @@ quiet git assetsync mv lmx.txt lmy.txt
 check "mv of an entry only in the working tree: stays unstaged" \
   "$(git config --blob :.git-assetsync --get-regexp '^file[.]lm[xy]' | wc -l | tr -d ' ') $(st --no-fetch lmy.txt)" "0   A"
 git reset -q --hard; rm -f lmy.txt
+addc acme/lm lmv.txt --asset lm.txt --release v5
+git config -f .git-assetsync --remove-section file.lmv.txt
+quiet git assetsync rm lmw.txt
+check "rm: a [source] another staged entry uses stays staged" \
+  "$(git config --blob :.git-assetsync source.acme/lm.url) $(git config --blob :.git-assetsync file.lmv.txt.source)" \
+  "https://github.com/acme/lm acme/lm"
+git reset -q --hard
+quiet git assetsync add -W acme/tool z.bin --asset 'tool-*.bin'
+quiet git assetsync set lmw.txt --source acme/tool --asset 'tool-*.bin'
+check "set --source of a source only in the working tree: staged with it" \
+  "$(git config --blob :.git-assetsync source.acme/tool.url)" "https://github.com/acme/tool"
+git reset -q --hard; rm -f z.bin
+git mv lmw.txt lmz.txt
+printf 'git config -f "$1" --rename-section file.lmw.txt file.lmz.txt\n' > "$T/ed-mv.sh"
+check "edit: renamed by hand after git mv: staged" \
+  "$(GIT_EDITOR="sh '$T/ed-mv.sh'" quiet git assetsync edit; git config --blob :.git-assetsync file.lmz.txt.synced) $(st --no-fetch lmz.txt)" "v5  A"
+git reset -q --hard
 git update-index --cacheinfo "100644,$(printf '[broken\n' | git hash-object -w --stdin),.git-assetsync"
 check "a staged registry that can't be parsed: an error" "$(rc git assetsync status) $(rc git assetsync restore lmw.txt) $(cat lmw.txt)" "2 2 lm 5"
 git reset -q --hard

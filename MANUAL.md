@@ -698,7 +698,9 @@ Opens `.git-assetsync` in the editor Git uses (`GIT_EDITOR`,
 it and stages what changed (only comments or layout:
 nothing). Changed release selections keep the index consistent (the
 entry is pending); changed `synced`/`blob`/`tree` by hand make it a
-modification until `pull`. A file that can't be parsed is not staged; gaps that
+modification until `pull`. With a merge conflict in `.git-assetsync`
+the other commands refuse; `edit` resolves it and stages the whole file,
+as `git add` does. A file that can't be parsed is not staged; gaps that
 `status` would report are shown as warnings:
 
 ```
