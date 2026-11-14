@@ -237,8 +237,8 @@ commit.
 their `.git-assetsync`; an entry there describes the files there. A
 command stages only what it changes in `.git-assetsync`; `pull` and `add`
 stage an entry with its files, `[source]` and filters. Your other changes
-to the file – and what `-W` (`pull`, `add`) wrote to the working tree
-only – stay unstaged; `git add PATH .git-assetsync` stages them,
+to the file – and what `-W` wrote to the working tree only (`pull`,
+`add`, `set`, `source`, `filter`, `edit`) – stay unstaged; `git add PATH .git-assetsync` stages them,
 `restore PATH` goes back.
 
 Without a command, `status` runs. `PATH` is a file or a directory (all
@@ -641,7 +641,7 @@ git assetsync set PATH… [--source URL|SOURCE [--type github|gitlab]] [--releas
                         [--prerelease | --no-prerelease]
                         [(--asset PATTERN)… | --no-asset] [(--exclude-asset PATTERN)… | --no-exclude-asset]
                         [--sourcecode FORMAT | --no-sourcecode]
-                        [--filter NAME | --no-filter] [-n]
+                        [--filter NAME | --no-filter] [-W] [-n]
 git assetsync set PATH…
 git assetsync set --list
 ```
@@ -676,6 +676,7 @@ not cmd.exe).
 | `--exclude-asset PATTERN`, `--no-exclude-asset` | other assets left out (as `--asset`), or none |
 | `--sourcecode FORMAT`, `--no-sourcecode` | take the source code archive (as for [`add`](#add)), or not |
 | `--filter NAME`, `--no-filter` | another named [filter](#filters), or none |
+| `-W`, `--worktree` | change `.git-assetsync` in the working tree only, nothing staged – with `pull -W` a whole try (a fork, other assets), see [`pull`](#pull) |
 | `-n`, `--dry-run` | only show what would change |
 
 The base (`blob`, `digest`) stays, so local modifications stay
@@ -694,7 +695,7 @@ git assetsync set third_party/zlib --filter zlib-all
 ### `edit`
 
 ```
-git assetsync edit
+git assetsync edit [-W]
 ```
 
 Opens `.git-assetsync` in the editor Git uses (`GIT_EDITOR`,
@@ -704,7 +705,7 @@ nothing). Changed release selections keep the index consistent (the
 entry is pending); changed `synced`/`blob`/`tree` by hand make it a
 modification until `pull`. With a merge conflict in `.git-assetsync`
 the other commands refuse; `edit` resolves it and stages the whole file,
-as `git add` does. A file that can't be parsed is not staged; gaps that
+as `git add` does. `-W`: nothing staged. A file that can't be parsed is not staged; gaps that
 `status` would report are shown as warnings:
 
 ```
@@ -724,14 +725,14 @@ write, also a changed base.
 
 ```
 git assetsync source [-v]
-git assetsync source rename OLD NEW [-n]
-git assetsync source set NAME [--url URL] [--type github|gitlab | --no-type] [-n]
+git assetsync source rename OLD NEW [-W] [-n]
+git assetsync source set NAME [--url URL] [--type github|gitlab | --no-type] [-W] [-n]
 git assetsync source set --list
 ```
 
 Lists and changes the `[source]` sections; listing and renaming work like
-`git remote`. The changes are staged; the entries are pending until
-`pull` updates them, for one commit.
+`git remote`. The changes are staged (`-W`: in the working tree only);
+the entries are pending until `pull` updates them, for one commit.
 
 | Action | Meaning |
 |---|---|
@@ -849,11 +850,11 @@ git assetsync filter
 git assetsync filter show NAME
 git assetsync filter test NAME (FILE… | --source SOURCE [--release …] [--prerelease] [--type …] [--asset PATTERN]… [--exclude-asset PATTERN]…
                            [--sourcecode FORMAT]) [-o DIR]
-git assetsync filter add NAME STEP-OPTIONS… [-n]
-git assetsync filter set NAME [STEP-OPTIONS…] [-n]
+git assetsync filter add NAME STEP-OPTIONS… [-W] [-n]
+git assetsync filter set NAME [STEP-OPTIONS…] [-W] [-n]
 git assetsync filter set --list
-git assetsync filter rename OLD NEW [-n]
-git assetsync filter remove NAME [-n]
+git assetsync filter rename OLD NEW [-W] [-n]
+git assetsync filter remove NAME [-W] [-n]
 ```
 
 Lists and changes the [filters](#filters). Changes are staged; entries
@@ -870,6 +871,9 @@ using a changed filter are pending until `pull`.
 | `set NAME` | show the filter as the `filter set` command that gives it (as for [`set`](#set)); `--list`: all filters |
 | `rename OLD NEW` | rename a filter and its references |
 | `remove NAME` | remove a filter nothing uses |
+
+`add`, `set`, `rename` and `remove` stage the change; `-W` writes it to the
+working tree only – e.g. to try a variant with `pull -W`.
 
 `filter test` changes nothing and takes the filter (and the scripts it
 runs) as the working tree has it; it shows what each step did (on

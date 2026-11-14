@@ -920,6 +920,27 @@ check "set: something to pull: said, the hint as advice.statusHints says" \
 check "... pinned to the release it is synced with: nothing to pull" \
   "$(git assetsync set lmw.txt --release v5 2>&1 | tail -1)" ".git-assetsync staged"
 git reset -q --hard
+# -W also for the commands that change only the registry: a whole try in the
+# working tree, with pull -W
+check "set -W: in the working tree only" \
+  "$(git -c advice.statusHints=false assetsync set -W lmw.txt --latest 2>&1 | tail -1) $(git config --blob :.git-assetsync file.lmw.txt.release) $(reg file.lmw.txt.release)|" \
+  ".git-assetsync changed in the working tree only - pending until pull v5 |"
+check "... then pull -W: nothing staged" \
+  "$(quiet git assetsync pull -W lmw.txt; git diff --cached --name-only | oneline)$(reg file.lmw.txt.synced)" "v7"
+check "... restore: back" "$(quiet git assetsync restore lmw.txt; cat lmw.txt) $(reg file.lmw.txt.synced)" "lm 5 v5"
+git reset -q --hard
+check "source set -W" \
+  "$(git -c advice.statusHints=false assetsync source set -W acme/lm --url https://github.com/acme/other 2>&1 | tail -1) $(git config --blob :.git-assetsync source.acme/lm.url)" \
+  ".git-assetsync changed in the working tree only - pending until pull https://github.com/acme/lm"
+git reset -q --hard
+check "filter add -W" \
+  "$(git assetsync filter add -W fw --extract 2>&1) $(git config --blob :.git-assetsync filter.fw.step)|$(reg filter.fw.step)" \
+  "filter fw: extract (new); .git-assetsync changed in the working tree only |extract"
+git reset -q --hard
+check "edit -W" \
+  "$(GIT_EDITOR='f() { git config -f "$1" file.lmw.txt.release v6; }; f' git assetsync edit -W 2>&1) $(git config --blob :.git-assetsync file.lmw.txt.release)" \
+  ".git-assetsync: changed in the working tree only v5"
+git reset -q --hard
 git mv lmw.txt lmz.txt
 printf 'git config -f "$1" --rename-section file.lmw.txt file.lmz.txt\n' > "$T/ed-mv.sh"
 check "edit: renamed by hand after git mv: staged" \

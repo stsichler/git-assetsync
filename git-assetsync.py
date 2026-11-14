@@ -278,6 +278,8 @@ Advanced commands - change entries, sources and filters; set up:
         --exclude-asset PATTERN, --no-exclude-asset  assets left out, or none
         --sourcecode FORMAT, --no-sourcecode  the source code archive, or not
         --filter NAME, --no-filter  another filter, or none
+        -W, --worktree          in the working tree only, nothing staged
+                                (with pull -W: a whole try)
         -n, --dry-run           only show what would change
 
     edit                        open .git-assetsync in the editor (like `git
@@ -286,6 +288,7 @@ Advanced commands - change entries, sources and filters; set up:
                                 conflict: resolved, the whole file); for
                                 usual changes
                                 set, source, filter, unlink and mv are safer
+        -W, --worktree          nothing staged
 
     source                      list the [source]s (-v: with URL, type and
                                 file count)
@@ -298,6 +301,7 @@ Advanced commands - change entries, sources and filters; set up:
     source set NAME             show it as the source set command that
                                 gives it
     source set --list           the same for all sources
+        -W, --worktree          (rename, set) in the working tree only
         -n, --dry-run           (rename, set) only show what would change
     source map [URL|SOURCE [DIR]]
                                 take the releases of a source from the local
@@ -353,6 +357,8 @@ Advanced commands - change entries, sources and filters; set up:
     filter set --list           the same for all filters
     filter rename OLD NEW       rename a filter, also where it is used
     filter remove NAME          remove a filter nothing uses
+        -W, --worktree          (add, set, rename, remove) in the working
+                                tree only, nothing staged
         -n, --dry-run           (add, set, rename, remove) only show what
                                 would change
     filter trust                list the filters that run commands, with their
@@ -6001,6 +6007,10 @@ def cmd_edit(ctx, repo, args):
         if p.returncode or re.search(rb"^(<<<<<<<|>>>>>>>)", path.read_bytes(), re.M):
             raise FsError(f"{REGISTRY} still has conflicts or can't be parsed - not staged; "
                           "fix it with 'git assetsync edit'")
+        if args.worktree:
+            print(f"{REGISTRY}: conflict resolved in the working tree - 'git add {REGISTRY}' "
+                  "stages it")
+            return EXIT_OK
         repo.git(["add", "--", REGISTRY])
         repo.rows_checked = False
         print(f"{REGISTRY}: conflict resolved and staged")
@@ -6025,8 +6035,8 @@ def cmd_edit(ctx, repo, args):
             if values != old.get(key):
                 reg.done.append(("--set-all", key) + tuple(values))
         reg.done += [("--unset-all", k) for k in section_items(old, section) if k not in want]
-    reg.finish()
-    print(REGISTRY_STAGED)
+    reg.finish(stage=not args.worktree)
+    print(f"{REGISTRY}: changed in the working tree only" if args.worktree else REGISTRY_STAGED)
     return EXIT_OK
 
 
@@ -6153,18 +6163,25 @@ def cmd_set(ctx, repo, args):
     if not changed:
         print("nothing to change")
     elif not args.dry_run:
-        reg.finish()
-        print(pending_note(any(may_pull(repo, e) for e in entries)))
+        reg.finish(stage=not args.worktree)
+        print(pending_note(any(may_pull(repo, e) for e in entries), args))
     return EXIT_OK
 
 
-def pending_note(pending):
-    """What set, filter set and source set say at the end: staged - and if
-    pull has something to do, so, with how to see it (advice.statusHints)."""
+def registry_done(args):
+    """How a command that changes only the registry says it is written:
+    staged, or with -W in the working tree only."""
+    return "changed in the working tree only" if getattr(args, "worktree", False) else "staged"
+
+
+def pending_note(pending, args=None):
+    """What set, filter set and source set say at the end: staged (-W: in
+    the working tree only) - and if pull has something to do, so, with how
+    to see it (advice.statusHints)."""
     if not pending:
-        return f"{REGISTRY} staged"
+        return f"{REGISTRY} {registry_done(args)}"
     hint = f" ({REGISTRY_PENDING_HINT})" if config_bool("advice.statusHints", True) else ""
-    return f"{REGISTRY} staged - pending until pull{hint}"
+    return f"{REGISTRY} {registry_done(args)} - pending until pull{hint}"
 
 
 def may_pull(repo, entry):
@@ -6870,9 +6887,9 @@ def cmd_source(ctx, repo, args):
         if new in reg.sources:
             raise FsError(f"source '{new}' already exists")
         reg.rename_source(args.name, new)
-        reg.finish()
+        reg.finish(stage=not args.worktree)
         print(f"would rename {args.name} -> {new}" if args.dry_run else
-              f"{paint(f'renamed {args.name} -> {new}', 'green')}; {REGISTRY} staged")
+              f"{paint(f'renamed {args.name} -> {new}', 'green')}; {REGISTRY} {registry_done(args)}")
         return EXIT_OK
     if args.url:
         url = source_url(args.url)
@@ -6895,8 +6912,8 @@ def cmd_source(ctx, repo, args):
     for line in done:
         print(f"{would}{paint(line, 'green')}")
     if not args.dry_run:
-        reg.finish()
-        print(pending_note(bool(reg.source_files(args.name))))
+        reg.finish(stage=not args.worktree)
+        print(pending_note(bool(reg.source_files(args.name)), args))
     return EXIT_OK
 
 
@@ -6980,12 +6997,12 @@ def cmd_filter(ctx, repo, args):
     if args.dry_run:      # a change of the steps as set shows one, else as git
         print(would if action in ("rename", "remove") else f"would: {done}")
     elif action == "set" and users:
-        reg.finish()
+        reg.finish(stage=not args.worktree)
         print(paint(done, "green"))
-        print(pending_note(True))
+        print(pending_note(True, args))
     else:
-        reg.finish()
-        print(f"{paint(done, 'green')}; {REGISTRY} staged")
+        reg.finish(stage=not args.worktree)
+        print(f"{paint(done, 'green')}; {REGISTRY} {registry_done(args)}")
     return EXIT_OK
 
 
@@ -7388,6 +7405,9 @@ def run(argv):
     remotep = argparse.ArgumentParser(add_help=False)
     remotep.add_argument("--remote", action="store_true",
                          help="ignore mappings (source map) this once, use the upstream URL")
+    worktreep = argparse.ArgumentParser(add_help=False)
+    worktreep.add_argument("-W", "--worktree", action="store_true",
+                           help=f"change {REGISTRY} in the working tree only, nothing staged")
     colorp.add_argument("--no-color", dest="color", action="store_const", const="never",
                         help="same as --color=never")
 
@@ -7549,7 +7569,7 @@ def run(argv):
                    help="file (directory) and entry in the working tree only, nothing staged")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
-    p = sub.add_parser("set", parents=[colorp],
+    p = sub.add_parser("set", parents=[colorp, worktreep],
                        help="change entries: source, release selection, asset or filter",
                        description="Change entries: source, release selection, asset or "
                                    "filter. Without options: show each entry as the set "
@@ -7588,7 +7608,7 @@ def run(argv):
     g.add_argument("--no-filter", action="store_true", help="use no filter")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
-    sub.add_parser("edit", parents=[colorp],
+    sub.add_parser("edit", parents=[colorp, worktreep],
                    help=f"open {REGISTRY} in the editor, then check and stage it")
 
     p = sub.add_parser("verify", parents=[colorp, remotep],
@@ -7619,12 +7639,12 @@ def run(argv):
     p.add_argument("-v", "--verbose", action="store_true",
                    help="list with URL, type and file count")
     actions = p.add_subparsers(dest="action", metavar="ACTION")
-    a = actions.add_parser("rename", parents=[colorp],
+    a = actions.add_parser("rename", parents=[colorp, worktreep],
                            help="rename a source and all references to it")
     a.add_argument("name", metavar="OLD", help="key of the [source]")
     a.add_argument("value", metavar="NEW")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
-    a = actions.add_parser("set", parents=[colorp],
+    a = actions.add_parser("set", parents=[colorp, worktreep],
                            help="change the URL or type of a source; without options: show it",
                            description="Change the URL or type of a source. Without options: "
                                        "show it as the source set command that gives it.")
@@ -7678,11 +7698,11 @@ def run(argv):
     a = actions.add_parser("show", parents=[colorp], help="the steps of a filter",
                            description="Show the steps of a filter.")
     a.add_argument("name", metavar="NAME")
-    a = actions.add_parser("add", parents=[colorp, filterp],
+    a = actions.add_parser("add", parents=[colorp, filterp, worktreep],
                            help="define a new filter with the steps given (in this order)")
     a.add_argument("name", metavar="NAME")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
-    a = actions.add_parser("set", parents=[colorp, filterp],
+    a = actions.add_parser("set", parents=[colorp, filterp, worktreep],
                            help="replace the steps of a filter (in the order given); "
                                 "without steps: show it",
                            description="Replace the steps of a filter (in the order given). "
@@ -7713,12 +7733,12 @@ def run(argv):
                    help="with --source: the source code archive (as for add)")
     a.add_argument("-o", "--output", metavar="DIR",
                    help="write the result to DIR (new or empty) instead of listing it")
-    a = actions.add_parser("rename", parents=[colorp],
+    a = actions.add_parser("rename", parents=[colorp, worktreep],
                            help="rename a filter and the steps using it")
     a.add_argument("name", metavar="OLD")
     a.add_argument("value", metavar="NEW")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
-    a = actions.add_parser("remove", parents=[colorp], help="remove an unused filter")
+    a = actions.add_parser("remove", parents=[colorp, worktreep], help="remove an unused filter")
     a.add_argument("name", metavar="NAME")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("trust", parents=[colorp],
