@@ -235,11 +235,11 @@ commit.
 
 **Each layer on its own.** HEAD, the index and the working tree each have
 their `.git-assetsync`; an entry there describes the files there. A
-command stages only the entries it changes, with their `[source]` and
-filters – your other changes to the file stay unstaged, as with `git add
-PATH`. `-W` (`pull`, `add`) writes files and entry to the working tree
-only; `git add PATH .git-assetsync` stages them, `restore PATH` goes
-back.
+command stages only what it changes in `.git-assetsync`; `pull` and `add`
+stage an entry with its files, `[source]` and filters. Your other changes
+to the file – and what `-W` (`pull`, `add`) wrote to the working tree
+only – stay unstaged; `git add PATH .git-assetsync` stages them,
+`restore PATH` goes back.
 
 Without a command, `status` runs. `PATH` is a file or a directory (all
 entries below it), relative to the current directory. A path inside a
@@ -695,8 +695,10 @@ git assetsync edit
 
 Opens `.git-assetsync` in the editor Git uses (`GIT_EDITOR`,
 `core.editor`, `VISUAL`, `EDITOR`), like `git config --edit`, then checks
-it and stages the sections that changed (only comments or layout:
-nothing). A file that can't be parsed is not staged; gaps that
+it and stages what changed (only comments or layout:
+nothing). Changed release selections keep the index consistent (the
+entry is pending); changed `synced`/`blob`/`tree` by hand make it a
+modification until `pull`. A file that can't be parsed is not staged; gaps that
 `status` would report are shown as warnings:
 
 ```

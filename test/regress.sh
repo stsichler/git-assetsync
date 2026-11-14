@@ -862,7 +862,7 @@ check "unlink: its section and source removed from the index" \
 git reset -q --hard
 git config -f .git-assetsync --add filter.lmd.step "drop '*.md'"
 quiet git assetsync set lmd --release v3
-check "set: its named filter staged with it" "$(git diff --cached .git-assetsync | grep -c '^+.*drop')" "1"
+check "set: a filter changed by hand stays unstaged" "$(git diff --cached .git-assetsync | grep -c '^+.*drop')" "0"
 git reset -q --hard
 # a merge conflict in the registry: refused until resolved
 blob=$(git hash-object -w .git-assetsync)
@@ -873,6 +873,29 @@ check "registry with a merge conflict: refused, nothing changed" \
   "$(rc git assetsync set lm.txt --release v6) $(git assetsync status 2>&1) $(rc git assetsync restore lm.txt) $(git ls-files -u .git-assetsync | wc -l | tr -d ' ')" \
   "2 error: .git-assetsync has a merge conflict - resolve it, then 'git add .git-assetsync' 2 3"
 git reset -q --hard
+# R2: only what a command changes is staged - not what is only in the working
+# tree (pull -W, add -W), nor changes made by hand
+new_repo r4w
+addc acme/lm lmw.txt --asset lm.txt --release v5
+quiet git assetsync pull -W --release v6 lmw.txt
+quiet git assetsync set lmw.txt --release 'v*'
+check "set after pull -W: only the selection staged" \
+  "$(git config --blob :.git-assetsync file.lmw.txt.synced) $(git config --blob :.git-assetsync file.lmw.txt.release) $(git assetsync status -s --no-fetch lmw.txt)" \
+  "v5 v*   U lmw.txt"
+git config -f .git-assetsync source.acme/lm.url https://github.com/acme/other
+quiet git assetsync set lmw.txt --release v5
+check "... a [source] changed by hand stays unstaged" \
+  "$(git config --blob :.git-assetsync source.acme/lm.url)" "https://github.com/acme/lm"
+git reset -q --hard
+quiet git assetsync add -W acme/lm lmx.txt --asset lm.txt
+quiet git assetsync mv lmx.txt lmy.txt
+check "mv of an entry only in the working tree: stays unstaged" \
+  "$(git config --blob :.git-assetsync --get-regexp '^file[.]lm[xy]' | wc -l | tr -d ' ') $(st --no-fetch lmy.txt)" "0   A"
+git reset -q --hard; rm -f lmy.txt
+git update-index --cacheinfo "100644,$(printf '[broken\n' | git hash-object -w --stdin),.git-assetsync"
+check "a staged registry that can't be parsed: an error" "$(rc git assetsync status) $(rc git assetsync restore lmw.txt) $(cat lmw.txt)" "2 2 lm 5"
+git reset -q --hard
+cd "$T/r4"
 # restore -S of an entry the staged registry hasn't: its entry from HEAD too
 git show HEAD:.git-assetsync > "$T/reg-no-lm"
 git config -f "$T/reg-no-lm" --remove-section file.lm.txt

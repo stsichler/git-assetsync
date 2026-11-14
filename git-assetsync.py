@@ -100,8 +100,9 @@ you commit - add and pull with a proposed message (like git merge
 --squash: added to .git/SQUASH_MSG, which a plain `git commit` offers; a
 copy of it all in .git/ASSETSYNC_MSG). HEAD, the index and the working
 tree each have their .git-assetsync, and an entry there describes the
-files there; a command stages only the entries it changes (with their
-[source] and filters), other changes to the file stay unstaged. -n
+files there; a command stages only what it changes in it (pull and add
+an entry with its files, [source] and filters), other changes - also
+what -W wrote - stay unstaged. -n
 (--dry-run), with the commands
 that stage or delete files (not restore, edit, hooks): done as without -
 downloaded, filtered, checked -, only nothing written (a filter trusted
@@ -281,8 +282,8 @@ Advanced commands - change entries, sources and filters; set up:
 
     edit                        open .git-assetsync in the editor (like `git
                                 config --edit`), then check it (warnings
-                                about gaps) and stage the sections that
-                                changed; for usual changes
+                                about gaps) and stage what changed; for
+                                usual changes
                                 set, source, filter, unlink and mv are safer
 
     source                      list the [source]s (-v: with URL, type and
@@ -2582,6 +2583,7 @@ class Repo:
         self.known_trees = {}     # see has_tree(): {tree: whether it is here}
         self.heads = {}           # see head_entry(): {path: (mode, type, id) | None}
         self.layers = {}          # see registry(): {layer: its Registry}
+        self.rows_checked = False     # see Registry(): the index has no conflict there
         self.index_changes = None     # see staged()
         self.diffs = None         # see prefetch(): (paths asked, files differing from HEAD)
         self.work = {}            # see worktree_items(): {path: (mode, id) | None}
@@ -3363,13 +3365,6 @@ def write_config(path, items, ops):
         return config_items(git(["config", "-f", path, "--list", "-z"]).stdout)
 
 
-def op_sections(op):
-    """The sections (section.name) a change (see edit_config) is in."""
-    if op[0] in ("--remove-section", "--rename-section"):
-        return list(op[1:])
-    return [(op[1] if op[0].startswith("--") else op[0]).rpartition(".")[0]]
-
-
 def section_items(items, section):
     """The items of a section (section.name) - not those of others whose
     name starts with it."""
@@ -3382,21 +3377,20 @@ def has_entries(items):
 
 
 def registry_rows(repo):
-    return [r for r in out(repo.git(["ls-files", "-s", "-z", "--", lit(REGISTRY)])).split("\0")
+    """The index's rows (mode, id, stage, path) of the registry; an error if
+    it has a merge conflict (the layers can't be told apart)."""
+    rows = [r for r in out(repo.git(["ls-files", "-s", "-z", "--", lit(REGISTRY)])).split("\0")
             if r]
-
-
-def registry_conflict(repo):
-    """Has the registry a merge conflict in the index?"""
-    return any(r.split()[2] != "0" for r in registry_rows(repo))
+    if any(r.split()[2] != "0" for r in rows):
+        raise FsError(f"{REGISTRY} has a merge conflict - resolve it, then 'git add "
+                      f"{REGISTRY}'")
+    return rows
 
 
 def staged_registry(repo):
     """(mode, blob, items) of the registry in the index - blob None, items
     {} if none there; an error if it has a merge conflict."""
     rows = registry_rows(repo)
-    if any(r.split()[2] != "0" for r in rows):
-        raise FsError(f"{REGISTRY} has a merge conflict - resolve it first")
     if not rows:
         return "100644", None, {}
     mode, oid = rows[0].split()[:2]
@@ -3446,13 +3440,6 @@ def entry_sections(reg, rel):
     return sections
 
 
-def registry_unstaged(repo):     # not used now: for the option of IDEAS ("stage only clean")
-    """Has .git-assetsync changes that aren't staged (also untracked or
-    deleted)? Asked of git, as it compares (line endings) - not parsed."""
-    p = repo.git(["status", "--porcelain", "-z", "--", lit(REGISTRY)], check=False)
-    return p.returncode == 0 and p.stdout[1:2] not in (b"", b" ")
-
-
 class Registry:
     """The repository's .git-assetsync: [source], [file] and [dir] sections.
     files holds the entries of both kinds, kinds their kind."""
@@ -3465,22 +3452,22 @@ class Registry:
         self.sources, self.files, self.kinds, self.filters = {}, {}, {}, {}
         self.dry_run = False      # only change the in-memory state
         self.items, self.pending = {}, []     # see flush()
-        self.touched, self.renamed = set(), []    # see stage()
+        self.done, self.whole = [], set()     # see stage()
         if layer:
-            p = repo.git(["config", "--blob", ("HEAD:" if layer == "head" else ":") + REGISTRY,
-                          "--list", "-z"], check=False)
-            if p.returncode:      # none there (or no HEAD)
-                return
-        elif registry_conflict(repo):         # the layers can't be told apart
-            raise FsError(f"{REGISTRY} has a merge conflict - resolve it, then 'git add "
-                          f"{REGISTRY}'")
-        elif self.path.exists():
-            p = git(["config", "-f", self.path, "--list", "-z"], check=False)
+            blob = ("HEAD:" if layer == "head" else ":") + REGISTRY
+            p = repo.git(["config", "--blob", blob, "--list", "-z"], check=False)
+            if p.returncode and repo.git(["cat-file", "-e", blob], check=False).returncode:
+                return            # none there (or no HEAD)
         else:
-            return
+            if not repo.rows_checked:     # a merge conflict: an error (once a run)
+                registry_rows(repo)
+                repo.rows_checked = True
+            if not self.path.exists():
+                return
+            p = git(["config", "-f", self.path, "--list", "-z"], check=False)
         if p.returncode:
-            raise FsError(f"{REGISTRY}: cannot parse: "
-                          + p.stderr.decode("utf-8", "replace").strip())
+            raise FsError(f"{REGISTRY}{' in ' + layer.replace('head', 'HEAD') if layer else ''}: "
+                          "cannot parse: " + p.stderr.decode("utf-8", "replace").strip())
         parsed = parse_registry(p.stdout)
         self.items = config_items(p.stdout)
         self.sources = parsed["source"]
@@ -3508,15 +3495,12 @@ class Registry:
             self.pending.append(args)
 
     def flush(self):
-        """Write the changes to the working tree (write_config), noting their
-        sections for stage()."""
+        """Write the changes to the working tree (write_config), noting them
+        for stage()."""
         ops, self.pending = self.pending, []
         if not ops:
             return
-        for op in ops:
-            self.touched.update(op_sections(op))
-            if op[0] == "--rename-section":
-                self.renamed.append(op[1:])
+        self.done += ops
         if not self.path.exists():
             self.path.write_bytes(REGISTRY_HEADER.encode())
         self.items = write_config(self.path, self.items, ops)
@@ -3673,45 +3657,82 @@ class Registry:
             self.stage()
 
     def stage(self):
-        """Stage the sections this run changed - each as a whole, as the
-        working tree has it, with the [source] and the named [filter]s of
-        the entries among them (else the staged entry wouldn't be what it
-        is); the rest of the staged registry stays as it is, and so do its
-        comments and layout. Stored as `git add` would store such a file;
-        none left: removed from the index."""
-        sections = set(self.touched)
-        for section in list(sections):
-            kind, _, rel = section.partition(".")
-            if kind in BASE_KEY and rel in self.files:
-                sections |= entry_sections(self, rel)
-        self.touched, renamed, self.renamed = set(), self.renamed, []
-        if not sections:
+        """Stage what this run changed (R2): in the staged registry the same
+        changes - an entry it hasn't, synced, comes only with its files:
+        those in self.whole (pull, add), each as a whole as the working tree
+        has it, with its [source] and filters. So changes made by hand, and what is
+        only in the working tree (pull -W, add -W), stay unstaged. Comments
+        and layout of the staged registry stay; stored as `git add` would
+        store such a file; nothing of ours left: removed from the index."""
+        done, self.done = self.done, []
+        whole, self.whole = {r for r in self.whole if r in self.files}, set()
+        if not done and not whole:
             return
         mode, oid, items = staged_registry(self.repo)
-        ops, staged = [], dict(items)
-        for old, new in renamed:      # where the index has it: renamed there too
-            if section_items(staged, old) and not section_items(staged, new):
-                ops.append(("--rename-section", old, new))
-                staged = {(new + k[len(old):] if k.rpartition(".")[0] == old else k): v
-                          for k, v in staged.items()}
-        order = list(dict.fromkeys(k.rpartition(".")[0] for k in self.items))
-        # new ones in the order the working tree has them
-        for section in sorted(sections, key=lambda s: order.index(s) if s in order else len(order)):
-            want, have = section_items(self.items, section), section_items(staged, section)
-            if not want:
-                if have:
-                    ops.append(("--remove-section", section))
-                continue
-            for key in list(want) + [k for k in have if k not in want]:
-                values = want.get(key, [])
-                if values == have.get(key):
-                    continue
-                if len(values) == 1 and len(have.get(key, [])) < 2:
-                    ops.append((key, values[0]))      # a line's layout and comment stay
-                else:
-                    ops.append(("--set-all", key) + tuple(values))
-        write_staged(self.repo, ops, (mode, oid, items))
+        have, ops = dict(items), []
+        mine = set().union(*(entry_sections(self, r) for r in whole))   # synced below
 
+        def apply(op):
+            """Add a change, and keep have as the staged registry then is."""
+            nonlocal have
+            ops.append(op)
+            if op[0] == "--remove-section":
+                have = {k: v for k, v in have.items() if k.rpartition(".")[0] != op[1]}
+            elif op[0] == "--rename-section":
+                have = {(op[2] + k[len(op[1]):] if k.rpartition(".")[0] == op[1] else k): v
+                        for k, v in have.items()}
+            elif not op[0].startswith("--"):
+                have[op[0]] = [op[1]]
+            elif op[0] == "--add":
+                have.setdefault(op[1], []).append(op[2])
+            elif op[0] == "--unset-all":
+                have.pop(op[1], None)
+            elif op[0] == "--set-all":
+                if op[2:]:
+                    have[op[1]] = list(op[2:])
+                else:
+                    have.pop(op[1], None)
+        for op in done:
+            if op[0] == "--rename-section":
+                if section_items(have, op[1]) and not section_items(have, op[2]):
+                    apply(op)
+                continue
+            if op[0] == "--remove-section":
+                if section_items(have, op[1]) and op[1] not in mine:
+                    apply(op)
+                continue
+            key = op[1] if op[0].startswith("--") else op[0]
+            section = key.rpartition(".")[0]
+            if section in mine or op[0] == "--unset-all" and key not in have:
+                continue
+            # an entry the index hasn't, synced: only pull and add bring it (with its
+            # files); one not synced yet has none - it is staged (e.g. written with edit)
+            kind, _, rel = section.partition(".")
+            if kind in BASE_KEY and not section_items(have, section) and \
+                    self.files.get(rel, {}).get(BASE_KEY[kind]):
+                continue
+            apply(op)
+        for rel in sorted(whole):     # each section as the working tree has it
+            sections = entry_sections(self, rel)
+            for section in sorted(sections, key=lambda s: (s.partition(".")[0] in BASE_KEY, s)):
+                want, now = section_items(self.items, section), section_items(have, section)
+                for key in list(want) + [k for k in now if k not in want]:
+                    values = want.get(key, [])
+                    if values == now.get(key):
+                        continue
+                    if len(values) == 1 and len(now.get(key, [])) < 2:
+                        apply((key, values[0]))      # a line's layout and comment stay
+                    else:
+                        apply(("--set-all", key) + tuple(values))
+        # a [source] new here only for entries not staged (e.g. set --source of
+        # one only in the working tree): not staged either
+        used = {v[0] for k, v in have.items() if k.partition(".")[0] in BASE_KEY
+                and k.rpartition(".")[2] == "source"}
+        for name in sorted({k.rpartition(".")[0] for k in have if k.startswith("source.")}):
+            source = name[len("source."):]
+            if source not in used and not section_items(items, name) and self.source_files(source):
+                apply(("--remove-section", name))
+        write_staged(self.repo, ops, (mode, oid, items))
 
 
 class Entry:
@@ -4066,9 +4087,12 @@ def local_state(repo, st):
     if obj and entry.is_dir and obj[1] != "tree":
         st.committed = "adapted"             # committed as a file
     elif head and eh is not None and eh.blob:
-        if ph is not None:        # else its base isn't here: not checked
+        if ph is not None:
             st.committed = "unmodified" if items_match_base(
                 repo, st, as_items(at_paths(head, ph)), entry=eh) else "adapted"
+        else:
+            st.warnings.append(f"the committed files aren't checked: which are those of "
+                               f"{eh.synced} isn't known in this clone")
     elif head:
         st.committed = "unmodified"
     files = [p for p in paths if (repo.top / p).is_file()]
@@ -5410,6 +5434,7 @@ def pull_done(repo, reg, job, base):
     entry.set(BASE_KEY[entry.kind], base)
     if not entry.is_dir:
         entry.set("mode", git_mode(job.files[entry.rel][1]))
+    reg.whole.add(entry.rel)          # staged with its files
     return msg, set(job.base) | set(job.files), stats
 
 
@@ -5457,7 +5482,7 @@ def pull_one(ctx, repo, reg, st, args, keep):
         base = {entry.rel}    # its file: what its release gave
     ei = layer_entry(repo, entry, "index")
     if entry.is_dir and not args.worktree and ei is not None and ei.blob and ei.blob != entry.blob:
-        base = set(base) | (base_paths(repo, ei) or set())   # those the index has go too
+        base = set(base) | ensure_base(repo, ei.reg, ei)    # those the index has go too
     # missing: only restore gets it back - unless the release pull takes
     # dropped those files too (no conflict, as the same change in a git merge)
     fetched = None
@@ -5782,7 +5807,7 @@ def cmd_add(ctx, repo, args):
             base = base or ()
             ei = layer_entry(repo, old_entry, "index")
             if not args.worktree and ei is not None and ei.blob and ei.blob != old_blob:
-                base = set(base) | (base_paths(repo, ei) or set())   # those the index has go too
+                base = set(base) | ensure_base(repo, ei.reg, ei)    # those the index has go too
         if not args.overwrite:
             old = State(entry=old_entry, rel=rel)
             with repo.scratch():      # only looks
@@ -5822,6 +5847,7 @@ def cmd_add(ctx, repo, args):
                  ("mode", mode)):
         if v:
             entry.set(k, v)
+    reg.whole.add(rel)                # staged with its files
     reg.finish(stage=not args.worktree)
     if args.worktree:         # file and entry: in the working tree only
         print(f"{paint('added', 'green')} {shown_rel} <- {name} {release.tag} "
@@ -5891,7 +5917,7 @@ def registry_problems(reg):
 
 def cmd_edit(ctx, repo, args):
     """Open .git-assetsync in the editor (git's: GIT_EDITOR, core.editor,
-    VISUAL, EDITOR), then check it and stage the sections that changed."""
+    VISUAL, EDITOR), then check it and stage what changed (see Registry.stage)."""
     path = repo.top / REGISTRY
     if not path.exists():
         raise FsError(f"no {REGISTRY} yet - take files from release assets with "
@@ -5919,7 +5945,15 @@ def cmd_edit(ctx, repo, args):
     if not changed:
         print(f"{REGISTRY}: only comments or layout changed - nothing staged")
         return EXIT_OK
-    reg.touched = changed
+    order = list(dict.fromkeys(k.rpartition(".")[0] for k in list(reg.items) + list(old)))
+    for section in sorted(changed, key=order.index):      # staged as changes, see stage()
+        want = section_items(reg.items, section)
+        if not want:
+            reg.done.append(("--remove-section", section))
+        for key, values in want.items():
+            if values != old.get(key):
+                reg.done.append(("--set-all", key) + tuple(values))
+        reg.done += [("--unset-all", k) for k in section_items(old, section) if k not in want]
     reg.finish()
     print(REGISTRY_STAGED)
     return EXIT_OK
@@ -6492,19 +6526,19 @@ def cmd_restore(ctx, repo, args):
     keep_discarded(repo, find_discarded(repo, [path for _, _, path in written] + delete,
                                         [path for _, _, path in index] + unstage,
                                         synced=layer_bases(repo, [e for e, *_ in fixes])))
-    if index:
-        repo.git(["update-index", "-z", "--add", "--index-info"],
-                 data="".join(f"{m} {o}\t{p}\0" for m, o, p in index).encode("utf-8"))
-    if unstage:
-        repo.git(["update-index", "-z", "--force-remove", "--stdin"],
-                 data="\0".join(unstage).encode("utf-8"))
-    try:
+    try:                      # the working tree first: if that fails, nothing else changes
         write_files(repo, written)
     except FsError as e:
         error(str(e))
         return EXIT_ERROR
     for path in delete:
         (repo.top / path).unlink()
+    if index:
+        repo.git(["update-index", "-z", "--add", "--index-info"],
+                 data="".join(f"{m} {o}\t{p}\0" for m, o, p in index).encode("utf-8"))
+    if unstage:
+        repo.git(["update-index", "-z", "--force-remove", "--stdin"],
+                 data="\0".join(unstage).encode("utf-8"))
     staged_ops, unstaged_entries = [], set()
     for entry, sources, plan, f in fixes:
         sides, gone = set(f) | {side for side, p in plan.items() if p[3]}, set()
