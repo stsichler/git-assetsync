@@ -910,6 +910,16 @@ quiet git assetsync set lmw.txt --source acme/tool --asset 'tool-*.bin'
 check "set --source of a source only in the working tree: staged with it" \
   "$(git config --blob :.git-assetsync source.acme/tool.url)" "https://github.com/acme/tool"
 git reset -q --hard; rm -f z.bin
+quiet git assetsync set lmw.txt --source acme/tool --asset 'tool-*.bin'
+quiet git assetsync restore -S lmw.txt
+check "restore -S after set --source: synced stays empty, as after set" \
+  "$(git config --blob :.git-assetsync file.lmw.txt.source) $(git config --blob :.git-assetsync file.lmw.txt.synced)|" "acme/tool |"
+git reset -q --hard
+check "set: something to pull: said, the hint as advice.statusHints says" \
+  "$(git -c advice.statusHints=false assetsync set lmw.txt --latest 2>&1 | tail -1)" ".git-assetsync staged - pending until pull"
+check "... pinned to the release it is synced with: nothing to pull" \
+  "$(git assetsync set lmw.txt --release v5 2>&1 | tail -1)" ".git-assetsync staged"
+git reset -q --hard
 git mv lmw.txt lmz.txt
 printf 'git config -f "$1" --rename-section file.lmw.txt file.lmz.txt\n' > "$T/ed-mv.sh"
 check "edit: renamed by hand after git mv: staged" \

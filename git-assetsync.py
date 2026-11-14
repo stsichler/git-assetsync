@@ -468,10 +468,9 @@ __version__ = "0.28.0"
 REGISTRY = ".git-assetsync"
 REGISTRY_STAGED = (f'{REGISTRY} staged (use "git assetsync status" to see what changes, '
                    '"git assetsync pull <file>..." to update)')
-# after set, filter set, source set: pull applies the change
-REGISTRY_PENDING = (f'{REGISTRY} staged - pending until pull (use "git assetsync pull -n '
-                    '<path>..." to see what it would do, "git assetsync diff --upstream '
-                    '<path>..." the differences)')
+# after set, filter set, source set: pull applies the change (see pending_note)
+REGISTRY_PENDING_HINT = ('use "git assetsync pull -n <path>..." to see what it would do, '
+                         '"git assetsync diff --upstream <path>..." the differences')
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
 EXIT_PIPE = 141           # output into a closed pipe: like a program ended by SIGPIPE, as git
 EXIT_REFUSED = 3          # hook pre-push: refuse the push (assetsync.pushCheck = error)
@@ -6152,8 +6151,27 @@ def cmd_set(ctx, repo, args):
         print("nothing to change")
     elif not args.dry_run:
         reg.finish()
-        print(REGISTRY_PENDING)
+        print(pending_note(any(may_pull(repo, e) for e in entries)))
     return EXIT_OK
+
+
+def pending_note(pending):
+    """What set, filter set and source set say at the end: staged - and if
+    pull has something to do, so, with how to see it (advice.statusHints)."""
+    if not pending:
+        return f"{REGISTRY} staged"
+    hint = f" ({REGISTRY_PENDING_HINT})" if config_bool("advice.statusHints", True) else ""
+    return f"{REGISTRY} staged - pending until pull{hint}"
+
+
+def may_pull(repo, entry):
+    """After set: may pull have something to do for the entry - known
+    offline? Not if it is pinned to the release it is synced with, with the
+    same assets and filter."""
+    if not entry.synced or filter_hash(entry.steps, entry.reg.filters, repo) != entry.filterhash:
+        return True
+    tag = entry.spec.get("release")
+    return not (tag and not is_pattern(tag) and tag == entry.synced)
 
 
 def human_size(n):
@@ -6493,14 +6511,25 @@ def restore_fixes(repo, plan, now):
     return fixes
 
 
+def synced_values(target, src):
+    """{attribute: value} that make the entry target synced with what src
+    is: its keys of that, not those that select the release. With another
+    project, other assets or source code selected, which release target's
+    selection gave it is unknown: synced stays empty, as after set."""
+    values = {k: getattr(src, k) or None for k in Committed.KEYS}
+    if norm_url(target.url) != norm_url(src.url) or target.asset != src.asset or \
+            target.exclude_asset != src.exclude_asset or target.sourcecode != src.sourcecode:
+        values["synced"] = None
+    return values
+
+
 def synced_ops(target, src):
     """Changes (see edit_config) that make the entry target (in some layer's
-    registry) synced with what src is: its keys of that, not those that
-    select the release."""
+    registry) synced with what src is (synced_values)."""
     section = f"{target.kind}.{target.rel}"
-    return [(f"{section}.{key_name(target, k)}", getattr(src, k)) if getattr(src, k) else
+    return [(f"{section}.{key_name(target, k)}", v) if v else
             ("--unset-all", f"{section}.{key_name(target, k)}")
-            for k in Committed.KEYS if (getattr(src, k) or "") != (getattr(target, k) or "")]
+            for k, v in synced_values(target, src).items() if (v or "") != (getattr(target, k) or "")]
 
 
 def key_name(entry, attr):
@@ -6626,8 +6655,8 @@ def cmd_restore(ctx, repo, args):
                 sides.add("worktree")
                 gone.add("worktree")
             elif synced_ops(entry, src):
-                for k in Committed.KEYS:
-                    entry.set(key_name(entry, k), getattr(src, k) or None)
+                for k, v in synced_values(entry, src).items():
+                    entry.set(key_name(entry, k), v)
                 sides.add("worktree")
         if entry.is_dir and "worktree" in plan:
             remove_empty_dirs(repo.top / entry.rel, [repo.top / p for p in plan["worktree"][3]])
@@ -6863,7 +6892,7 @@ def cmd_source(ctx, repo, args):
         print(f"{would}{paint(line, 'green')}")
     if not args.dry_run:
         reg.finish()
-        print(REGISTRY_PENDING if reg.source_files(args.name) else f"{REGISTRY} staged")
+        print(pending_note(bool(reg.source_files(args.name))))
     return EXIT_OK
 
 
@@ -6949,7 +6978,7 @@ def cmd_filter(ctx, repo, args):
     elif action == "set" and users:
         reg.finish()
         print(paint(done, "green"))
-        print(REGISTRY_PENDING)
+        print(pending_note(True))
     else:
         reg.finish()
         print(f"{paint(done, 'green')}; {REGISTRY} staged")

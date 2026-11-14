@@ -493,7 +493,10 @@ hasn't go (the index: unstaged; the working tree: deleted – unlike `git
 restore`, as they are known to be the release's; changed ones are kept,
 see above); an entry the layer below hasn't goes with its files. So
 `restore` undoes `pull -W` and `add -W`, `restore -S` a staged `pull` or
-`add`. Files of yours stay. Nothing newer is pulled (that does `pull
+`add`. A selection changed with `set` or `edit` stays – `status` shows it as
+pending, `pull` takes it; to undo it, see `git diff .git-assetsync`. With
+another source or other assets selected, the entry is not synced, as after
+`set`. Files of yours stay. Nothing newer is pulled (that does `pull
 --overwrite`). A committed modification is gone with `restore -SW` and a
 commit:
 
@@ -647,7 +650,8 @@ Changes entries – source, release selection, asset or filter – where `add`
 would need `--force`. Only `.git-assetsync` changes (staged); the change
 is pending until `pull` updates the files, for one commit with the
 change. `pull -n` shows what it would do, `diff --upstream` the
-differences.
+differences; `set` says so (the hint follows `advice.statusHints`) unless
+nothing is to pull – e.g. pinned to the release it is synced with.
 
 Without options, `set` shows each entry as the `set` command that gives
 it, with every option written out; `--list` shows all entries. Run
