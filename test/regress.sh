@@ -933,6 +933,12 @@ check "source set -W" \
   "$(git -c advice.statusHints=false assetsync source set -W acme/lm --url https://github.com/acme/other 2>&1 | tail -1) $(git config --blob :.git-assetsync source.acme/lm.url)" \
   ".git-assetsync changed in the working tree only - pending until pull https://github.com/acme/lm"
 git reset -q --hard
+check "source rename -W" \
+  "$(git assetsync source rename -W acme/lm lm 2>&1) $(git config --blob :.git-assetsync file.lmw.txt.source)|$(reg file.lmw.txt.source) $(reg source.lm.url)" \
+  "renamed acme/lm -> lm; .git-assetsync changed in the working tree only acme/lm|lm https://github.com/acme/lm"
+check "... nothing staged" \
+  "$(git diff --cached --name-only)|$(git diff --name-only)" "|.git-assetsync"
+git reset -q --hard
 check "filter add -W" \
   "$(git assetsync filter add -W fw --extract 2>&1) $(git config --blob :.git-assetsync filter.fw.step)|$(reg filter.fw.step)" \
   "filter fw: extract (new); .git-assetsync changed in the working tree only |extract"
