@@ -790,26 +790,39 @@ check "pull -W of a directory" "$(git assetsync pull -W lmd 2>/dev/null) $(cat l
 check "... pull --overwrite takes it" \
   "$(pullcm --overwrite lmd 2>&1 | grep -c discard) $(git ls-files lmd | oneline)$(st lmd)" "0 lmd/a.txt lmd/c.txt "
 
-# changes of the registry not staged: staged along, said
+# R2: a command stages the sections it changes, as the working tree has
+# them (with their [source]) - other changes of the registry stay unstaged
 printf '# mine\n' >> .git-assetsync
+git config -f .git-assetsync source.extra.url https://github.com/acme/extra
 asset lm.txt "lm 7"
 release acme/lm v7 16 "$F/lm.txt"
-check "registry changed by hand: pull -n doesn't warn" "$(git assetsync pull -n lm.txt 2>&1 | grep -c '^warning')" "0"
-check "... pull stages it too, says so" "$(git assetsync pull lm.txt 2>&1 | grep '^warning')" \
-  "warning: .git-assetsync had changes that were not staged - they are staged now too"
-check "... staged" "$(git status --porcelain .git-assetsync)" "M  .git-assetsync"
-check "... another command after it: no warning" \
-  "$(git assetsync set lm.txt --release v7 2>&1 | grep -c '^warning')" "0"
+check "registry changed by hand: pull doesn't warn" "$(git assetsync pull lm.txt 2>&1 | grep -c '^warning')" "0"
+check "... only its entry staged" \
+  "$(git status --porcelain .git-assetsync) $(git diff --cached -U0 .git-assetsync | grep -E '^[-+][^-+]' | sed 's/[[:space:]]*=.*//' | oneline)" \
+  "MM .git-assetsync -	synced -	digest -	blob +	synced +	digest +	blob "
+check "... the others' not" "$(git diff -U0 .git-assetsync | grep -E '^[-+][^-+]' | oneline)" \
+  "+# mine +[source \"extra\"] +	url = https://github.com/acme/extra "
+check "... set: its entry" "$(quiet git assetsync set lm.txt --release v7; git diff --cached -U0 .git-assetsync | grep -c '^+	release')" "1"
 git commit -qm v7
-check "... edit: its own changes not warned about" \
-  "$(GIT_EDITOR='f() { echo "# edited" >> "$1"; }; f' git assetsync edit 2>&1 | grep -c '^warning') $(git status --porcelain .git-assetsync)" "0 M  .git-assetsync"
-git commit -qm edit
-printf '# mine 2\n' >> .git-assetsync
-check "... but those made before" \
-  "$(GIT_EDITOR='f() { echo "# edited" >> "$1"; }; f' git assetsync edit 2>&1 | grep -c '^warning: .git-assetsync had changes that were not staged')" "1"
+check "... edit: the sections it changes" \
+  "$(GIT_EDITOR='f() { git config -f "$1" file.lm.txt.release v6; }; f' git assetsync edit 2>&1 | grep '^warning' | grep -vc extra) $(git diff --cached -U0 .git-assetsync | grep -E '^[-+][^-+]' | oneline)" \
+  "0 -	release = v7 +	release = v6 "
+check "... the hand-made ones stay unstaged" "$(git diff -U0 .git-assetsync | grep -cE '^\+(# mine|\[source "extra"\])')" "2"
+check "... edit: only a comment" "$(GIT_EDITOR='f() { echo "# edited" >> "$1"; }; f' git assetsync edit 2>&1 | grep -v '^warning')" \
+  ".git-assetsync: only comments or layout changed - nothing staged"
 git commit -qm edit
 : > .git-assetsync
-check "... emptied by hand: said" "$(git assetsync add acme/lm lm2.txt --asset lm.txt 2>&1 | grep -c '^warning: .git-assetsync had changes')" "1"
+quiet git assetsync add acme/lm lm2.txt --asset lm.txt
+check "... emptied by hand: the others stay staged" \
+  "$(git show :.git-assetsync | grep -E '^\[' | oneline)" '[source "acme/lm"] [file "lm.txt"] [filter "lmd"] [source "acme/lmd"] [dir "lmd"] [file "lm2.txt"] '
+git reset -q --hard
+quiet git assetsync unlink lmd
+check "unlink: its section and source removed from the index" \
+  "$(git show :.git-assetsync | grep -cE '^\[(dir "lmd"|source "acme/lmd")\]') $(git status --porcelain .git-assetsync)" "0 M  .git-assetsync"
+git reset -q --hard
+git config -f .git-assetsync --add filter.lmd.step "drop '*.md'"
+quiet git assetsync set lmd --release v3
+check "set: its named filter staged with it" "$(git diff --cached .git-assetsync | grep -c '^+.*drop')" "1"
 git reset -q --hard
 
 # a pull staged, not committed yet: no modification - what is committed is
@@ -2866,9 +2879,9 @@ OUT=$(GIT_EDITOR="sh '$T/ed-broken.sh'" git assetsync edit 2>&1); RC=$?
 check "edit: broken file" "$RC $(echo "$OUT" | grep -c "not staged; fix it with 'git assetsync edit'")" "2 1"
 check "edit: broken: nothing staged" "$(git diff --cached --name-only)" ""
 printf 'grep -v "^\\[file\$" "$1" > "$1.tmp" && mv "$1.tmp" "$1" && echo "# fixed" >> "$1"\n' > "$T/ed-fix.sh"
-check "edit: a broken file can be fixed with it" \
+check "edit: a broken file can be fixed with it (only a comment more: nothing to stage)" \
   "$(GIT_EDITOR="sh '$T/ed-fix.sh'" git assetsync edit 2>&1 | grep -c 'cannot parse') $(git status --porcelain .git-assetsync)" \
-  "0 M  .git-assetsync"
+  "0  M .git-assetsync"
 git reset -q --hard
 check "edit: editor fails" "$(GIT_EDITOR=false git assetsync edit 2>&1)" "error: the editor failed; nothing staged"
 printf ': > "$1"\n' > "$T/ed-empty.sh"

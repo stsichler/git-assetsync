@@ -3311,6 +3311,50 @@ def edit_config(text, items, ops):
     return "\n".join(lines).rstrip("\n") + "\n", items
 
 
+def write_config(path, items, ops):
+    """Apply ops (see edit_config) to the config file at path, its items
+    those it has: edited in the text all at once, checked with one `git
+    config --list` against what they should give - if that isn't it (a form
+    edit_config() doesn't know), the text is put back and git config does
+    them one by one. Returns the items it has then."""
+    original = path.read_bytes()
+    try:
+        text, expected = edit_config(original.decode("utf-8"), items, ops)
+        path.write_bytes(text.encode("utf-8"))
+        p = git(["config", "-f", path, "--list", "-z"], check=False)
+        if p.returncode or config_items(p.stdout) != expected:
+            raise ValueError("not as expected")
+        return expected
+    except ValueError:
+        path.write_bytes(original)
+        for args in ops:
+            if args[0] == "--set-all":        # not git's: all values of a key
+                git(["config", "-f", path, "--unset-all", args[1]], check=False)
+                for v in args[2:]:
+                    git(["config", "-f", path, "--add", args[1], v])
+            else:
+                git(["config", "-f", path] + list(args))
+        return config_items(git(["config", "-f", path, "--list", "-z"]).stdout)
+
+
+def op_sections(op):
+    """The sections (section.name) a change (see edit_config) is in."""
+    if op[0] in ("--remove-section", "--rename-section"):
+        return list(op[1:])
+    return [(op[1] if op[0].startswith("--") else op[0]).rpartition(".")[0]]
+
+
+def section_items(items, section):
+    """The items of a section (section.name) - not those of others whose
+    name starts with it."""
+    return {k: v for k, v in items.items() if k.rpartition(".")[0] == section}
+
+
+def has_entries(items):
+    """Has a registry with these items anything of ours in it?"""
+    return any(k.partition(".")[0] in SECTIONS for k in items)
+
+
 def registry_unstaged(repo):
     """Has .git-assetsync changes that aren't staged (also untracked or
     deleted)? Asked of git, as it compares (line endings) - not parsed."""
@@ -3329,6 +3373,7 @@ class Registry:
         self.sources, self.files, self.kinds, self.filters = {}, {}, {}, {}
         self.dry_run = False      # only change the in-memory state
         self.items, self.pending = {}, []     # see flush()
+        self.touched, self.renamed = set(), []    # see stage()
         if committed:
             p = repo.git(["config", "--blob", f"HEAD:{REGISTRY}", "--list", "-z"], check=False)
             if p.returncode:      # none in HEAD (or no HEAD)
@@ -3367,33 +3412,18 @@ class Registry:
             self.pending.append(args)
 
     def flush(self):
-        """Write the changes: edited in the text all at once, checked with one
-        `git config --list` against what they should give - if that isn't
-        it (a form edit_config() doesn't know), the text is put back and
-        git config does them one by one."""
+        """Write the changes to the working tree (write_config), noting their
+        sections for stage()."""
         ops, self.pending = self.pending, []
         if not ops:
             return
+        for op in ops:
+            self.touched.update(op_sections(op))
+            if op[0] == "--rename-section":
+                self.renamed.append(op[1:])
         if not self.path.exists():
             self.path.write_bytes(REGISTRY_HEADER.encode())
-        original = self.path.read_bytes()
-        try:
-            text, expected = edit_config(original.decode("utf-8"), self.items, ops)
-            self.path.write_bytes(text.encode("utf-8"))
-            p = git(["config", "-f", self.path, "--list", "-z"], check=False)
-            if p.returncode or config_items(p.stdout) != expected:
-                raise ValueError("not as expected")
-            self.items = expected
-        except ValueError:
-            self.path.write_bytes(original)
-            for args in ops:
-                if args[0] == "--set-all":        # not git's: all values of a key
-                    git(["config", "-f", self.path, "--unset-all", args[1]], check=False)
-                    for v in args[2:]:
-                        git(["config", "-f", self.path, "--add", args[1], v])
-                else:
-                    git(["config", "-f", self.path] + list(args))
-            self.items = config_items(git(["config", "-f", self.path, "--list", "-z"]).stdout)
+        self.items = write_config(self.path, self.items, ops)
 
     def set_file(self, rel, name, value):
         """Set (value None: remove) a key of a [file] or [dir]."""
@@ -3530,23 +3560,95 @@ class Registry:
         self.files[new] = self.files.pop(old)
         self.kinds[new] = self.kinds.pop(old)
 
-    def finish(self, unstaged=None):
-        """Stage the registry (or its removal when empty), written in working
-        tree form - line endings as .gitattributes / core.autocrlf say.
-        Changes it had before the command that weren't staged (unstaged:
-        asked before, e.g. by edit; else now, before it is written) are
-        staged too: said."""
+    def finish(self, stage=True):
+        """Write the registry (removed when empty) in working tree form - line
+        endings as .gitattributes / core.autocrlf say - and stage what this
+        run changed in it (stage())."""
         if self.dry_run:
             return
-        if registry_unstaged(self.repo) if unstaged is None else unstaged:
-            warn(f"{REGISTRY} had changes that were not staged - they are staged now too")
         self.flush()
         if self.path.exists():
             if not self.sources and not self.files and not self.filters:
                 self.path.unlink()
+                self.items = {}
             else:
                 self.repo.fix_eol(self.path)
-        self.repo.git(["add", "-A", "--", REGISTRY])
+        if stage:
+            self.stage()
+
+    def stage(self):
+        """Stage the sections this run changed - each as a whole, as the
+        working tree has it, with the [source] and the named [filter]s of
+        the entries among them (else the staged entry wouldn't be what it
+        is); the rest of the staged registry stays as it is, and so do its
+        comments and layout. Stored as `git add` would store such a file;
+        none left: removed from the index."""
+        sections = set(self.touched)
+        for section in list(sections):
+            kind, _, rel = section.partition(".")
+            values = self.files.get(rel) if kind in BASE_KEY else None
+            if values is None:
+                continue
+            if values.get("source"):
+                sections.add(f"source.{values['source']}")
+            todo = [values.get("filter")]
+            while todo:               # also those its filters apply
+                name = todo.pop()
+                if name in self.filters and f"filter.{name}" not in sections:
+                    sections.add(f"filter.{name}")
+                    todo += [step_parts(s)[1][1] for s in self.filters[name]
+                             if step_parts(s)[0] == "apply"]
+        self.touched, renamed, self.renamed = set(), self.renamed, []
+        if not sections:
+            return
+        repo = self.repo
+        rows = [r for r in out(repo.git(["ls-files", "-s", "-z", "--", lit(REGISTRY)])).split("\0")
+                if r]
+        if any(r.split()[2] != "0" for r in rows):
+            raise FsError(f"{REGISTRY} has a merge conflict - resolve it first")
+        mode, oid = rows[0].split()[:2] if rows else ("100644", None)
+        items = {}
+        if oid:
+            p = repo.git(["config", "--blob", oid, "--list", "-z"], check=False)
+            if p.returncode:
+                raise FsError(f"{REGISTRY} as staged: cannot parse: "
+                              + p.stderr.decode("utf-8", "replace").strip())
+            items = config_items(p.stdout)
+        ops, staged = [], dict(items)
+        for old, new in renamed:      # where the index has it: renamed there too
+            if section_items(staged, old) and not section_items(staged, new):
+                ops.append(("--rename-section", old, new))
+                staged = {(new + k[len(old):] if k.rpartition(".")[0] == old else k): v
+                          for k, v in staged.items()}
+        order = list(dict.fromkeys(k.rpartition(".")[0] for k in self.items))
+        # new ones in the order the working tree has them
+        for section in sorted(sections, key=lambda s: order.index(s) if s in order else len(order)):
+            want, have = section_items(self.items, section), section_items(staged, section)
+            if not want:
+                if have:
+                    ops.append(("--remove-section", section))
+                continue
+            for key in list(want) + [k for k in have if k not in want]:
+                values = want.get(key, [])
+                if values == have.get(key):
+                    continue
+                if len(values) == 1 and len(have.get(key, [])) < 2:
+                    ops.append((key, values[0]))      # a line's layout and comment stay
+                else:
+                    ops.append(("--set-all", key) + tuple(values))
+        if not ops:
+            return
+        with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
+            path = Path(td) / "registry"
+            path.write_bytes(repo.read_blob(oid) if oid else REGISTRY_HEADER.encode())
+            items = write_config(path, items, ops)
+            data = path.read_bytes().replace(b"\r\n", b"\n")
+        if not has_entries(items):
+            if oid:
+                repo.git(["update-index", "--force-remove", "--", REGISTRY])
+            return
+        repo.git(["update-index", "--add", "--cacheinfo",
+                  f"{mode},{repo.as_local(data, REGISTRY)},{REGISTRY}"])
 
 
 
@@ -5547,13 +5649,14 @@ def registry_problems(reg):
 
 def cmd_edit(ctx, repo, args):
     """Open .git-assetsync in the editor (git's: GIT_EDITOR, core.editor,
-    VISUAL, EDITOR), then check it and stage it."""
+    VISUAL, EDITOR), then check it and stage the sections that changed."""
     path = repo.top / REGISTRY
     if not path.exists():
         raise FsError(f"no {REGISTRY} yet - take files from release assets with "
                       "'git assetsync add'")
     before = path.read_bytes()
-    unstaged = registry_unstaged(repo)      # changes by hand before: said when staged
+    p = git(["config", "-f", path, "--list", "-z"], check=False)
+    old = {} if p.returncode else config_items(p.stdout)
     # run like git runs its editor ('git config --edit' exits with 0 even if
     # the editor fails): GIT_EDITOR, core.editor, VISUAL, EDITOR, via sh
     editor = out(repo.git(["var", "GIT_EDITOR"]))
@@ -5569,7 +5672,13 @@ def cmd_edit(ctx, repo, args):
         raise FsError(f"{e} - not staged; fix it with 'git assetsync edit'")
     for problem in registry_problems(reg):
         warn(f"{REGISTRY}: {problem}")
-    reg.finish(unstaged)
+    changed = {k.rpartition(".")[0] for k in set(old) | set(reg.items)
+               if old.get(k) != reg.items.get(k)}
+    if not changed:
+        print(f"{REGISTRY}: only comments or layout changed - nothing staged")
+        return EXIT_OK
+    reg.touched = changed
+    reg.finish()
     print(REGISTRY_STAGED)
     return EXIT_OK
 
