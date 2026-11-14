@@ -342,7 +342,7 @@ as usual. The hints follow `advice.statusHints`.
 
 | Option | Meaning |
 |---|---|
-| `-s`, `--short` | one line per entry with something to report, two columns like `git status -s`: upstream (`P` pending, `N` new, `E` error) and local (`M` modified, `D` missing, `?` not committed yet) |
+| `-s`, `--short` | one line per entry with something to report, three columns – upstream (`P` pending, `N` new, `E` error), then like `git status -s` the index (what a commit takes, against HEAD) and the working tree (against the index): `A` new entry, `U` updated (allowed), `M` modified, `D` missing (both NOT ALLOWED) |
 | `-v`, `--verbose` | also list all entries with asset, source, release selection and synced release |
 | `--exit-code` | exit with 1 if something is to pull, modified or missing |
 | `--no-fetch` | don't ask GitHub or GitLab for new releases, see [Offline operation](#offline-operation) |

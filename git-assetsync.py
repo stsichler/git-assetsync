@@ -115,10 +115,12 @@ Basic commands - what you need day to day:
                                 files (what an entry got, gone - deleted,
                                 committed or not, in a directory any one of
                                 them: restore gets it back)
-        -s, --short             short format: upstream and local columns
-                                (P pending, N new, E error; M modified -
-                                committed or not -, D missing, ? not
-                                committed yet)
+        -s, --short             short format, three columns: upstream (P
+                                pending, N new, E error), index (what a
+                                commit takes, against HEAD) and working
+                                tree (against the index): A new entry, U
+                                updated (allowed), M modified, D missing
+                                (both NOT ALLOWED)
         -v, --verbose           also list all files with their sources
         --exit-code             exit 1 if something is to pull or a file is
                                 modified or missing
@@ -3806,8 +3808,8 @@ class State:
     unknown: Optional[str] = None     # the synced release isn't in the source: what to do
     below: tuple = (None, None)   # the entry as HEAD and the index have it (None: not there)
     where: Optional[str] = None   # the layer above HEAD with a modification of its own
-    staged: bool = False      # index and HEAD differ (the entry or its files)
-    unstaged: bool = False    # the working tree and the index differ
+    staged: Optional[str] = None      # index vs HEAD: layer_change()
+    unstaged: Optional[str] = None    # the working tree vs the index
 
 
 def base_unavailable(st, e):
@@ -3947,6 +3949,21 @@ def synced_keys(entry):
     return entry and tuple(getattr(entry, k) for k in Committed.KEYS)
 
 
+def layer_change(lower, upper, below, above):
+    """What a layer has of an entry that the one below hasn't (its entries
+    there - None: none -, the files at its paths there): 'A' the entry or
+    its files new, 'U' another sync (base or release), else None. Files
+    that differ with the same sync: one of them modified, said as such."""
+    if upper is None:
+        return None
+    if lower is None or above and not below:
+        return "A"
+    if upper.blob != lower.blob or upper.mode != lower.mode or (
+            upper.synced and lower.synced and upper.synced != lower.synced):
+        return "U"
+    return None
+
+
 def at_paths(items, paths, drop=()):
     """{path: (mode, id)} of the items (mode, id, path) at these paths."""
     return {p: (m, o) for m, o, p in items if p in paths and p not in drop}
@@ -4033,8 +4050,8 @@ def local_state(repo, st):
     # what differs between the layers (to be committed, not staged)
     st.below = (eh, ei)
     index = at_paths(index_items(repo, head, every), every)
-    st.staged = synced_keys(ei) != synced_keys(eh) or index != at_paths(head, every)
-    st.unstaged = synced_keys(entry) != synced_keys(ei) or repo.worktree_items(every) != index
+    st.staged = layer_change(eh, ei, at_paths(head, every), index)
+    st.unstaged = layer_change(ei, entry, index, repo.worktree_items(every))
     gone = set(paths) - set(files)
     st.gone, st.total = sorted(gone), len(paths)
     if not files or gone:         # any file of its release: as one of a [file]
@@ -4249,15 +4266,27 @@ def render(parts, stream="out"):
 
 
 def short_code(st):
-    """Two columns, like `git status -s`: upstream (P pending, N new, E
-    error) and local (M modified - committed or not -, D missing, ? not
-    committed yet)."""
+    """Three columns, like `git status -s` with upstream first: upstream (P
+    pending, N new, E error), what a commit takes - the index against HEAD,
+    a committed modification too - and the working tree against the index:
+    A a new entry, U updated (another sync, allowed), M modified and D
+    missing (both NOT ALLOWED; D in the working tree column)."""
     if st.error:
-        return "E "
+        return "E  "
     up = upstream_state(st)
     x = {"pending": "P", "new": "N"}[up[0]] if up else " "
-    y = "D" if st.missing else "M" if st.modified else "?" if st.worktree == "added" else " "
-    return x + y
+
+    if st.modified and (st.where == "index" or st.committed == "adapted"):
+        y = "M"
+    else:
+        y = st.staged or " "
+    if st.missing:
+        z = "D"
+    elif st.modified and st.where == "worktree":
+        z = "M"
+    else:
+        z = st.unstaged or " "
+    return x + y + z
 
 
 def shown(repo, rel):
@@ -4277,18 +4306,19 @@ def print_short(repo, sts):
     for st in sts:
         code = short_code(st)
         if code.strip():
-            line = paint(code[0], "yellow") + paint(code[1], "red")
+            line = paint(code[0], "yellow") + paint(code[1], "red" if code[1] == "M" else "green") \
+                + paint(code[2], "red")
             if code[0] == "E":
                 line = paint(code, "boldred")
             print(f"{line} {shown(repo, st.entry.shown)}")
 
 
-def layer_row(st, lower, upper):
+def layer_row(st, lower, upper, change):
     """(label, path, note, style) of an entry that differs between two
     layers - its entry in each (None: none there)."""
     tags = [e.synced if e is not None else "" for e in (lower, upper)]
     note = " -> ".join(tags) if all(tags) and tags[0] != tags[1] else tags[1] or None
-    return "updated" if tags[0] else "new file", st.entry.shown, note, "dim"
+    return "updated" if change == "U" else "new file", st.entry.shown, note, "dim"
 
 
 def print_long(ctx, repo, sts, verbose):
@@ -4350,12 +4380,12 @@ def print_long(ctx, repo, sts, verbose):
     section("Changes to be committed:",
             ['use "git commit" to commit them',
              'use "git assetsync restore --staged <file>..." to unstage'],
-            [layer_row(st, *st.below) for st in staged], "green")
+            [layer_row(st, *st.below, st.staged) for st in staged], "green")
     unstaged = [st for st in fine if st.unstaged]
     section("Changes not staged for commit:",
             ['use "git assetsync pull <file>..." to stage them',
              'use "git assetsync restore <file>..." to discard them'],
-            [layer_row(st, st.below[1], st.entry) for st in unstaged], "red")
+            [layer_row(st, st.below[1], st.entry, st.unstaged) for st in unstaged], "red")
     new = staged + unstaged
 
     warnings = [(st.entry.shown, w) for st in ok for w in st.warnings + [st.unknown] if w]
@@ -7133,7 +7163,7 @@ def run(argv):
     p = sub.add_parser("status", parents=[colorp, remotep], help="show the state of the synced files")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
     p.add_argument("-s", "--short", action="store_true",
-                   help="short format: upstream and local columns")
+                   help="short format: upstream, index and working tree columns")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="also list all files with their sources")
     p.add_argument("--exit-code", action="store_true",
