@@ -143,7 +143,8 @@ synced yet, and the next `pull` fetches it.
 
 A file taken from an asset must stay exactly what the release gives – a
 binary or generated file can't be merged. A file that differs – committed,
-staged or only in the working tree – is **NOT ALLOWED**: `status` reports it, `status --exit-code`
+staged or only in the working tree, against the entry of the same layer –
+is **NOT ALLOWED**: `status` reports it, `status --exit-code`
 exits with 1, `pull` refuses to update it. [`diff`](#diff) shows the
 modification, [`restore`](#restore) brings back what the release gave,
 and `pull --overwrite` updates anyway: with a warning if anything is lost
@@ -230,8 +231,15 @@ same caution with uncommitted changes.
 add` – `pull` like `git merge --squash` – and you commit. `pull` and
 `add` prepare a [proposed commit message](#proposed-commit-messages) that
 a plain `git commit` offers. Whatever else is staged goes into the same
-commit. A command that stages `.git-assetsync` stages your unstaged
-changes to it as well, with a warning (`edit`: those made before it).
+commit.
+
+**Each layer on its own.** HEAD, the index and the working tree each have
+their `.git-assetsync`; an entry there describes the files there. A
+command stages only the entries it changes, with their `[source]` and
+filters – your other changes to the file stay unstaged, as with `git add
+PATH`. `-W` (`pull`, `add`) writes files and entry to the working tree
+only; `git add PATH .git-assetsync` stages them, `restore PATH` goes
+back.
 
 Without a command, `status` runs. `PATH` is a file or a directory (all
 entries below it), relative to the current directory. A path inside a
@@ -300,9 +308,16 @@ Missing files:
   (use "git assetsync unlink <file>..." to remove their entries)
 	missing:    bin/tool  (NOT ALLOWED: still an entry)
 
-Not committed yet:
+Changes to be committed:
   (use "git commit" to commit them)
-	new file:   third_party/zlib/
+  (use "git assetsync restore --staged <file>..." to unstage)
+	updated:    lib/zlib.dll  (v1.3 -> v1.3.1)
+	new file:   third_party/zlib/  (v1.3.1)
+
+Changes not staged for commit:
+  (use "git assetsync pull <file>..." to stage them)
+  (use "git assetsync restore <file>..." to discard them)
+	updated:    bin/tool  (v1.0 -> v1.1)
 ```
 
 - **Upstream changes to pull** – `pending`: the entry selects another
@@ -310,10 +325,14 @@ Not committed yet:
   or its filter changed. `new`: an entry not synced yet, e.g. written
   with [`edit`](#edit).
 - **Locally modified files** – differs from what the release gave, in
-  the working tree or committed; `restore -SW` and a commit bring it back.
+  the working tree, staged or committed; `restore` (only in the working
+  tree) or `restore -SW` and a commit bring it back.
 - **Missing files** – the file, or all files of a directory's release,
   deleted (also committed).
-- **Not committed yet** – added or pulled and staged.
+- **Changes to be committed** – added or pulled and staged: the index
+  differs from HEAD.
+- **Changes not staged for commit** – in the working tree only, e.g.
+  after `pull -W`: it differs from the index.
 
 With nothing to report it says `nothing to pull, all N files
 unmodified`. Errors (no release found, no matching assets, several for a
@@ -355,14 +374,16 @@ from the [download cache](#download-cache) if possible.
 [No local modifications](#no-local-modifications)); the others are pulled
 anyway, and the exit code is 2. An entry not synced yet is taken as `add`
 would. What `pull` staged is no modification: pulling again before the
-commit works.
+commit works, and the proposed message goes from what is committed. An
+entry whose index differs from the working tree (after `pull -W`) is
+staged, also by `pull --all`.
 
 | Option | Meaning |
 |---|---|
 | `--all` | all entries with something to pull (with `--overwrite` also modified ones); left out are missing ones (see [above](#no-local-modifications)) and those whose [synced release isn't found](#selecting-the-release); not with paths |
 | `--release TAG\|PATTERN` | this release instead of the selected one, once – see below; prereleases count for a pattern only if the entry takes them |
 | `--overwrite` | discard local modifications and files of yours in the way |
-| `-W`, `--worktree` | write to the working tree only: nothing staged, `.git-assetsync` unchanged – see below |
+| `-W`, `--worktree` | files and entry in the working tree only, nothing staged – see below |
 | `-v`, `--verbose` | first name where each entry comes from, as `status -v` does |
 | `-n`, `--dry-run` | only report what would happen: the subject of the proposed commit message, for a directory with its files (`Files: 3 added, 1 removed, 0 changed (52 in total)`) |
 
@@ -384,11 +405,11 @@ To stay on a release, pin it with [`set --release`](#set). [`diff
 --release` would bring.
 
 **Trying a release:** `pull -W PATH…` writes what `pull` would (also with
-`--release`) to the working tree only, so it can't be committed by
-accident – e.g. to see whether everything still builds. `status` keeps
-showing it as pending and modified. `git restore PATH…` goes back (new
-files of a directory stay, untracked); `pull --overwrite PATH…` takes it
-(with the same `--release`), nothing is lost.
+`--release`) to the working tree only, the entry too, so it can't be
+committed by accident – e.g. to see whether everything still builds.
+`status` shows it under “Changes not staged for commit”. `pull PATH…`
+(or `git add PATH .git-assetsync`) stages it; `restore PATH…` goes back
+to the staged version.
 
 ### `diff`
 
@@ -398,15 +419,14 @@ git assetsync diff [PATH…] [--upstream [--release TAG|PATTERN]] [--exit-code |
 
 Shows the local modifications of the entries (default: all): what the
 release gave (the recorded `blob` / `tree`) against the working tree. In
-a directory only the release's files are compared. Works offline. A
-change only staged, with the working file as in HEAD, shows `git diff
---cached`.
+a directory only the release's files are compared. Works offline.
 
 | Option | Shows |
 |---|---|
 | (none) | the local modifications: synced -> working tree |
 | `--upstream` | what `pull` would bring: synced -> what the selected release gives now |
 | `--upstream --release TAG\|PATTERN` | what `pull --release` would bring |
+| `--cached`, `--staged` | the staged modifications: synced (as the staged entry has it) -> index |
 | `--exit-code` | exit with 1 if there are differences, like `git diff` |
 | `--quiet` | the same, showing nothing |
 
@@ -464,11 +484,14 @@ copies (`-- --symlinks` to link anyway).
 git assetsync restore PATH… [-S] [-W]
 ```
 
-Like `git restore`, but brings back what the entries were synced with
-instead of what is committed – without pulling a newer release (that does
-`pull --overwrite`). It restores the working tree; `-S` (`--staged`) the
-index instead, `-SW` both. `.git-assetsync` doesn't change. A committed
-modification is gone with `restore -SW` and a commit:
+Like `git restore`, from the layer below: the working tree from the
+index, with `-S` (`--staged`) the index from HEAD, with `-SW` both from
+HEAD. The files come back as the release gave them to the entry there,
+and the entry is synced as there – its selection (release, asset,
+filter) stays; where that layer has no entry yet, the entry's own. So
+`restore` undoes `pull -W`, `restore -S` a staged `pull`. Nothing newer
+is pulled (that does `pull --overwrite`). A committed modification is
+gone with `restore -SW` and a commit:
 
 ```sh
 git assetsync restore -SW lib/data.bin
@@ -483,14 +506,14 @@ directory](#files-of-your-own-in-a-directory)).
 
 | Option | Meaning |
 |---|---|
-| `-S`, `--staged` | restore the index instead of the working tree |
-| `-W`, `--worktree` | restore the working tree (the default; with `-S`: both) |
+| `-S`, `--staged` | restore the index (from HEAD) instead of the working tree (from the index) |
+| `-W`, `--worktree` | restore the working tree (the default; with `-S`: both, from HEAD) |
 
 ### `add`
 
 ```
 git assetsync add SOURCE PATH [--asset PATTERN]… [--exclude-asset PATTERN]… [--sourcecode FORMAT] [--release TAG|PATTERN]
-                  [--prerelease] [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-n]
+                  [--prerelease] [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-W] [-n]
 ```
 
 Takes the file or directory `PATH` from assets of the release `SOURCE`
@@ -538,6 +561,7 @@ the entry in `.git-assetsync` and stages both, like `git add`. A plain
 | `--filter NAME` | apply the named [filter](#filters) (define it first with [`filter add`](#filter)) |
 | `--force` | replace an existing entry, with its file or directory; a file stays a file, a directory a directory |
 | `--overwrite` | replace files in the way that differ from the release's; with `--force` also local modifications of the entry |
+| `-W`, `--worktree` | file (directory) and entry in the working tree only, nothing staged |
 | `-n`, `--dry-run` | only show which release, assets and filter would be taken, for a directory with its files |
 
 An existing file at `PATH`, or a file of yours in a directory, is only
@@ -667,7 +691,8 @@ git assetsync edit
 
 Opens `.git-assetsync` in the editor Git uses (`GIT_EDITOR`,
 `core.editor`, `VISUAL`, `EDITOR`), like `git config --edit`, then checks
-and stages it. A file that can't be parsed is not staged; gaps that
+it and stages the sections that changed (only comments or layout:
+nothing). A file that can't be parsed is not staged; gaps that
 `status` would report are shown as warnings:
 
 ```

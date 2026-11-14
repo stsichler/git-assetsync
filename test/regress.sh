@@ -360,7 +360,7 @@ check "add stages, like git add" "$(git status --porcelain | oneline)" "A  .git-
 check "add: says how to commit" "$(echo "$OUT" | grep -cxE '    git commit|\(it offers the proposed commit message; a copy stays in \.git/ASSETSYNC_MSG\)')" "2"
 check "add: file is the asset" "$(cat bin/tool.bin)" "tool 1.0"
 check "added, not committed yet: '?'" "$(git assetsync status -s --no-fetch)" " ? bin/tool.bin"
-check "... a section of its own" "$(git assetsync status --no-fetch | grep -A2 '^Not committed yet:' | grep -cE "^${TAB}new file:[[:space:]]+bin/tool\.bin\$")" "1"
+check "... a section of its own" "$(git assetsync status --no-fetch | grep -A3 '^Changes to be committed:' | grep -cE "^${TAB}new file:[[:space:]]+bin/tool\.bin  \(v1\.0\)\$")" "1"
 check "add: source" "$(reg source.acme/tool.url)" "https://github.com/acme/tool"
 check "add: no release key (latest)" "$(reg file.bin/tool.bin.release)" ""
 check "add: entry" "$(reg file.bin/tool.bin.source) $(reg file.bin/tool.bin.asset) $(reg file.bin/tool.bin.synced)" \
@@ -709,7 +709,7 @@ check "status: NOT ALLOWED" "$(git assetsync status | grep -cE "^${TAB}modified:
 asset lm.txt "lm 2"
 release acme/lm v2 11 "$F/lm.txt"
 check "pending + uncommitted" "$(st)" "PM"
-check "pull refused" "$(git assetsync pull lm.txt 2>&1 | grep -c "local modifications NOT ALLOWED.*git assetsync restore -SW lm.txt")" "1"
+check "pull refused" "$(git assetsync pull lm.txt 2>&1 | grep -c "local modifications NOT ALLOWED.*git assetsync restore lm.txt")" "1"
 check "... file unchanged" "$(cat lm.txt)" "dirty"
 check "pull --all --overwrite: discards and updates" \
   "$(pullcm --all --overwrite 2>&1 | grep -c 'warning: lm.txt: discarding local modifications')" "1"
@@ -769,26 +769,43 @@ check "directory with the release's files: pull --overwrite, nothing discarded" 
 asset lm.txt "lm 6"
 release acme/lm v6 15 "$F/lm.txt"
 check "pull -W: one line" "$(git assetsync pull -W lm.txt 2>/dev/null)" "lm.txt: updated in the working tree only"
-check "... nothing staged, registry unchanged" \
-  "$(cat lm.txt) $(git status --porcelain | oneline)$(reg file.lm.txt.synced)" "lm 6  M lm.txt v5"
-check "... status: pending and modified" "$(st lm.txt)" "PM"
-check "... pull refuses it" "$(rc git assetsync pull lm.txt)" "2"
-check "... pull -W refuses it as well" "$(rc git assetsync pull -W lm.txt)" "2"
-check "... pull --overwrite takes it, nothing discarded" \
-  "$(pullcm --overwrite lm.txt 2>&1 | grep -c discard) $(cat lm.txt) $(reg file.lm.txt.synced)$(st lm.txt)" "0 lm 6 v6"
-check "pull -W --release: no note on the selection" \
-  "$(git assetsync pull -W --release v5 lm.txt 2>&1)" "lm.txt: updated in the working tree only"
-git restore lm.txt
-check "... git restore goes back" "$(cat lm.txt)$(st lm.txt)" "lm 6"
+check "... file and entry in the working tree only" \
+  "$(cat lm.txt) $(git status --porcelain | oneline)$(reg file.lm.txt.synced) $(git config --blob :.git-assetsync file.lm.txt.synced)" \
+  "lm 6  M .git-assetsync  M lm.txt v6 v5"
+check "... status -s: nothing (not pending, not modified)" "$(st lm.txt)" ""
+check "... status: not staged" \
+  "$(git assetsync status | grep -A3 '^Changes not staged for commit:' | grep -cE "^${TAB}updated:[[:space:]]+lm\.txt  \(v5 -> v6\)\$")" "1"
+check "... diff: no modification" "$(git assetsync diff lm.txt)" ""
+check "... pull -W again" "$(git assetsync pull -W --release v5 lm.txt 2>/dev/null) $(cat lm.txt) $(reg file.lm.txt.synced) $(st lm.txt)" \
+  "lm.txt: updated in the working tree only lm 5 v5 P"
+quiet git assetsync pull -W lm.txt
+check "... restore goes back to the staged version" \
+  "$(git assetsync restore lm.txt) $(cat lm.txt) $(reg file.lm.txt.synced)$(git status --porcelain | oneline)" "lm.txt: restored (acme/lm v5) lm 5 v5"
+quiet git assetsync pull -W lm.txt
+check "... pull stages it" "$(git assetsync pull lm.txt 2>/dev/null | head -1) $(git status --porcelain | oneline)" \
+  "lm.txt: updated and staged. Commit with: M  .git-assetsync M  lm.txt "
+check "... the message from what is committed" "$(head -1 .git/ASSETSYNC_MSG | grep -c 'was v5')" "1"
+check "... restore -S unstages it" \
+  "$(git assetsync restore -S lm.txt) $(git status --porcelain | oneline)$(git config --blob :.git-assetsync file.lm.txt.synced)" \
+  "lm.txt: restored in the index (acme/lm v5)  M .git-assetsync  M lm.txt v5"
+quiet git assetsync pull lm.txt
+commitp
 check "pull -n -W: as pull -n" "$(git assetsync pull -n -W --release v5 lm.txt 2>&1 | cut -c1-30)" \
   "would: Update lm.txt to acme/l"
 mkdir -p "$T/lmd3" && echo a3 > "$T/lmd3/a.txt" && echo c > "$T/lmd3/c.txt"
 mkarchive "$F/lmd-3.zip" "$T/lmd3"
 release acme/lmd v3 12 "$F/lmd-3.zip"
-check "pull -W of a directory" "$(git assetsync pull -W lmd 2>/dev/null) $(cat lmd/a.txt) $(git status --porcelain lmd | oneline)" \
+check "pull -W of a directory" "$(git assetsync pull -W lmd 2>/dev/null) $(cat lmd/a.txt) $(git status --porcelain lmd | oneline)$(st lmd)" \
   "lmd/: updated in the working tree only a3  M lmd/a.txt ?? lmd/c.txt "
-check "... pull --overwrite takes it" \
-  "$(pullcm --overwrite lmd 2>&1 | grep -c discard) $(git ls-files lmd | oneline)$(st lmd)" "0 lmd/a.txt lmd/c.txt "
+check "... restore: back, the new file gone" "$(quiet git assetsync restore lmd; cat lmd/a.txt) $(git status --porcelain | oneline)" "a2 "
+quiet git assetsync pull -W lmd
+check "... pull takes it" \
+  "$(pullcm lmd 2>&1 | grep -c discard) $(git ls-files lmd | oneline)$(st lmd)" "0 lmd/a.txt lmd/c.txt "
+check "add -W: in the working tree only" \
+  "$(git assetsync add -W acme/lm lm3.txt --asset lm.txt 2>&1 | grep -c 'in the working tree only') $(git status --porcelain | oneline)$(st lm3.txt)" \
+  "1  M .git-assetsync ?? lm3.txt  ?"
+check "... pull stages it" "$(quiet git assetsync pull lm3.txt; git status --porcelain | oneline)" "M  .git-assetsync A  lm3.txt "
+git reset -q --hard
 
 # R2: a command stages the sections it changes, as the working tree has
 # them (with their [source]) - other changes of the registry stay unstaged
@@ -842,8 +859,12 @@ release acme/spd v2 11 "$F/spd-2.zip"
 quiet git assetsync pull --release v2 sp.txt
 quiet git assetsync pull spd
 check "pull staged: not modified" "$(git assetsync status -s | oneline)" "P  sp.txt "
+check "... status: to be committed" \
+  "$(git assetsync status | grep -A4 '^Changes to be committed:' | grep -cE "^${TAB}updated:[[:space:]]+sp\.txt  \(v1 -> v2\)\$")" "1"
+check "... diff --cached: no modification" "$(git assetsync diff --cached)" ""
 check "... a second pull, nothing discarded" \
   "$(git assetsync pull --release v3 sp.txt 2>&1 | grep -c discard) $(cat sp.txt)" "0 sp 3"
+check "... its message from what is committed" "$(grep -c '^\[assetsync\] Update sp.txt to acme/sp v3 (.*was v1' .git/ASSETSYNC_MSG)" "1"
 git commit -q --no-edit
 check "... committed: the note isn't in the message" "$(msg | grep -c 'were discarded')" "0"
 check "... then: pending only (selects v1)" "$(git assetsync status -s | oneline)" "P  sp.txt "
@@ -852,6 +873,8 @@ check "... then: pending only (selects v1)" "$(git assetsync status -s | oneline
 # would take it)
 echo other > sp.txt && git add sp.txt && git show HEAD:sp.txt > sp.txt
 check "only staged: modified" "$(git assetsync status -s sp.txt) $(rc git assetsync status --exit-code)" "PM sp.txt 1"
+check "... diff --cached shows it" "$(git assetsync diff --cached -- --name-only) $(git assetsync diff -- --name-only)" "sp.txt "
+check "... pull suggests restore -SW" "$(git assetsync pull sp.txt 2>&1 | grep -c 'restore -SW sp.txt')" "1"
 check "... pull refuses it" "$(git assetsync pull sp.txt 2>&1 | grep -c 'local modifications NOT ALLOWED')" "1"
 check "... -n --overwrite says discarding" "$(git assetsync pull -n --overwrite --release v3 sp.txt 2>&1 | grep -c 'discarding local modifications')" "1"
 check "... --overwrite keeps it" "$(git assetsync pull --overwrite --release v3 sp.txt 2>&1 | grep -cE '^warning: sp.txt: discarding|^discarded: sp.txt, as staged')" "2"
@@ -3051,9 +3074,10 @@ git config -f .git-assetsync file.h.txt.source acme/rs
 check "restore: not synced yet" "$(git assetsync restore h.txt 2>&1)" "error: h.txt: not synced yet - use 'git assetsync pull h.txt'"
 git checkout -q .git-assetsync
 git config -f .git-assetsync file.f.txt.blob 0123456789012345678901234567890123456789
+git commit -qam "base not available"
 check "restore: base not available" \
   "$(git assetsync restore f.txt 2>&1 | grep -c "error: f.txt: its synced version is not available (.*) - get it again with 'git assetsync pull --overwrite f.txt'")" "1"
-git checkout -q .git-assetsync
+git reset -q --hard HEAD~1
 check "restore: a path inside a directory entry" "$(git assetsync restore d/a.txt 2>&1)" \
   "error: 'd/a.txt' is part of the directory entry d/ - only the entry as a whole can be changed"
 check "... nor unlink, set" "$(rc git assetsync unlink d/sub) $(rc git assetsync set d/a.txt --no-filter)" "2 2"

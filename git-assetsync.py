@@ -98,7 +98,11 @@ and pull (commands that change entries refuse it). Options follow the
 command. No command commits: they change the working tree and stage, and
 you commit - add and pull with a proposed message (like git merge
 --squash: added to .git/SQUASH_MSG, which a plain `git commit` offers; a
-copy of it all in .git/ASSETSYNC_MSG). -n (--dry-run), with the commands
+copy of it all in .git/ASSETSYNC_MSG). HEAD, the index and the working
+tree each have their .git-assetsync, and an entry there describes the
+files there; a command stages only the entries it changes (with their
+[source] and filters), other changes to the file stay unstaged. -n
+(--dry-run), with the commands
 that stage or delete files (not restore, edit, hooks): done as without -
 downloaded, filtered, checked -, only nothing written (a filter trusted
 on the terminal: only for this run).
@@ -144,9 +148,10 @@ Basic commands - what you need day to day:
                                 with --all; prereleases only if the entry
                                 takes them, a tag also if it is one
         --overwrite             discard local modifications
-        -W, --worktree          write to the working tree only: nothing
-                                staged, .git-assetsync unchanged (to try a
-                                newer version)
+        -W, --worktree          files and entry in the working tree only,
+                                nothing staged (to try a newer version;
+                                git add PATH .git-assetsync stages it,
+                                restore PATH goes back)
         -v, --verbose           first name where each entry comes from: its
                                 asset(s), source, release selection, filter,
                                 the release synced (as status -v)
@@ -164,6 +169,8 @@ Basic commands - what you need day to day:
         --release TAG|PATTERN   with --upstream: what pull --release would
                                 bring (as with pull: replace `pull` by
                                 `diff --upstream` to see what it would do)
+        --cached, --staged      the index instead of the working tree
+                                (against the base of the entry staged)
         --exit-code             exit 1 if there are differences (as git diff)
         --quiet                 show nothing, exit 1 if there are differences
 
@@ -172,20 +179,22 @@ Basic commands - what you need day to day:
                                 to `git difftool` (e.g. -t meld); the working
                                 file itself is passed, the other sides as
                                 temporary copies
-        --upstream, --release   as for diff
+        --upstream, --release, --cached  as for diff
         -d, --dir-diff          all files at once, as two directories (e.g. a
                                 directory entry in Meld; temporary copies)
         -y, --no-prompt         don't ask before each file
         --prompt                ask (the default, unless difftool.prompt is
                                 false); the last of -y and --prompt counts
 
-    restore PATH...             like `git restore`: discard local
-                                modifications - back to what the release
-                                gave (the synced version), offline, without
+    restore PATH...             like `git restore`, from the layer below:
+                                the files as the release gave them to the
+                                entry there, and the entry synced as there
+                                (its selection stays); offline, without
                                 pulling; nothing is committed
-        -S, --staged            restore the index instead of the working tree
+        -S, --staged            restore the index (from HEAD) instead of the
+                                working tree (from the index)
         -W, --worktree          restore the working tree (the default; with
-                                -S: both)
+                                -S: both, from HEAD)
 
     add SOURCE PATH             take the file PATH from an asset of the
                                 release SOURCE selects - or with PATH/ (or
@@ -226,6 +235,8 @@ Basic commands - what you need day to day:
                                 existing directory (they become the
                                 entry's), or local modifications of an
                                 entry replaced with --force
+        -W, --worktree          file (directory) and entry in the working
+                                tree only, nothing staged
         -n, --dry-run           only show what would be done
 
     rm PATH...                  remove entries and their files, staged (like
@@ -267,7 +278,8 @@ Advanced commands - change entries, sources and filters; set up:
 
     edit                        open .git-assetsync in the editor (like `git
                                 config --edit`), then check it (warnings
-                                about gaps) and stage it; for usual changes
+                                about gaps) and stage the sections that
+                                changed; for usual changes
                                 set, source, filter, unlink and mv are safer
 
     source                      list the [source]s (-v: with URL, type and
@@ -441,7 +453,7 @@ import zlib
 from collections import Counter
 from contextlib import ExitStack, contextmanager, nullcontext
 from collections import namedtuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -2566,7 +2578,7 @@ class Repo:
         self.scripts = {}         # see script_blob()
         self.known_trees = {}     # see has_tree(): {tree: whether it is here}
         self.heads = {}           # see head_entry(): {path: (mode, type, id) | None}
-        self.committed_reg = None     # see committed_entry()
+        self.layers = {}          # see registry(): {layer: its Registry}
         self.index_changes = None     # see staged()
         self.diffs = None         # see prefetch(): (paths asked, files differing from HEAD)
         self.work = {}            # see worktree_items(): {path: (mode, id) | None}
@@ -2580,6 +2592,13 @@ class Repo:
 
     def git(self, args, **kw):
         return git(args, cwd=self.top, **kw)
+
+    def registry(self, layer):
+        """The registry as HEAD ('head') or the index ('index') has it, read
+        once per run."""
+        if layer not in self.layers:
+            self.layers[layer] = Registry(self, layer)
+        return self.layers[layer]
 
     def user_path(self, s):
         return (self.base / s).resolve()
@@ -3355,6 +3374,45 @@ def has_entries(items):
     return any(k.partition(".")[0] in SECTIONS for k in items)
 
 
+def staged_registry(repo):
+    """(mode, blob, items) of the registry in the index - blob None, items
+    {} if none there; an error if it has a merge conflict."""
+    rows = [r for r in out(repo.git(["ls-files", "-s", "-z", "--", lit(REGISTRY)])).split("\0")
+            if r]
+    if any(r.split()[2] != "0" for r in rows):
+        raise FsError(f"{REGISTRY} has a merge conflict - resolve it first")
+    if not rows:
+        return "100644", None, {}
+    mode, oid = rows[0].split()[:2]
+    p = repo.git(["config", "--blob", oid, "--list", "-z"], check=False)
+    if p.returncode:
+        raise FsError(f"{REGISTRY} as staged: cannot parse: "
+                      + p.stderr.decode("utf-8", "replace").strip())
+    return mode, oid, config_items(p.stdout)
+
+
+def write_staged(repo, ops, staged=None):
+    """Apply ops (see edit_config) to the registry in the index (staged:
+    staged_registry(), if known) - only the lines that change -, stored as
+    `git add` would store such a file; nothing of ours left: removed from
+    the index."""
+    if not ops:
+        return
+    mode, oid, items = staged or staged_registry(repo)
+    repo.layers.pop("index", None)        # read again when asked
+    with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
+        path = Path(td) / "registry"
+        path.write_bytes(repo.read_blob(oid) if oid else REGISTRY_HEADER.encode())
+        items = write_config(path, items, ops)
+        data = path.read_bytes().replace(b"\r\n", b"\n")
+    if not has_entries(items):
+        if oid:
+            repo.git(["update-index", "--force-remove", "--", REGISTRY])
+        return
+    repo.git(["update-index", "--add", "--cacheinfo",
+              f"{mode},{repo.as_local(data, REGISTRY)},{REGISTRY}"])
+
+
 def registry_unstaged(repo):
     """Has .git-assetsync changes that aren't staged (also untracked or
     deleted)? Asked of git, as it compares (line endings) - not parsed."""
@@ -3366,17 +3424,19 @@ class Registry:
     """The repository's .git-assetsync: [source], [file] and [dir] sections.
     files holds the entries of both kinds, kinds their kind."""
 
-    def __init__(self, repo, committed=False):
-        """committed: the registry as in HEAD (only read; empty if none)."""
+    def __init__(self, repo, layer=None):
+        """layer: 'head' or 'index' - the registry as HEAD or the index has it
+        (only read; empty if none there); else that of the working tree."""
         self.repo = repo
         self.path = repo.top / REGISTRY
         self.sources, self.files, self.kinds, self.filters = {}, {}, {}, {}
         self.dry_run = False      # only change the in-memory state
         self.items, self.pending = {}, []     # see flush()
         self.touched, self.renamed = set(), []    # see stage()
-        if committed:
-            p = repo.git(["config", "--blob", f"HEAD:{REGISTRY}", "--list", "-z"], check=False)
-            if p.returncode:      # none in HEAD (or no HEAD)
+        if layer:
+            p = repo.git(["config", "--blob", ("HEAD:" if layer == "head" else ":") + REGISTRY,
+                          "--list", "-z"], check=False)
+            if p.returncode:      # none there (or no HEAD)
                 return
         elif self.path.exists():
             p = git(["config", "-f", self.path, "--list", "-z"], check=False)
@@ -3601,19 +3661,7 @@ class Registry:
         self.touched, renamed, self.renamed = set(), self.renamed, []
         if not sections:
             return
-        repo = self.repo
-        rows = [r for r in out(repo.git(["ls-files", "-s", "-z", "--", lit(REGISTRY)])).split("\0")
-                if r]
-        if any(r.split()[2] != "0" for r in rows):
-            raise FsError(f"{REGISTRY} has a merge conflict - resolve it first")
-        mode, oid = rows[0].split()[:2] if rows else ("100644", None)
-        items = {}
-        if oid:
-            p = repo.git(["config", "--blob", oid, "--list", "-z"], check=False)
-            if p.returncode:
-                raise FsError(f"{REGISTRY} as staged: cannot parse: "
-                              + p.stderr.decode("utf-8", "replace").strip())
-            items = config_items(p.stdout)
+        mode, oid, items = staged_registry(self.repo)
         ops, staged = [], dict(items)
         for old, new in renamed:      # where the index has it: renamed there too
             if section_items(staged, old) and not section_items(staged, new):
@@ -3636,19 +3684,7 @@ class Registry:
                     ops.append((key, values[0]))      # a line's layout and comment stay
                 else:
                     ops.append(("--set-all", key) + tuple(values))
-        if not ops:
-            return
-        with tempfile.TemporaryDirectory(prefix="assetsync-") as td:
-            path = Path(td) / "registry"
-            path.write_bytes(repo.read_blob(oid) if oid else REGISTRY_HEADER.encode())
-            items = write_config(path, items, ops)
-            data = path.read_bytes().replace(b"\r\n", b"\n")
-        if not has_entries(items):
-            if oid:
-                repo.git(["update-index", "--force-remove", "--", REGISTRY])
-            return
-        repo.git(["update-index", "--add", "--cacheinfo",
-                  f"{mode},{repo.as_local(data, REGISTRY)},{REGISTRY}"])
+        write_staged(self.repo, ops, (mode, oid, items))
 
 
 
@@ -3768,6 +3804,10 @@ class State:
     unchecked: bool = False   # a directory whose base isn't in this clone: not checked
     changelog: list = field(default_factory=list)   # [(path, text)] its filter read (pull)
     unknown: Optional[str] = None     # the synced release isn't in the source: what to do
+    below: tuple = (None, None)   # the entry as HEAD and the index have it (None: not there)
+    where: Optional[str] = None   # the layer above HEAD with a modification of its own
+    staged: bool = False      # index and HEAD differ (the entry or its files)
+    unstaged: bool = False    # the working tree and the index differ
 
 
 def base_unavailable(st, e):
@@ -3876,22 +3916,44 @@ def release_tree(repo, rel, items, paths=None):
                            if paths is None or p in paths])
 
 
-def committed_entry(repo, entry):
-    """The entry as HEAD's .git-assetsync has it if its base is another
-    there (a pull staged, not committed yet) and here - what the committed
-    files are compared with; None if it has none there (not an entry of
-    that kind, not synced: added since); else entry itself."""
-    if repo.committed_reg is None:          # read once
-        repo.committed_reg = Registry(repo, committed=True)
-    reg = repo.committed_reg
+def layer_entry(repo, entry, layer):
+    """The entry as the registry of a layer below the working tree has it
+    ('index', 'head'); None if it has none of that kind there."""
+    reg = repo.registry(layer)
     if reg.kinds.get(entry.rel) != entry.reg.kinds.get(entry.rel):
         return None
-    old = Entry(reg, entry.rel)
-    if not old.blob:
-        return None
-    if old.blob == entry.blob or base_files(repo, old) is None:
-        return entry
-    return old
+    return Entry(reg, entry.rel)
+
+
+def entry_layers(repo, entry):
+    """The entry in HEAD, the index and the working tree: [(its entry there,
+    the paths of the files of its base there)] - the entry None where the
+    layer has none, or (below the working tree) its base isn't in this
+    clone (a directory's tree); None if that of the working tree isn't."""
+    layers = []
+    for layer in ("head", "index", "worktree"):
+        e = entry if layer == "worktree" else layer_entry(repo, entry, layer)
+        base = base_files(repo, e) if e is not None else []
+        if base is None:
+            if layer == "worktree":
+                return None
+            e, base = None, []
+        layers.append((e, {p for _, _, p in base} if entry.is_dir else {entry.rel}))
+    return layers
+
+
+def synced_keys(entry):
+    """What an entry (None: none) is synced with."""
+    return entry and tuple(getattr(entry, k) for k in Committed.KEYS)
+
+
+def at_paths(items, paths, drop=()):
+    """{path: (mode, id)} of the items (mode, id, path) at these paths."""
+    return {p: (m, o) for m, o, p in items if p in paths and p not in drop}
+
+
+def as_items(files):
+    return [(m, o, p) for p, (m, o) in files.items()]
 
 
 def head_items(repo, entry, obj, paths):
@@ -3913,39 +3975,53 @@ def index_items(repo, head, paths):
         [(v[0], v[1], p) for p, v in staged.items() if p in paths and v]
 
 
-def synced_staged(repo, st, obj, index, drop=()):
-    """Committed files that differ from the base: is it a sync staged, not
-    committed yet? The index (index_items) is the base, and HEAD is the
-    base of the entry in HEAD's .git-assetsync (another one) - or it has
-    none there (e.g. add --overwrite over a committed file). An old base
-    that can't be read: not (no warning, the entry has another one now)."""
-    old = committed_entry(repo, st.entry)
-    if old is st.entry or not items_match_base(repo, st, index, drop=drop):
-        return False
-    if old is None:
-        return True
-    head = head_items(repo, st.entry, obj, {p for _, _, p in base_files(repo, old)})
-    return bool(head) and items_match_base(repo, st, head, entry=old, quiet=True)
+def layers_modified(repo, st, layers, head, drop=()):
+    """Where the index or the working tree has a modification of the files
+    of the entry's release - without the paths in drop: 'index',
+    'worktree' or None. A layer with a synced entry must have its base
+    (R1; no adaptations); one without, what the layer below has (R3).
+    Only looked at where the layer differs from the one below (files or
+    entry). layers: entry_layers(); head: HEAD's files at their paths."""
+    (eh, ph), (ei, pi), (ew, pw) = layers
+    index = index_items(repo, head, ph | pi | pw)
+    staged = repo.staged().keys()
+    if ei is not None and ei.blob:
+        if (pi & staged or synced_keys(ei) != synced_keys(eh)) and not items_match_base(
+                repo, st, as_items(at_paths(index, pi, drop)), drop=drop, entry=ei):
+            return "index"
+    elif pw & staged and at_paths(index, pw, drop) != at_paths(head, pw, drop):
+        return "index"
+    now = repo.worktree_items(pw - set(drop))
+    if (now != at_paths(index, pw, drop) or synced_keys(ew) != synced_keys(ei)) and \
+            not items_match_base(repo, st, as_items(now), drop=drop, entry=ew):
+        return "worktree"
+    return None
 
 
 def local_state(repo, st):
-    """The committed and working tree state of an entry: of the files it
-    got from its release (its base) - in a directory only those, other
-    files there are someone else's. Without the base in this clone (a
-    directory's): not checked (st.unchecked)."""
+    """The committed and working tree state of an entry - of the files it
+    got from its release (its base); in a directory only those, other files
+    there are someone else's. Each layer counts against its own entry
+    (R1): HEAD's files against the base of the entry HEAD has (none there:
+    nothing adapted), the index and the working tree see layers_modified().
+    Without the base in this clone (a directory's): not checked
+    (st.unchecked)."""
     entry = st.entry
-    base = base_files(repo, entry)
-    if base is None:
+    layers = entry_layers(repo, entry)
+    if layers is None:
         st.unchecked = True
         return
-    known = bool(entry.blob)
-    paths = {p for _, _, p in base} if entry.is_dir else {entry.rel}
+    (eh, ph), (ei, pi), (_, paths) = layers
+    every = ph | pi | paths
     obj = repo.head_entry(entry.rel)          # (mode, type, id)
-    head = head_items(repo, entry, obj, paths)    # the committed files of the release
+    head = head_items(repo, entry, obj, every)    # the committed files of the release
     if obj and entry.is_dir and obj[1] != "tree":
         st.committed = "adapted"             # committed as a file
-    elif head and known:
-        st.committed = "unmodified" if items_match_base(repo, st, head) else "adapted"
+    elif head and eh is not None and eh.blob:
+        st.committed = "unmodified" if items_match_base(
+            repo, st, as_items(at_paths(head, ph)), entry=eh) else "adapted"
+    elif head:
+        st.committed = "unmodified"
     files = [p for p in paths if (repo.top / p).is_file()]
     if not files:
         st.worktree = "deleted" if head else "missing"
@@ -3954,23 +4030,18 @@ def local_state(repo, st):
     elif repo.changed_files(entry.rel) & paths or paths & repo.staged().keys() or \
             any(repo.work.get(p, (m, o)) not in (None, (m, o)) for m, o, p in head):
         st.worktree = "modified"          # not committed: staged or not
+    # what differs between the layers (to be committed, not staged)
+    st.below = (eh, ei)
+    index = at_paths(index_items(repo, head, every), every)
+    st.staged = synced_keys(ei) != synced_keys(eh) or index != at_paths(head, every)
+    st.unstaged = synced_keys(entry) != synced_keys(ei) or repo.worktree_items(every) != index
     gone = set(paths) - set(files)
     st.gone, st.total = sorted(gone), len(paths)
     if not files or gone:         # any file of its release: as one of a [file]
         st.local = "missing"
-    elif not known:
-        st.local = "clean"
-    elif st.worktree == "clean":
-        st.local = "clean" if st.committed == "unmodified" else "modified"
-    else:
-        now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
-        # the index too: what a commit would take
-        index = index_items(repo, head, paths)
-        st.local = "clean" if items_match_base(repo, st, now) and (
-            not paths & repo.staged().keys() or items_match_base(repo, st, index)) else "modified"
-        if st.local == "clean" and st.committed == "adapted" and \
-                synced_staged(repo, st, obj, index):
-            st.committed = "unmodified"
+    elif entry.blob:
+        st.where = layers_modified(repo, st, layers, head)
+        st.local = "modified" if st.where or st.committed == "adapted" else "clean"
 
 
 def others_modified(repo, st):
@@ -3980,18 +4051,16 @@ def others_modified(repo, st):
     entry, gone = st.entry, set(st.gone)
     if not entry.is_dir or not entry.blob or len(gone) == st.total:
         return False
-    paths = {p for _, _, p in base_files(repo, entry) or []}
-    obj = repo.head_entry(entry.rel)
-    head = head_items(repo, entry, obj, paths)
+    layers = entry_layers(repo, entry)
+    if layers is None:
+        return False
+    (eh, ph), (_, pi), (_, pw) = layers
+    head = head_items(repo, entry, repo.head_entry(entry.rel), ph | pi | pw)
     with repo.scratch():      # only looks
-        now = [(m, o, p) for p, (m, o) in repo.worktree_items(paths - gone).items()]
-        index = [i for i in index_items(repo, head, paths) if i[2] not in gone]
-        if not items_match_base(repo, st, now, drop=gone) or (
-                paths & repo.staged().keys() and not items_match_base(repo, st, index, drop=gone)):
+        if layers_modified(repo, st, layers, head, drop=gone):
             return True
-        return bool(head) and not items_match_base(
-            repo, st, head, drop=gone - {p for _, _, p in head}) and \
-            not synced_staged(repo, st, obj, index, drop=gone)
+        return bool(head) and eh is not None and bool(eh.blob) and not items_match_base(
+            repo, st, as_items(at_paths(head, ph)), drop=gone - {p for _, _, p in head}, entry=eh)
 
 
 def has_release(origin, tag):
@@ -3999,6 +4068,34 @@ def has_release(origin, tag):
     if any(r.tag == tag and not r.draft for r in origin.listed or []):
         return True
     return origin.by_tag(tag) is not None
+
+
+def release_changes(repo, entry, st):
+    """(another release, other assets in the same one, another filter): what
+    pull would take (st.release, st.assets) vs what entry was synced with."""
+    now = assets_digest([(a.name, a.digest) for a in st.assets])
+    if now:
+        digest = bool(entry.digest and now != entry.digest.lower())
+    else:             # no digests: what the platform says about the assets
+        digest = bool(entry.assetid and assets_id(st.assets) != entry.assetid)
+    return (st.release.tag != entry.synced, digest,
+            filter_hash(entry.steps, entry.reg.filters, repo) != entry.filterhash)
+
+
+class Committed:
+    """An entry with what it was synced with as another one has it (that of
+    HEAD; None: not synced) - for the commit message of a pull, which goes
+    from what is committed (R3)."""
+    KEYS = ("synced", "digest", "assetid", "blob", "filterhash", "mode")
+
+    def __init__(self, entry, old):
+        self.entry, self.old = entry, old
+
+    def __getattr__(self, name):
+        if name in self.KEYS:
+            return getattr(self.old, name) if self.old is not None else \
+                (None if name in ("filterhash", "mode") else "")
+        return getattr(self.entry, name)
 
 
 def evaluate(ctx, repo, entry):
@@ -4065,13 +4162,7 @@ def evaluate(ctx, repo, entry):
         except FsError as e:
             st.error = str(e)
             return st
-        now = assets_digest([(a.name, a.digest) for a in st.assets])
-        st.tag_changed = st.release.tag != entry.synced
-        if now:
-            st.digest_changed = bool(entry.digest and now != entry.digest.lower())
-        else:         # no digests: what the platform says about the assets
-            st.digest_changed = bool(entry.assetid and assets_id(st.assets) != entry.assetid)
-        st.filter_changed = filter_hash(entry.steps, entry.reg.filters, repo) != entry.filterhash
+        st.tag_changed, st.digest_changed, st.filter_changed = release_changes(repo, entry, st)
         st.changed = st.tag_changed or st.digest_changed or st.filter_changed
         # the synced release isn't in the source (any source - no guessing why):
         # said, pull --all leaves it; pull PATH is the user's decision
@@ -4094,6 +4185,13 @@ def evaluate(ctx, repo, entry):
             st.warnings.append(f"filter {name} runs commands and isn't trusted here yet "
                                f"(see 'git assetsync filter trust')")
     return st
+
+
+def restore_args(st):
+    """The options of restore that discard an entry's modifications: none
+    if only the working tree has them (from the index), else -SW (from
+    HEAD; a staged pull goes too)."""
+    return "" if st.where == "worktree" and st.committed != "adapted" else "-SW "
 
 
 def upstream_state(st):
@@ -4185,6 +4283,14 @@ def print_short(repo, sts):
             print(f"{line} {shown(repo, st.entry.shown)}")
 
 
+def layer_row(st, lower, upper):
+    """(label, path, note, style) of an entry that differs between two
+    layers - its entry in each (None: none there)."""
+    tags = [e.synced if e is not None else "" for e in (lower, upper)]
+    note = " -> ".join(tags) if all(tags) and tags[0] != tags[1] else tags[1] or None
+    return "updated" if tags[0] else "new file", st.entry.shown, note, "dim"
+
+
 def print_long(ctx, repo, sts, verbose):
     """Sections like `git status`."""
     hints = config_bool("advice.statusHints", True)
@@ -4227,7 +4333,8 @@ def print_long(ctx, repo, sts, verbose):
     modified = [st for st in ok if st.modified]
     section("Locally modified files:",
             ['use "git assetsync diff <file>..." to see the modifications',
-             'use "git assetsync restore -SW <file>..." to restore the release asset'],
+             'use "git assetsync restore ' + ("" if all(restore_args(st) == "" for st in modified)
+                                                 else "-SW ") + '<file>..." to restore the release asset'],
             [("modified", st.entry.shown, "NOT ALLOWED", "boldred") for st in modified], "red")
     # gone while it is an entry: never allowed either
     missing = [st for st in ok if st.missing]
@@ -4237,9 +4344,19 @@ def print_long(ctx, repo, sts, verbose):
             [("missing", st.entry.shown, ", ".join(filter(None, [
                 gone_text(st), "NOT ALLOWED: still an entry"])), "boldred")
              for st in missing], "red")
-    new = [st for st in ok if st.worktree == "added" and not st.modified]
-    section("Not committed yet:", ['use "git commit" to commit them'],
-            [("new file", st.entry.shown, None, None) for st in new], "green")
+    # allowed, not committed: staged, or in the working tree only (pull -W)
+    fine = [st for st in ok if not st.modified and not st.missing]
+    staged = [st for st in fine if st.staged]
+    section("Changes to be committed:",
+            ['use "git commit" to commit them',
+             'use "git assetsync restore --staged <file>..." to unstage'],
+            [layer_row(st, *st.below) for st in staged], "green")
+    unstaged = [st for st in fine if st.unstaged]
+    section("Changes not staged for commit:",
+            ['use "git assetsync pull <file>..." to stage them',
+             'use "git assetsync restore <file>..." to discard them'],
+            [layer_row(st, st.below[1], st.entry) for st in unstaged], "red")
+    new = staged + unstaged
 
     warnings = [(st.entry.shown, w) for st in ok for w in st.warnings + [st.unknown] if w]
     if warnings:
@@ -4744,8 +4861,9 @@ def diff_items(ctx, repo, reg, args):
         # files the same on both sides aren't shown: not read (LFS) at all
         base = base_items(repo, entry)
         same = set(base) & set(other)
-        raw.append((entry, st, [i for i in base if i not in same],
-                    [i for i in other if i not in same]))
+        if set(base) != same or set(other) != same:
+            raw.append((entry, st, [i for i in base if i not in same],
+                        [i for i in other if i not in same]))
     entries = select_entries(repo, reg, args.paths, containing=True)
     prefetch_files(repo, entries)
     for entry in entries:
@@ -4760,9 +4878,17 @@ def diff_items(ctx, repo, reg, args):
             report_error(st)
             rc = EXIT_ERROR
             continue
-        if not (st.changed if args.upstream else st.local != "clean"):
+        if not (st.changed if args.upstream else args.cached or st.local != "clean"):
             continue
         try:
+            if args.cached:       # the index, against the base of its entry
+                ei = layer_entry(repo, entry, "index")
+                src = ei if ei is not None and ei.blob else entry
+                if src.is_dir:
+                    ensure_base(repo, src.reg, src)
+                paths = base_paths(repo, src) or set()
+                differing(src, st, [i for i in repo.index_items(entry.rel) if i[2] in paths])
+                continue
             if args.upstream:
                 for w in st.warnings:
                     warn(f"{entry.shown}: {w}")
@@ -4794,6 +4920,8 @@ def diff_groups(ctx, repo, args):
     """Checks the options of diff / difftool and evaluates the entries."""
     if args.release and not args.upstream:
         raise FsError("--release requires --upstream")
+    if args.cached and args.upstream:
+        raise FsError("--cached cannot be combined with --upstream")
     ctx.fetch, ctx.override = args.upstream, args.release
     return diff_items(ctx, repo, Registry(repo), args)
 
@@ -4808,7 +4936,7 @@ def cmd_diff(ctx, repo, args):
         return rc
     color = {"always": ["--color=always"], "never": ["--no-color"]}.get(args.color, [])
     prefixes = ["--src-prefix=synced/", "--dst-prefix=" + (
-        "upstream/" if args.upstream else "local/")]
+        "upstream/" if args.upstream else "staged/" if args.cached else "local/")]
     # --exit-code, --quiet: given to git diff, also before '--' (as for status)
     own = [o for o, given in (("--exit-code", args.exit_code), ("--quiet", args.quiet)) if given]
     p = subprocess.run(["git", "diff"] + color + prefixes + own + args.extra
@@ -4894,6 +5022,8 @@ def cmd_difftool(ctx, repo, args):
             left = tmpfile(f"synced-{synced}", base)
             if args.upstream:
                 right = tmpfile(f"upstream-{st.release.tag}", other)
+            elif args.cached:
+                right = tmpfile("staged", other)
             elif other:
                 right = str(repo.top / path)
             else:
@@ -4948,8 +5078,8 @@ def find_discarded(repo, worktree, index=(), known=None, synced=None):
     """Content that replacing or deleting these files - in the working tree
     (paths worktree) and in the index (paths index) - would lose: not
     committed, not staged where the index stays, not in the working tree
-    where that stays, not what a release gave (synced: {path: blob} of the
-    entries' bases - pull gets it again). known: {path: blob} of working
+    where that stays, not what a release gave (synced: {path: {blobs}} of
+    the entries' bases, in each layer - pull gets it again). known: {path: blob} of working
     tree files already hashed. Returns [(path, how, blob)]: blob None for a
     working tree file (not stored yet), a staged version's ", as staged"."""
     worktree, index = set(worktree), set(index)
@@ -4970,11 +5100,12 @@ def find_discarded(repo, worktree, index=(), known=None, synced=None):
             p = repo.git(args, check=False)
             found.update((path, info[at]) for info, path in ls_items(p.stdout))
     synced = synced or {}
-    lost = [p for p in files if p in worktree and known[p] not in (head.get(p), synced.get(p))
+    lost = [p for p in files if p in worktree and known[p] != head.get(p)
+            and known[p] not in synced.get(p, ())
             and not (p not in index and known[p] == staged.get(p))]
     # a staged version that is in the working tree stays there or is kept with it
     gone = [p for p in index if staged.get(p)
-            and staged[p] not in (head.get(p), known.get(p), synced.get(p))]
+            and staged[p] not in (head.get(p), known.get(p)) and staged[p] not in synced.get(p, ())]
     return [(p, "", None) for p in lost] + [(p, ", as staged", staged[p]) for p in gone]
 
 
@@ -5058,7 +5189,7 @@ def install_entries(repo, jobs, modified=None, worktree_only=False, synced=None)
     whose local modifications go (pull --overwrite) - those that lose
     something (else the working tree has what the release gives already)
     are warned about. worktree_only (pull -W): the index stays as it is.
-    synced: {path: blob} of the entries' bases - not lost (find_discarded).
+    synced: {path: {blobs}} of the entries' bases - not lost (find_discarded).
     Returns (that, the paths of the entries that lose something)."""
     result, ready = {}, []
     seen = repo.dir_files(*[entry.rel for entry, _, _, _ in jobs]) if jobs else []
@@ -5156,8 +5287,7 @@ def install_entries(repo, jobs, modified=None, worktree_only=False, synced=None)
     for entry, files in jobs:
         if entry.is_dir:
             tree = release_tree(repo, entry.rel, items, files)
-            if not worktree_only:
-                repo.keep_tree(tree)
+            repo.keep_tree(tree)          # also with -W: its entry has it
             result[entry.rel] = tree
         else:
             result[entry.rel] = ids[entry.rel]
@@ -5199,8 +5329,8 @@ def pull_done(repo, reg, job, base):
     entry, st = job.entry, job.st
     stats = tree_stats(repo, job.old, base) if entry.is_dir else None
     # noted: committed modifications that go - uncommitted ones never were in the history
-    msg = build_message(st, job.discard and st.committed == "adapted",
-                        unchanged=base == entry.blob, stats=stats,
+    msg = build_message(job.view, job.discard and st.committed == "adapted",
+                        unchanged=base == job.view.entry.blob, stats=stats,
                         between=job.between, limits=job.limits)
     entry.set("synced", st.release.tag)
     entry.set("digest", job.digest)
@@ -5210,6 +5340,24 @@ def pull_done(repo, reg, job, base):
     if not entry.is_dir:
         entry.set("mode", git_mode(job.files[entry.rel][1]))
     return msg, set(job.base) | set(job.files), stats
+
+
+def staged_as_is(repo, entry):
+    """Has the index the entry as the working tree has it (what it was synced
+    with)? Then, both unmodified, also its files."""
+    ei = layer_entry(repo, entry, "index")
+    return ei is not None and all(getattr(ei, k) == getattr(entry, k) for k in Committed.KEYS)
+
+
+def layer_bases(repo, entries):
+    """{path: {blobs}} of the bases of these entries in each layer - what
+    pull can get again, not lost when replaced (find_discarded)."""
+    bases = {}
+    for entry in entries:
+        for e, _ in entry_layers(repo, entry) or [(entry, None)]:
+            for _, o, p in (base_files(repo, e) or []) if e is not None else []:
+                bases.setdefault(p, set()).add(o)
+    return bases
 
 
 def pull_one(ctx, repo, reg, st, args, keep):
@@ -5246,14 +5394,15 @@ def pull_one(ctx, repo, reg, st, args, keep):
                            f"restore {path_arg(repo, rel)}', or remove the entry with 'git "
                            f"assetsync unlink {path_arg(repo, rel)}'")
     modified = st.modified or (st.missing and others_modified(repo, st))
-    if not st.pending and not modified:
+    # the index too has what pull gives (with -W: only the working tree counts)
+    if not st.pending and not modified and (args.worktree or staged_as_is(repo, entry)):
         print(f"{rel}: {paint('up to date', 'green')}")
         return None
     # like `git pull` with no merge possible: local modifications are never
     # overwritten silently
     if modified and not args.overwrite:
         raise FsError(f"{rel}: local modifications NOT ALLOWED - it must stay what its release "
-                      f"gives; discard them with 'git assetsync restore -SW "
+                      f"gives; discard them with 'git assetsync restore {restore_args(st)}"
                       f"{path_arg(repo, rel)}', or update anyway with 'git assetsync pull "
                       f"--overwrite {path_arg(repo, rel)}'")
     for w in st.warnings:
@@ -5262,11 +5411,18 @@ def pull_one(ctx, repo, reg, st, args, keep):
     # notes, the tree it had (for the statistics)
     digest, files = fetched or filtered_files(repo, reg, entry, st.origin, st.release,
                                               st.assets, keep, st)
+    # the commit message goes from what is committed (R3) - unless the entry
+    # changed since its sync (set: another source, other assets)
+    eh = layer_entry(repo, entry, "head") if entry.synced else entry
+    view = dc_replace(st, entry=Committed(entry, eh if eh is not None and eh.blob else None))
+    view.tag_changed, view.digest_changed, view.filter_changed = release_changes(repo, view.entry,
+                                                                               view)
+    was = view.entry.blob
     return SimpleNamespace(
-        entry=entry, st=st, discard=modified, digest=digest, files=files, base=base,
+        entry=entry, st=st, view=view, discard=modified, digest=digest, files=files, base=base,
         overwrite=args.overwrite, limits=notes_limits(repo),
-        between=releases_between(st) if entry.synced and st.release.tag != entry.synced else None,
-        old=entry.blob if entry.is_dir and base and repo.has_tree(entry.blob or "") else None)
+        between=releases_between(view) if view.entry.synced and view.tag_changed else None,
+        old=was if entry.is_dir and was and repo.has_tree(was) else None)
 
 
 def entries_text(entries):
@@ -5316,7 +5472,7 @@ def cmd_pull(ctx, repo, args):
         raise FsError("specify file(s) or --all")
     prefetch_files(repo, entries)     # each pull changes only its own files
     ctx.override = args.release
-    rc, done = EXIT_OK, 0
+    rc, done, worktree_only = EXIT_OK, 0, False
     pulled, msgs, paths, jobs, hints = [], [], set(), [], []
     keep = ExitStack()        # the fetched files, until installed
     for entry in entries:
@@ -5334,7 +5490,8 @@ def cmd_pull(ctx, repo, args):
                  "'git assetsync status')")
             done += 1
             continue
-        if args.all and not st.pending and not (args.overwrite and st.modified):
+        if args.all and not st.pending and not (args.overwrite and st.modified) and \
+                (args.worktree or staged_as_is(repo, entry)):
             continue
         done += 1
         if args.verbose:
@@ -5362,8 +5519,7 @@ def cmd_pull(ctx, repo, args):
                     for j in jobs if j.discard}
         installed, discarding = install_entries(
             repo, [(j.entry, j.files, j.base, j.overwrite) for j in jobs], modified,
-            worktree_only=args.worktree,
-            synced={p: o for j in jobs for _, o, p in base_files(repo, j.entry) or []}) \
+            worktree_only=args.worktree, synced=layer_bases(repo, [j.entry for j in jobs])) \
             if jobs else ({}, set())
         for job in jobs:      # only if something is lost
             job.discard = job.entry.rel in discarding
@@ -5372,10 +5528,11 @@ def cmd_pull(ctx, repo, args):
             error(str(installed[job.entry.rel]))
             rc = EXIT_ERROR
             continue
-        if args.worktree and not args.dry_run:     # .git-assetsync stays as it is
-            print(f"{job.entry.shown}: {paint('updated in the working tree only', 'green')}")
-            continue
         msg, done_paths, stats = pull_done(repo, reg, job, installed[job.entry.rel])
+        if args.worktree and not args.dry_run:     # its entry too: in the working tree only
+            print(f"{job.entry.shown}: {paint('updated in the working tree only', 'green')}")
+            worktree_only = True
+            continue
         if args.dry_run:      # what pull would do: its commit message's subject and files
             print(f"would: {msg.splitlines()[0][len(COMMIT_PREFIX):]}"
                   + (" - discarding local modifications" if job.discard else ""))
@@ -5390,6 +5547,8 @@ def cmd_pull(ctx, repo, args):
             print(f"{entry.shown}: {paint('updated', 'green')}")
     if args.all and not done and rc == EXIT_OK:
         print(paint("everything up to date", "green"))
+    if worktree_only:
+        reg.finish(stage=False)
     if pulled:
         reg.finish()          # .git-assetsync written and staged once, for all
         # staged only, like `git merge --squash`: one proposed message for all
@@ -5559,7 +5718,8 @@ def cmd_add(ctx, repo, args):
     with ExitStack() as keep:
         digest, files = filtered_files(repo, reg, new, origin, release, assets, keep)
         mode = None if is_dir else git_mode(files[rel][1])
-        base = install_entries(repo, [(new, files, base, args.overwrite)])[0][rel]
+        base = install_entries(repo, [(new, files, base, args.overwrite)],
+                               worktree_only=args.worktree)[0][rel]
     if isinstance(base, FsError):
         raise base
     stats = tree_stats(repo, old_tree, base) if is_dir else None
@@ -5584,7 +5744,11 @@ def cmd_add(ctx, repo, args):
                  ("mode", mode)):
         if v:
             entry.set(k, v)
-    reg.finish()
+    reg.finish(stage=not args.worktree)
+    if args.worktree:         # file and entry: in the working tree only
+        print(f"{paint('added', 'green')} {shown_rel} <- {name} {release.tag} "
+              f"({', '.join(a.name for a in assets)}) - in the working tree only")
+        return EXIT_OK
     large_binary_hint(repo, [f"{rel}/{n}" for n in repo.tree_names(base)] if is_dir else [rel])
     print(f"{paint('added', 'green')} {shown_rel} <- {name} {release.tag} "
           f"({', '.join(a.name for a in assets)})")
@@ -6075,21 +6239,44 @@ def write_files(repo, items):
         repo.git(["checkout-index", "-a", "-f"], env=env)
 
 
-def restore_plan(repo, entry, index, worktree):
-    """What restore would do for an entry: (base items, {side: what it has
-    now}, the blobs to look at more closely - those differing). index: the
-    items of the index, None to leave it alone."""
-    base = base_files(repo, entry) or []
-    paths = {path for _, _, path in base}
-    sides = {}
-    if index is not None:
-        sides["index"] = [i for i in index if i[2] in paths]
-    if worktree:              # its files - in a directory not those of others there
-        sides["worktree"] = [(m, o, p) for p, (m, o) in repo.worktree_items(paths).items()]
-    have = {side: {p: (m, o) for m, o, p in items} for side, items in sides.items()}
-    check = {(oid, path) for mode, oid, path in base for side in sides
-             if not restore_same((mode, oid), have[side].get(path, (None, None)))}
-    return base, have, check
+def restore_sources(repo, entry, staged, worktree):
+    """{side: the entry whose base it gets} - that of the layer below (R2):
+    the working tree from the index, the index (with -S -W the working
+    tree too) from HEAD; where that has none synced, the layer's own (the
+    index without one: the working tree's)."""
+    ei, eh = layer_entry(repo, entry, "index"), layer_entry(repo, entry, "head")
+    ei = ei if ei is not None and ei.blob else None
+    eh = eh if eh is not None and eh.blob else None
+    sources = {}
+    if staged:
+        sources["index"] = eh or ei or entry
+    if worktree:
+        sources["worktree"] = sources["index"] if staged else ei or entry
+    return sources
+
+
+def restore_plan(repo, entry, sources, index):
+    """What restore would do for an entry: ({side: (base items of its
+    source, what it has now at their paths, the files of the entry there
+    its source doesn't have - a directory's - to delete)}, the blobs to
+    look at more closely - those differing). index: the index's items."""
+    plan = {}
+    ei = layer_entry(repo, entry, "index")
+    for side, src in sources.items():
+        base = base_files(repo, src) or []
+        paths = {path for _, _, path in base}
+        own = entry if side == "worktree" or ei is None or not ei.blob else ei
+        gone = ({p for _, _, p in base_files(repo, own) or []} - paths) if entry.is_dir else set()
+        if side == "index":
+            have = {p: (m, o) for m, o, p in index if p in paths}
+            gone = {p for _, _, p in index if p in gone}
+        else:             # its files - in a directory not those of others there
+            have = repo.worktree_items(paths)
+            gone = {p for p in gone if (repo.top / p).is_file()}
+        plan[side] = (base, have, gone)
+    check = {(oid, path) for base, have, _ in plan.values() for mode, oid, path in base
+             if not restore_same((mode, oid), have.get(path, (None, None)))}
+    return plan, check
 
 
 def restore_same(item, current):
@@ -6101,25 +6288,41 @@ def restore_fixes(repo, plan, now):
     """{side: [(mode, id, path)]} to restore: the files that are neither their
     base blob nor that stored as it would be now (now: stored_now()); a
     mode not recorded (a [file]): the committed one, else 100644."""
-    base, have, _ = plan
     fixes = {}
-    for side in have:
+    for side, (base, have, _) in plan.items():
         fix = [(mode or repo.head_mode(path) or "100644", now[(oid, path)], path)
                for mode, oid, path in base
                if (oid, path) in now
-               and not restore_same((mode, oid), have[side].get(path, (None, None)))
-               and not restore_same((mode, now[(oid, path)]), have[side].get(path, (None, None)))]
+               and not restore_same((mode, oid), have.get(path, (None, None)))
+               and not restore_same((mode, now[(oid, path)]), have.get(path, (None, None)))]
         if fix:
             fixes[side] = fix
     return fixes
 
 
+def synced_ops(target, src):
+    """Changes (see edit_config) that make the entry target (in some layer's
+    registry) synced with what src is: its keys of that, not those that
+    select the release."""
+    section = f"{target.kind}.{target.rel}"
+    return [(f"{section}.{key_name(target, k)}", getattr(src, k)) if getattr(src, k) else
+            ("--unset-all", f"{section}.{key_name(target, k)}")
+            for k in Committed.KEYS if (getattr(src, k) or "") != (getattr(target, k) or "")]
+
+
+def key_name(entry, attr):
+    """The key in the registry of an attribute of Entry (blob: blob or tree)."""
+    return BASE_KEY[entry.kind] if attr == "blob" else attr
+
+
 def cmd_restore(ctx, repo, args):
-    """Like `git restore`, but from what the entries were synced with (their
-    base): the working tree by default, the index with --staged, both with
-    -S -W. Offline (unless the base of a directory must be got again, see
-    ensure_base); .git-assetsync doesn't change. What differs is found for
-    all entries at once, and written at once."""
+    """Like `git restore`, from the layer below (R2): the working tree from
+    the index, with --staged the index from HEAD, with -S -W both from HEAD
+    - the files as the base of the entry there gives them, and the entry
+    what that was synced with (its selection stays; see 'set'). Where the
+    layer below has no entry (synced), the layer's own. Offline (unless the
+    base of a directory must be got again, see ensure_base). What differs
+    is found for all entries at once, and written at once."""
     reg = Registry(repo)
     worktree = args.worktree or not args.staged
     rc = EXIT_OK
@@ -6135,43 +6338,71 @@ def cmd_restore(ctx, repo, args):
             if not entry.blob:
                 raise FsError(f"not synced yet - use 'git assetsync pull "
                               f"{path_arg(repo, entry.shown)}'")
-            if entry.is_dir:
-                ensure_base(repo, reg, entry)
-            plans.append((entry, restore_plan(repo, entry, index, worktree)))
+            sources = restore_sources(repo, entry, args.staged, worktree)
+            for src in sources.values():
+                if src.is_dir:
+                    ensure_base(repo, src.reg, src)
+            plans.append((entry, sources) + restore_plan(repo, entry, sources, index))
         except FsError as e:
             error(entry_error(entry, e))
             rc = EXIT_ERROR
     try:
-        now = repo.stored_now(set().union(*(plan[2] for _, plan in plans)))
+        now = repo.stored_now(set().union(*(check for *_, check in plans)))
     except FsError:           # one isn't available: which one, entry by entry
         now = {}
-        for entry, plan in list(plans):
+        for item in list(plans):
             try:
-                now.update(repo.stored_now(plan[2]))
+                now.update(repo.stored_now(item[3]))
             except FsError as e:
-                error(f"{entry.shown}: its synced version is not available ({e}) - get it "
-                      f"again with 'git assetsync pull --overwrite {path_arg(repo, entry.shown)}'")
-                plans.remove((entry, plan))
+                error(f"{item[0].shown}: its synced version is not available ({e}) - get it "
+                      f"again with 'git assetsync pull --overwrite {path_arg(repo, item[0].shown)}'")
+                plans.remove(item)
                 rc = EXIT_ERROR
-    fixes = [(entry, restore_fixes(repo, plan, now)) for entry, plan in plans]
-    index = [i for _, f in fixes for i in f.get("index", [])]
-    written = [i for _, f in fixes for i in f.get("worktree", [])]
-    save_discarded(repo, [path for _, _, path in written], [path for _, _, path in index])
+    fixes = [(entry, sources, plan, restore_fixes(repo, plan, now))
+             for entry, sources, plan, _ in plans]
+    index = [i for *_, f in fixes for i in f.get("index", [])]
+    written = [i for *_, f in fixes for i in f.get("worktree", [])]
+    unstage = sorted(p for _, _, plan, _ in fixes for p in plan.get("index", ((), {}, set()))[2])
+    delete = sorted(p for _, _, plan, _ in fixes for p in plan.get("worktree", ((), {}, set()))[2])
+    # what pull gets again (the base of the entry in some layer) isn't lost
+    keep_discarded(repo, find_discarded(repo, [path for _, _, path in written] + delete,
+                                        [path for _, _, path in index] + unstage,
+                                        synced=layer_bases(repo, [e for e, *_ in fixes])))
     if index:
         repo.git(["update-index", "-z", "--add", "--index-info"],
                  data="".join(f"{m} {o}\t{p}\0" for m, o, p in index).encode("utf-8"))
+    if unstage:
+        repo.git(["update-index", "-z", "--force-remove", "--stdin"],
+                 data="\0".join(unstage).encode("utf-8"))
     try:
         write_files(repo, written)
     except FsError as e:
         error(str(e))
         return EXIT_ERROR
-    for entry, f in fixes:
+    for path in delete:
+        (repo.top / path).unlink()
+    staged_ops = []
+    for entry, sources, plan, f in fixes:
+        sides = set(f) | {side for side, (_, _, gone) in plan.items() if gone}
+        if "worktree" in sources and synced_ops(entry, sources["worktree"]):
+            for k in Committed.KEYS:
+                entry.set(key_name(entry, k), getattr(sources["worktree"], k) or None)
+            sides.add("worktree")
+        ei = layer_entry(repo, entry, "index")
+        if "index" in sources and ei is not None and synced_ops(ei, sources["index"]):
+            staged_ops += synced_ops(ei, sources["index"])
+            sides.add("index")
+        if entry.is_dir and "worktree" in plan:
+            remove_empty_dirs(entry.target, [repo.top / p for p in plan["worktree"][2]])
         what = {("index",): "restored in the index", ("worktree",): "restored",
-                ("index", "worktree"): "restored and staged"}.get(tuple(f))
+                ("index", "worktree"): "restored and staged"}.get(tuple(sorted(sides)))
+        src = sources.get("worktree") or sources["index"]
         if what:
-            print(f"{entry.shown}: {paint(what, 'green')} ({entry.name} {entry.synced})")
+            print(f"{entry.shown}: {paint(what, 'green')} ({entry.name} {src.synced})")
         else:
             print(f"{entry.shown}: nothing to restore")
+    reg.finish(stage=False)
+    write_staged(repo, staged_ops)
     return rc
 
 
@@ -6918,8 +7149,8 @@ def run(argv):
                         "newest matching), once - the selection stays as it is")
     p.add_argument("--overwrite", action="store_true", help="discard local modifications")
     p.add_argument("-W", "--worktree", action="store_true",
-                   help=f"write to the working tree only: nothing staged, {REGISTRY} unchanged "
-                        "(to try a newer version)")
+                   help="files and entry in the working tree only, nothing staged (to try a "
+                        "newer version)")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="first name where each entry comes from (as status -v)")
     p.add_argument("-n", "--dry-run", action="store_true",
@@ -6939,6 +7170,9 @@ def run(argv):
                             "(synced -> selected release)")
         p.add_argument("--release", metavar="TAG|PATTERN",
                        help="with --upstream: what 'pull --release' would bring")
+        p.add_argument("--cached", "--staged", dest="cached", action="store_true",
+                       help="the index instead of the working tree (against the base of "
+                            "the entry the index has)")
         if name == "difftool":
             p.add_argument("-d", "--dir-diff", action="store_true",
                            help="compare all files at once, as two directories")
@@ -6997,9 +7231,10 @@ def run(argv):
                        help="restore what the release gave (the synced version), without pulling")
     p.add_argument("paths", nargs="+", metavar="PATH", help="files or directories")
     p.add_argument("-S", "--staged", action="store_true",
-                   help="restore the index instead of the working tree")
+                   help="restore the index (from HEAD) instead of the working tree (from "
+                        "the index)")
     p.add_argument("-W", "--worktree", action="store_true",
-                   help="restore the working tree (the default; with -S: both)")
+                   help="restore the working tree (the default; with -S: both, from HEAD)")
 
     p = sub.add_parser("add", parents=[colorp, remotep],
                        help="take a file or directory from release assets")
@@ -7030,6 +7265,8 @@ def run(argv):
     p.add_argument("--overwrite", action="store_true",
                    help="replace an existing file (directory content) with what the release "
                         "gives")
+    p.add_argument("-W", "--worktree", action="store_true",
+                   help="file (directory) and entry in the working tree only, nothing staged")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would be done")
 
     p = sub.add_parser("set", parents=[colorp],
