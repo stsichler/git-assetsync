@@ -361,6 +361,8 @@ check "add: says how to commit" "$(echo "$OUT" | grep -cxE '    git commit|\(it 
 check "add: file is the asset" "$(cat bin/tool.bin)" "tool 1.0"
 check "added, not committed yet: '?'" "$(git assetsync status -s --no-fetch)" " A  bin/tool.bin"
 check "... a section of its own" "$(git assetsync status --no-fetch | grep -A3 '^Changes to be committed:' | grep -cE "^${TAB}new file:[[:space:]]+bin/tool\.bin  \(v1\.0\)\$")" "1"
+check "no commit yet: added is new, not modified" \
+  "$(cd "$T" && git init -q r1u && cd r1u && quiet git assetsync add acme/tool tool.bin --asset 'tool-*.bin'; st)" " A"
 check "add: source" "$(reg source.acme/tool.url)" "https://github.com/acme/tool"
 check "add: no release key (latest)" "$(reg file.bin/tool.bin.release)" ""
 check "add: entry" "$(reg file.bin/tool.bin.source) $(reg file.bin/tool.bin.asset) $(reg file.bin/tool.bin.synced)" \
@@ -807,6 +809,16 @@ quiet git assetsync pull -W lmd
 check "pull after pull -W: a file the release dropped goes from the index too" \
   "$(quiet git assetsync pull lmd; git ls-files lmd | oneline)$(git status --porcelain lmd | oneline)" "lmd/a.txt M  lmd/a.txt D  lmd/c.txt "
 git reset -q --hard
+quiet git assetsync pull -W lmd
+check "... add --force as well" \
+  "$(quiet git assetsync add --force acme/lmd lmd/ --asset 'lmd-*.zip' --filter lmd; git ls-files lmd | oneline)" "lmd/a.txt "
+git reset -q --hard
+quiet git assetsync add acme/tool t1.bin --asset 'tool-*.bin'
+quiet git assetsync add acme/tool t2.bin --asset 'tool-*.bin'
+check "restore -S of two new entries of one source: the source goes too" \
+  "$(quiet git assetsync restore -S t1.bin t2.bin; git config --blob :.git-assetsync --get-regexp '^source[.]acme/tool[.]' | wc -l | tr -d ' ')" "0"
+check "... restore: from the working tree too" \
+  "$(quiet git assetsync restore t1.bin t2.bin; reg source.acme/tool.url; git status --porcelain | oneline)" ""
 check "add -W: in the working tree only" \
   "$(git assetsync add -W acme/lm lm3.txt --asset lm.txt 2>&1 | grep -c 'in the working tree only') $(git status --porcelain | oneline)$(st lm3.txt)" \
   "1  M .git-assetsync ?? lm3.txt   A"
@@ -852,13 +864,14 @@ git config -f .git-assetsync --add filter.lmd.step "drop '*.md'"
 quiet git assetsync set lmd --release v3
 check "set: its named filter staged with it" "$(git diff --cached .git-assetsync | grep -c '^+.*drop')" "1"
 git reset -q --hard
-# a merge conflict in the registry, resolved by hand: staged as a whole, as git add does
+# a merge conflict in the registry: refused until resolved
 blob=$(git hash-object -w .git-assetsync)
 git update-index --force-remove .git-assetsync
 printf '100644 %s 1\t.git-assetsync\n100644 %s 2\t.git-assetsync\n100644 %s 3\t.git-assetsync\n' "$blob" "$blob" "$blob" |
   git update-index --index-info
-check "registry with a merge conflict: staged as a whole" \
-  "$(git assetsync set lm.txt --release v7 2>&1 | grep -c '^error') $(git ls-files -u .git-assetsync | wc -l | tr -d ' ') $(git config --blob :.git-assetsync file.lm.txt.release)" "0 0 v7"
+check "registry with a merge conflict: refused, nothing changed" \
+  "$(rc git assetsync set lm.txt --release v6) $(git assetsync status 2>&1) $(rc git assetsync restore lm.txt) $(git ls-files -u .git-assetsync | wc -l | tr -d ' ')" \
+  "2 error: .git-assetsync has a merge conflict - resolve it, then 'git add .git-assetsync' 2 3"
 git reset -q --hard
 # restore -S of an entry the staged registry hasn't: its entry from HEAD too
 git show HEAD:.git-assetsync > "$T/reg-no-lm"
