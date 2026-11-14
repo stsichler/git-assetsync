@@ -801,10 +801,21 @@ check "... restore: back, the new file gone" "$(quiet git assetsync restore lmd;
 quiet git assetsync pull -W lmd
 check "... pull takes it" \
   "$(pullcm lmd 2>&1 | grep -c discard) $(git ls-files lmd | oneline)$(st lmd)" "0 lmd/a.txt lmd/c.txt "
+mkdir -p "$T/lmd4" && echo a4 > "$T/lmd4/a.txt" && mkarchive "$F/lmd-4.zip" "$T/lmd4"
+release acme/lmd v4 13 "$F/lmd-4.zip"
+quiet git assetsync pull -W lmd
+check "pull after pull -W: a file the release dropped goes from the index too" \
+  "$(quiet git assetsync pull lmd; git ls-files lmd | oneline)$(git status --porcelain lmd | oneline)" "lmd/a.txt M  lmd/a.txt D  lmd/c.txt "
+git reset -q --hard
 check "add -W: in the working tree only" \
   "$(git assetsync add -W acme/lm lm3.txt --asset lm.txt 2>&1 | grep -c 'in the working tree only') $(git status --porcelain | oneline)$(st lm3.txt)" \
   "1  M .git-assetsync ?? lm3.txt   A"
+check "... diff --cached: nothing (not staged)" "$(git assetsync diff --cached)" ""
 check "... pull stages it" "$(quiet git assetsync pull lm3.txt; git status --porcelain | oneline)" "M  .git-assetsync A  lm3.txt "
+check "... restore -S: out of the index, the working tree keeps it" \
+  "$(git assetsync restore -S lm3.txt) $(git status --porcelain | oneline)" "lm3.txt: unstaged (not in the HEAD yet)  M .git-assetsync ?? lm3.txt "
+check "... restore: entry and file gone" \
+  "$(git assetsync restore lm3.txt) $(git status --porcelain | oneline)$(ls lm3.txt 2>/dev/null)" "lm3.txt: removed (not in the index yet) "
 git reset -q --hard
 
 # R2: a command stages the sections it changes, as the working tree has
@@ -840,6 +851,22 @@ git reset -q --hard
 git config -f .git-assetsync --add filter.lmd.step "drop '*.md'"
 quiet git assetsync set lmd --release v3
 check "set: its named filter staged with it" "$(git diff --cached .git-assetsync | grep -c '^+.*drop')" "1"
+git reset -q --hard
+# a merge conflict in the registry, resolved by hand: staged as a whole, as git add does
+blob=$(git hash-object -w .git-assetsync)
+git update-index --force-remove .git-assetsync
+printf '100644 %s 1\t.git-assetsync\n100644 %s 2\t.git-assetsync\n100644 %s 3\t.git-assetsync\n' "$blob" "$blob" "$blob" |
+  git update-index --index-info
+check "registry with a merge conflict: staged as a whole" \
+  "$(git assetsync set lm.txt --release v7 2>&1 | grep -c '^error') $(git ls-files -u .git-assetsync | wc -l | tr -d ' ') $(git config --blob :.git-assetsync file.lm.txt.release)" "0 0 v7"
+git reset -q --hard
+# restore -S of an entry the staged registry hasn't: its entry from HEAD too
+git show HEAD:.git-assetsync > "$T/reg-no-lm"
+git config -f "$T/reg-no-lm" --remove-section file.lm.txt
+git update-index --cacheinfo "100644,$(git hash-object -w "$T/reg-no-lm"),.git-assetsync"
+echo x > lm.txt && git add lm.txt
+check "restore -S: the entry from HEAD where the index hasn't it" \
+  "$(quiet git assetsync restore -S lm.txt; git diff --cached --name-only lm.txt)$(git config --blob :.git-assetsync --list | sort | cmp -s - <(git config --blob HEAD:.git-assetsync --list | sort) && echo same)" "same"
 git reset -q --hard
 
 # a pull staged, not committed yet: no modification - what is committed is

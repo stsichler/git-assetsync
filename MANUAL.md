@@ -201,7 +201,7 @@ Basic commands – what you need day to day:
 | [`pull PATH…`, `pull --all`](#pull) | update to the selected release (or once another one) and stage, with a proposed commit message |
 | [`diff [PATH…]`](#diff) | local modifications; what `pull` would bring |
 | [`difftool [PATH…]`](#difftool) | the same in your difftool, file by file or as two directories |
-| [`restore PATH…`](#restore) | discard local modifications: back to what the release gave |
+| [`restore PATH…`](#restore) | discard changes: back to the layer below (the index, HEAD) |
 | [`add SOURCE PATH`](#add) | take a file or directory from release assets |
 | [`rm PATH…`](#rm) | remove entries and their files, like `git rm` |
 | [`unlink PATH…`](#unlink) | remove entries, keep the files |
@@ -488,10 +488,14 @@ Like `git restore`, from the layer below: the working tree from the
 index, with `-S` (`--staged`) the index from HEAD, with `-SW` both from
 HEAD. The files come back as the release gave them to the entry there,
 and the entry is synced as there – its selection (release, asset,
-filter) stays; where that layer has no entry yet, the entry's own. So
-`restore` undoes `pull -W`, `restore -S` a staged `pull`. Nothing newer
-is pulled (that does `pull --overwrite`). A committed modification is
-gone with `restore -SW` and a commit:
+filter) stays. Files the entry had from its release that the layer below
+hasn't go (the index: unstaged; the working tree: deleted – unlike `git
+restore`, as they are known to be the release's; changed ones are kept,
+see above); an entry the layer below hasn't goes with its files. So
+`restore` undoes `pull -W` and `add -W`, `restore -S` a staged `pull` or
+`add`. Files of yours stay. Nothing newer is pulled (that does `pull
+--overwrite`). A committed modification is gone with `restore -SW` and a
+commit:
 
 ```sh
 git assetsync restore -SW lib/data.bin
@@ -1468,7 +1472,8 @@ got again is kept).
 ### Colors
 
 Output is colored like `git status`: pending updates yellow, local
-modifications red, entries not committed yet green. Colors follow
+modifications and changes not staged red, changes to be committed green
+(in `status -s` the index column green, the working tree column red). Colors follow
 `color.assetsync`, else `color.ui`; `--color` / `--no-color` override
 that, and `NO_COLOR` turns them off. With Python 3.14 or later the help
 (`-h`) is colored too.
