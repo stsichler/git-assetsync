@@ -218,7 +218,7 @@ Basic commands – what you need day to day:
 | [`source releases URL\|SOURCE`](#source-releases) | list the releases of a project, with their assets |
 | [`filter [ACTION …]`](#filter) | list filters; show, test, add, set, rename or remove them |
 | [`filter trust [NAME…]`](#filter-trust) | list the filters that run commands; trust them in this repository |
-| [`verify [PATH…]`](#verify) | filter the synced assets again: is the committed state reproducible? |
+| [`verify [PATH…]`](#verify) | filter the synced assets again: are the entries reproducible? |
 | [`cache [ACTION]`](#cache) | the download cache: show, list, prune, clear |
 | [`hooks [install\|uninstall]`](#hooks) | reminder hooks and the push check |
 
@@ -871,8 +871,9 @@ using a changed filter are pending until `pull`.
 | `rename OLD NEW` | rename a filter and its references |
 | `remove NAME` | remove a filter nothing uses |
 
-`filter test` changes nothing; it shows what each step did (on stderr),
-then the result:
+`filter test` changes nothing and takes the filter (and the scripts it
+runs) as the working tree has it; it shows what each step did (on
+stderr), then the result:
 
 ```console
 $ git assetsync filter test zlib-headers --source madler/zlib --asset 'zlib-*.tar.gz'
@@ -917,10 +918,12 @@ filter firmware: not trusted (used by src/fw/)
 git assetsync verify [PATH…] [-v]
 ```
 
-Checks that the committed state is reproducible: for each entry (default:
-all) it filters the assets of the release it was synced with again – from
-the [download cache](#download-cache) or the platform – and compares the
-result with the recorded base, as `git add` would store it. Nothing
+Checks that the entries are reproducible: for each entry (default: all)
+it filters the assets of the release it was synced with again – from the
+[download cache](#download-cache) or the platform – and compares the
+result with the recorded base, as `git add` would store it. It takes the
+entries, filters and scripts as the working tree has them – in a clean
+checkout (e.g. CI) that is the committed state. Nothing
 changes, except that a directory's base missing in a clone is kept once
 verified.
 

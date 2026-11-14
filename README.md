@@ -219,7 +219,7 @@ Advanced commands:
 | `source releases URL\|SOURCE` | list the releases of a project, with their assets |
 | `filter [ACTION …]` | list filters; show, test, add, set, rename or remove them |
 | `filter trust [NAME…]` | list the filters that run commands; trust them in this repository |
-| `verify [PATH…]` | filter the synced assets again: is the committed state reproducible? |
+| `verify [PATH…]` | filter the synced assets again: are the entries reproducible? |
 | `cache [ACTION]` | the download cache: show, list, prune, clear |
 | `hooks [install\|uninstall]` | reminders after merges and before pushes; check that pushed releases are published |
 

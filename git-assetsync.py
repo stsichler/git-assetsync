@@ -331,6 +331,7 @@ Advanced commands - change entries, sources and filters; set up:
     filter test NAME FILE...    apply a filter to local files (as if they were
                                 the assets; a directory: its files), show
                                 what each step did and list the result;
+                                the filter as the working tree has it;
                                 nothing else changes
         --source SOURCE         instead: the assets of its release (with
                                 --release, --prerelease, --type as for add;
@@ -364,8 +365,10 @@ Advanced commands - change entries, sources and filters; set up:
 
     verify [PATH...]            filter the assets each entry was synced with
                                 again and compare with the recorded base:
-                                is the committed state reproducible? (exit
-                                1 if not); working tree, index and branches
+                                are the entries reproducible, as the working
+                                tree has them (a clean checkout: the
+                                committed state)? (exit 1 if not); working
+                                tree, index and branches
                                 stay - only a missing base of a directory is
                                 kept in this clone
         -v, --verbose           first name where each entry comes from (as
@@ -6266,8 +6269,9 @@ def verify_compare(repo, entry, release, items, keeps):
 
 
 def cmd_verify(ctx, repo, args):
-    """Is the committed state reproducible? Filters the assets each entry
-    was synced with again and compares the result with its base - the
+    """Are the entries reproducible, as the working tree has them (a clean
+    checkout: the committed state)? Filters the assets each entry was
+    synced with again and compares the result with its base - the
     results of all stored at once; only looks (scratch()), except for a
     directory's base it gets again, which is kept."""
     reg = Registry(repo)
@@ -7588,7 +7592,7 @@ def run(argv):
                    help=f"open {REGISTRY} in the editor, then check and stage it")
 
     p = sub.add_parser("verify", parents=[colorp, remotep],
-                       help="filter the synced assets again and compare with what is committed")
+                       help="filter the synced assets again and compare with the recorded base")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="first name where each entry comes from (as status -v)")
