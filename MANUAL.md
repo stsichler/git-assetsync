@@ -1545,6 +1545,12 @@ C:/tools/git-assetsync.py …` in cmd or PowerShell), or put
 `MSYS=noglob`) for git itself: that breaks how git passes arguments to the
 alias.
 
+**TortoiseGit:** turn on *Staging Support* in the commit dialog (`git
+config tgit.commitstagingsupport true`, TortoiseGit 2.13 or later).
+Without it, TortoiseGit commits the working tree of the checked files,
+not what is staged – so a `pull -W` test can be committed. Check
+`.git-assetsync` together with its files.
+
 ### Shipping git-assetsync with your repository
 
 git-assetsync can keep a copy of itself in your repository, so everyone
