@@ -567,8 +567,10 @@ reset_calls
 quiet asd add acme/many old.bin --asset old.bin --release 'special-*'
 check "paging: match on page 2" "$(cat old.bin 2>/dev/null)" "old"
 check "paging: 2 pages + download" "$(calls)" "3"
-check "releases: more on the next page, not counted" "$(asd source releases acme/many | tail -1)" \
+check "releases: more on the next page, not counted" "$(cd "$T" && asd source releases acme/many | tail -1)" \
   "(more: --all lists them)"
+check "... counted when a selection lists them all" "$(asd source releases acme/many | tail -1)" \
+  "(91 more: --all lists them)"
 check "... counted with both pages" "$(asd source releases acme/many --max-count 100 | tail -1)" \
   "(1 more: --all lists them)"
 
@@ -928,14 +930,15 @@ git reset -q --hard
 # working tree, with pull -W
 check "set -W: in the working tree only" \
   "$(git -c advice.statusHints=false assetsync set -W lmw.txt --latest 2>&1 | tail -1) $(git config --blob :.git-assetsync file.lmw.txt.release) $(reg file.lmw.txt.release)|" \
-  ".git-assetsync changed in the working tree only - pending until pull v5 |"
+  ".git-assetsync changed in the working tree only - pending until pull -W v5 |"
 check "... then pull -W: nothing staged" \
   "$(quiet git assetsync pull -W lmw.txt; git diff --cached --name-only | oneline)$(reg file.lmw.txt.synced)" "v7"
 check "... restore: back" "$(quiet git assetsync restore lmw.txt; cat lmw.txt) $(reg file.lmw.txt.synced)" "lm 5 v5"
 git reset -q --hard
 check "source set -W" \
   "$(git -c advice.statusHints=false assetsync source set -W acme/lm --url https://github.com/acme/other 2>&1 | tail -1) $(git config --blob :.git-assetsync source.acme/lm.url)" \
-  ".git-assetsync changed in the working tree only - pending until pull https://github.com/acme/lm"
+  ".git-assetsync changed in the working tree only - pending until pull -W https://github.com/acme/lm"
+check "... the hint: pull -W" "$(git assetsync source set -W acme/lm --url https://github.com/acme/lm 2>&1 | grep -c 'git assetsync pull -W -n <path>')" "1"
 git reset -q --hard
 check "source rename -W" \
   "$(git assetsync source rename -W acme/lm lm 2>&1) $(git config --blob :.git-assetsync file.lmw.txt.source)|$(reg file.lmw.txt.source) $(reg source.lm.url)" \
@@ -1831,6 +1834,10 @@ check "releases PATH: not synced" "$(git assetsync releases nope 2>&1)" \
 check "releases --max-count: from 1 on" "$(git assetsync releases --max-count 0 2>&1 | tail -1)" \
   "git assetsync releases: error: argument --max-count: not a number from 1 on: '0'"
 check "source releases --max-count: from 1 on" "$(rc git assetsync source releases acme/rl --max-count -1)" "2"
+git config -f .git-assetsync source.e.url https://gitlab.com/grp/empty
+git config -f .git-assetsync file.e.bin.source e
+check "releases: none, no warnings for the entries" "$(git assetsync source releases e 2>&1)" "no releases in grp/empty"
+git checkout -q .git-assetsync
 new_repo r17e
 check "releases: no entries" "$(git assetsync releases)" "no synced files (.git-assetsync not found or empty)"
 cd "$T/r17"
@@ -3827,6 +3834,9 @@ addc acme/sarc both/ --sourcecode zip --asset '*'
 check "with --asset: both" "$(ls both | oneline)" "bin.txt sarc-v1.zip "
 check "file: one archive" "$(rc git assetsync add acme/sarc s.zip --sourcecode zip)|$(head -c 2 s.zip)" "0|PK"
 git commit -qm s.zip
+: > "$GH/calls.log"
+check "releases --assets: the source code archive by name, no request" \
+  "$(git assetsync releases s.zip --assets | sed -n 3p | awk '{print $1}') $(grep -c commits "$GH/calls.log")" "sarc-v1.zip 0"
 check "file: with --asset, no filter" "$(git assetsync add acme/sarc s2.zip --sourcecode zip --asset 'bin*' 2>&1)" \
   "error: s2.zip: 2 assets (bin.txt, sarc-v1.zip), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
 filt only-bin --include bin.txt

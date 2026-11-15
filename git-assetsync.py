@@ -485,7 +485,7 @@ REGISTRY = ".git-assetsync"
 REGISTRY_STAGED = (f'{REGISTRY} staged (use "git assetsync status" to see what changes, '
                    '"git assetsync pull <file>..." to update)')
 # after set, filter set, source set: pull applies the change (see pending_note)
-REGISTRY_PENDING_HINT = ('use "git assetsync pull -n <path>..." to see what it would do, '
+REGISTRY_PENDING_HINT = ('use "git assetsync {pull} -n <path>..." to see what it would do, '
                          '"git assetsync diff --upstream <path>..." the differences')
 EXIT_OK, EXIT_PENDING, EXIT_ERROR = 0, 1, 2
 EXIT_PIPE = 141           # output into a closed pipe: like a program ended by SIGPIPE, as git
@@ -955,6 +955,14 @@ class Platform:
         return SourceArchive(archive_name(self.project, release, fmt), sha,
                              path=self.archive_path(sha, fmt))
 
+    def listed_archive(self, release, fmt):
+        """The source code archive as releases --assets lists it: by name
+        only, without asking for the commit."""
+        if fmt not in self.SOURCE_FORMATS:
+            raise FsError(f"{self.label}: no source code archive '{fmt}' (formats: "
+                          f"{', '.join(self.SOURCE_FORMATS)})")
+        return SourceArchive(archive_name(self.project, release, fmt), "")
+
     def download(self, asset, dest):
         if isinstance(asset, SourceArchive):
             with open(dest, "wb") as f:
@@ -1231,6 +1239,9 @@ class LocalFolder:
         rels = self.releases()
         return max(rels, key=lambda r: r.order) if rels else None
 
+    def listed_archive(self, release, fmt):
+        return self.source_archive(release, fmt)
+
     def source_archive(self, release, fmt):
         """The release's file named like its source code archive."""
         name = archive_name(self.project, release, fmt)
@@ -1414,16 +1425,19 @@ def check_sourcecode(url, kind, fmt):
                       f"{', '.join(platform.SOURCE_FORMATS)})")
 
 
-def entry_assets(origin, release, patterns, sourcecode, excludes=()):
+def entry_assets(origin, release, patterns, sourcecode, excludes=(), listing=False):
     """The assets an entry takes (see select_assets()); with sourcecode,
     the release's source code archive in that format too - and the
-    uploaded assets only with patterns (without: none)."""
+    uploaded assets only with patterns (without: none). With listing (for
+    releases --assets): none is no error, the archive only named."""
+    def uploaded():
+        return matching_assets(release, patterns, excludes) if listing else \
+            select_assets(release, patterns, origin.label, excludes)
     if not sourcecode:
-        return select_assets(release, patterns, origin.label, excludes)
-    archive = origin.source_archive(release, sourcecode)
+        return uploaded()
+    archive = (origin.listed_archive if listing else origin.source_archive)(release, sourcecode)
     # a local folder's archive is one of its files: not twice
-    assets = [a for a in select_assets(release, patterns, origin.label, excludes)
-              if a is not archive] if patterns else []
+    assets = [a for a in uploaded() if a is not archive] if patterns else []
     if any(a.name == archive.name for a in assets):
         raise FsError(f"the source code archive and an asset of release {release.tag} of "
                       f"{origin.label} are both named {archive.name} - take them with two entries")
@@ -6198,8 +6212,10 @@ def pending_note(pending, staged):
     to see it (advice.statusHints)."""
     if not pending:
         return f"{REGISTRY} {registry_done(staged)}"
-    hint = f" ({REGISTRY_PENDING_HINT})" if config_bool("advice.statusHints", True) else ""
-    return f"{REGISTRY} {registry_done(staged)} - pending until pull{hint}"
+    pull = "pull" if staged else "pull -W"      # -W: pull would stage the try
+    hint = f" ({REGISTRY_PENDING_HINT.format(pull=pull)})" \
+        if config_bool("advice.statusHints", True) else ""
+    return f"{REGISTRY} {registry_done(staged)} - pending until {pull}{hint}"
 
 
 def may_pull(repo, entry):
@@ -6422,8 +6438,10 @@ def cmd_releases(ctx, repo, args):
     origin = platform_of(url, kind)
     # one more than shown: to know whether there are more
     rels = origin.releases(None if args.all else args.max_count + 1)
-    show_releases(origin, rels, origin.listed is not None, args,
-                  selected_by(ctx, reg, url, set()))
+    # first: the selections may list all releases, then their count is known
+    selected = selected_by(ctx, reg, url, set()) if rels else {}
+    complete = origin.listed is not None
+    show_releases(origin, origin.listed if complete else rels, complete, args, selected)
     return EXIT_OK
 
 
@@ -6443,9 +6461,9 @@ def cmd_entry_releases(ctx, repo, args):
             rule, pre = e.spec.get("release"), is_true(e.spec.get("prerelease"))
             rels = [r for r in [origin.by_tag(rule)] if r] if rule and not is_pattern(rule) \
                 else [r for r in origin.releases() if may_take(r, rule, pre)]
-            if norm_url(e.url) not in selected:
+            if rels and norm_url(e.url) not in selected:
                 selected[norm_url(e.url)] = selected_by(ctx, reg, e.url, warned)
-            show_releases(origin, rels, True, args, selected[norm_url(e.url)], e)
+            show_releases(origin, rels, True, args, selected.get(norm_url(e.url), {}), e)
         except FsError as err:
             error(f"{e.shown}: {err}")
             rc = EXIT_ERROR
@@ -6495,12 +6513,9 @@ def show_releases(origin, rels, complete, args, selected, entry=None):
                                if flags else ""))
         if args.assets:
             assets = r.assets
-            if entry:     # as entry_assets(), none an error only for pull and add
-                assets = matching_assets(r, entry.asset, entry.exclude_asset) \
-                    if entry.asset or not entry.sourcecode else []
-                if entry.sourcecode:
-                    archive = origin.source_archive(r, entry.sourcecode)
-                    assets = [a for a in assets if a is not archive] + [archive]
+            if entry:
+                assets = entry_assets(origin, r, entry.asset, entry.sourcecode,
+                                      entry.exclude_asset, listing=True)
             aw = max([len(a.name) for a in assets] or [0])
             for a in assets:
                 print(f"    {a.name:<{aw}}  {human_size(a.size)}".rstrip())
@@ -7490,6 +7505,13 @@ def run(argv):
     worktreep = argparse.ArgumentParser(add_help=False)
     worktreep.add_argument("-W", "--worktree", action="store_true",
                            help=f"change {REGISTRY} in the working tree only, nothing staged")
+    releasesp = argparse.ArgumentParser(add_help=False)     # releases, source releases
+    releasesp.add_argument("--assets", action="store_true",
+                           help="also list the assets (of an entry: those it takes)")
+    g = releasesp.add_mutually_exclusive_group()
+    g.add_argument("--max-count", type=positive, default=10, metavar="N",
+                   help="the newest N releases (default: 10)")
+    g.add_argument("--all", action="store_true", help="all releases")
     colorp.add_argument("--no-color", dest="color", action="store_const", const="never",
                         help="same as --color=never")
 
@@ -7690,16 +7712,11 @@ def run(argv):
     g.add_argument("--no-filter", action="store_true", help="use no filter")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
-    p = sub.add_parser("releases", parents=[colorp, remotep],
+    p = sub.add_parser("releases", parents=[colorp, remotep, releasesp],
                        help="list the releases entries may take (and their assets)",
                        description="List per entry the releases its release selection lets it "
                                    "take, newest first (and the assets it takes).")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
-    p.add_argument("--assets", action="store_true", help="also list the assets the entry takes")
-    g = p.add_mutually_exclusive_group()
-    g.add_argument("--max-count", type=positive, default=10, metavar="N",
-                   help="the newest N releases (default: 10)")
-    g.add_argument("--all", action="store_true", help="all releases")
 
     sub.add_parser("edit", parents=[colorp, worktreep],
                    help=f"open {REGISTRY} in the editor, then check and stage it")
@@ -7772,16 +7789,11 @@ def run(argv):
     a.add_argument("--global", dest="glob", action="store_true",
                    help="in the global git config, for all repositories")
 
-    a = actions.add_parser("releases", parents=[colorp, remotep],
+    a = actions.add_parser("releases", parents=[colorp, remotep, releasesp],
                            help="list the releases of a source or project (and their assets)",
                            description="List the releases of a source or project, newest first (and their assets) - also outside a repository, with a URL.")
     a.add_argument("source", metavar="URL|SOURCE",
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
-    a.add_argument("--assets", action="store_true", help="also list the assets")
-    g = a.add_mutually_exclusive_group()
-    g.add_argument("--max-count", type=positive, default=10, metavar="N",
-                   help="the newest N releases (default: 10)")
-    g.add_argument("--all", action="store_true", help="all releases")
     a.add_argument("--type", choices=sorted(PLATFORMS),
                    help="platform of the URL's host (default: derived from it)")
 

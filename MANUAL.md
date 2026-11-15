@@ -702,8 +702,8 @@ git assetsync releases [PATH…] [--assets] [--max-count N | --all]
 Lists for each entry (all without `PATH`) the releases its [release
 selection](#selecting-the-release) lets it take, newest first, marked as by
 [`source releases`](#source-releases): no drafts, prereleases only if it
-takes them; of those a pattern's matching ones, without a selection all; a
-pinned tag: that one. `--assets` lists the assets the entry takes from each.
+takes them; of those a pattern's matching ones, without a selection those
+that can become latest; a pinned tag: that one. `--assets` lists the assets the entry takes from each.
 
 ```console
 $ git assetsync releases bin/tool --assets --max-count 2
