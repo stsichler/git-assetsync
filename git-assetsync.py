@@ -417,13 +417,12 @@ Advanced commands - change entries, sources and filters; set up:
                                 of other tools)
     hook pre-push|post-merge    what the installed hooks run (not for you)
 
-    Common options (all commands):
+    Common options:
         --color[=WHEN], --no-color  always, never or auto (default)
-
-    Upstream access (status, pull, diff, difftool, add, verify, releases,
-    source releases, filter test):
         --remote                ignore mappings (source map) this once, use
-                                the upstream URL
+                                the upstream URL (status, pull, diff,
+                                difftool, add, verify, releases, source
+                                releases, filter test)
 
 Exit codes: 0 ok, 1 something to do (status --exit-code, diff, verify), 2 error, 141
 output into a pipe closed early (| head; a command that changes something

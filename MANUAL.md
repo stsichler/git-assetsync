@@ -12,7 +12,7 @@ motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
   - [Files of your own in a directory](#files-of-your-own-in-a-directory)
 - [Commands](#commands)
-  - [Common options](#common-options) · [Upstream access](#upstream-access)
+  - [Common options](#common-options)
   - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`restore`](#restore) · [`add`](#add) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv)
 - [Advanced commands](#advanced-commands)
   - [`set`](#set) · [`releases`](#releases) · [`edit`](#edit) · [`source`](#source) · [`source map`](#source-map) · [`source releases`](#source-releases) · [`filter`](#filter) · [`filter trust`](#filter-trust) · [`verify`](#verify) · [`cache`](#cache) · [`hooks`](#hooks)
@@ -247,7 +247,9 @@ entries below it), relative to the current directory. A path inside a
 directory entry (`third_party/zlib/zlib.h`) stands for that entry in
 `status`, `pull`, `diff`, `difftool` and `verify`; `set`, `restore`, `rm`
 and `unlink` refuse it – they act on whole entries. Options follow the
-command; `git assetsync <command> -h` lists them.
+command; its syntax shows all of them, and `git assetsync <command> -h`
+lists them. `--remote` and `--color` are described only under [Common
+options](#common-options).
 
 Two options mean the same everywhere (also in git-filesync):
 **`--overwrite`** replaces local content – files of yours, local
@@ -278,25 +280,16 @@ this run only.
 
 ### Common options
 
-All commands take them:
-
-| Option | Meaning |
-|---|---|
-| `--color[=WHEN]`, `--no-color` | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
-
-### Upstream access
-
-The commands that access upstream (`status`, `pull`, `diff`, `difftool`,
-`add`, `verify`, `releases`, `source releases`, `filter test`) also take:
-
-| Option | Meaning |
-|---|---|
-| `--remote` | ignore [mappings](#source-map) this once and use the upstream URL; the mapping stays |
+| Option | Commands | Meaning |
+|---|---|---|
+| `--remote` | `status`, `pull`, `diff`, `difftool`, `add`, `releases`, `verify`, `source releases`, `filter test` | ignore [mappings](#source-map) this once and use the upstream URL; the mapping stays |
+| `--color[=WHEN]`, `--no-color` | all | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
 
 ### `status`
 
 ```
 git assetsync status [PATH…] [-s] [-v] [--exit-code] [--no-fetch] [--remote]
+                     [--color[=WHEN] | --no-color]
 ```
 
 Shows the state of the entries (default: all) in sections like `git
@@ -364,6 +357,7 @@ It exits with 0 unless `--exit-code` is given, and with 2 on errors.
 
 ```
 git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [-W] [-v] [-n] [--remote]
+                   [--color[=WHEN] | --no-color]
 ```
 
 Updates the entries to what their selected release gives (after the
@@ -426,7 +420,7 @@ to the staged version.
 
 ```
 git assetsync diff [PATH…] [--cached | --upstream [--release TAG|PATTERN]] [--exit-code | --quiet]
-                  [--remote] [-- OPTS]
+                  [--remote] [--color[=WHEN] | --no-color] [-- OPTS]
 ```
 
 Shows the local modifications of the entries (default: all): what the
@@ -460,7 +454,7 @@ differences with `--exit-code` or `--quiet`, else 0; 2 on errors.
 
 ```
 git assetsync difftool [PATH…] [--cached | --upstream [--release TAG|PATTERN]]
-                       [-d] [-y | --prompt] [--remote] [-- OPTS]
+                       [-d] [-y | --prompt] [--remote] [--color[=WHEN] | --no-color] [-- OPTS]
 ```
 
 The same as [`diff`](#diff), in your difftool (`diff.tool`, e.g. Meld);
@@ -493,7 +487,7 @@ copies (`-- --symlinks` to link anyway).
 ### `restore`
 
 ```
-git assetsync restore PATH… [-S] [-W]
+git assetsync restore PATH… [-S] [-W] [--color[=WHEN] | --no-color]
 ```
 
 Like `git restore`, from the layer below: the working tree from the
@@ -533,7 +527,7 @@ directory](#files-of-your-own-in-a-directory)).
 ```
 git assetsync add SOURCE PATH [--asset PATTERN]… [--exclude-asset PATTERN]… [--sourcecode FORMAT] [--release TAG|PATTERN]
                   [--prerelease] [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-W] [-n]
-                  [--remote]
+                  [--remote] [--color[=WHEN] | --no-color]
 ```
 
 Takes the file or directory `PATH` from assets of the release `SOURCE`
@@ -608,7 +602,7 @@ git assetsync add acme/lib third_party/lib/ --sourcecode tar.gz --filter unpack
 ### `rm`
 
 ```
-git assetsync rm PATH… [-f] [-n]
+git assetsync rm PATH… [-f] [-n] [--color[=WHEN] | --no-color]
 ```
 
 Like `git rm`: removes the entries and their files and stages that – of a
@@ -626,7 +620,7 @@ use [`unlink`](#unlink).
 ### `unlink`
 
 ```
-git assetsync unlink PATH… [-n]
+git assetsync unlink PATH… [-n] [--color[=WHEN] | --no-color]
 ```
 
 Removes the entries, and sources no longer used, from `.git-assetsync` and
@@ -636,7 +630,7 @@ outside the working tree) is removed by its name as written in the file.
 ### `mv`
 
 ```
-git assetsync mv OLD NEW [-n]
+git assetsync mv OLD NEW [-n] [--color[=WHEN] | --no-color]
 ```
 
 Moves a file or directory with `git mv`, with its entry, and stages both.
@@ -654,9 +648,9 @@ git assetsync set PATH… [--source URL|SOURCE [--type github|gitlab]] [--releas
                         [--prerelease | --no-prerelease]
                         [(--asset PATTERN)… | --no-asset] [(--exclude-asset PATTERN)… | --no-exclude-asset]
                         [--sourcecode FORMAT | --no-sourcecode]
-                        [--filter NAME | --no-filter] [-W] [-n]
-git assetsync set PATH…
-git assetsync set --list
+                        [--filter NAME | --no-filter] [-W] [-n] [--color[=WHEN] | --no-color]
+git assetsync set PATH… [--color[=WHEN] | --no-color]
+git assetsync set --list [--color[=WHEN] | --no-color]
 ```
 
 Changes entries – source, release selection, asset or filter – where `add`
@@ -709,6 +703,7 @@ git assetsync set third_party/zlib --filter zlib-all
 
 ```
 git assetsync releases [PATH…] [--assets] [--max-count N | --all] [--remote]
+                       [--color[=WHEN] | --no-color]
 ```
 
 Lists for each entry (all without `PATH`) the releases its [release
@@ -736,7 +731,7 @@ tool-1.0  2026-09-02  Tool 1.0
 ### `edit`
 
 ```
-git assetsync edit [-W]
+git assetsync edit [-W] [--color[=WHEN] | --no-color]
 ```
 
 Opens `.git-assetsync` in the editor Git uses (`GIT_EDITOR`,
@@ -765,10 +760,11 @@ write, also a changed base.
 ### `source`
 
 ```
-git assetsync source [-v]
-git assetsync source rename OLD NEW [-W] [-n]
+git assetsync source [-v] [--color[=WHEN] | --no-color]
+git assetsync source rename OLD NEW [-W] [-n] [--color[=WHEN] | --no-color]
 git assetsync source set NAME [--url URL] [--type github|gitlab | --no-type] [-W] [-n]
-git assetsync source set --list
+                         [--color[=WHEN] | --no-color]
+git assetsync source set --list [--color[=WHEN] | --no-color]
 ```
 
 Lists and changes the `[source]` sections; listing and renaming work like
@@ -792,7 +788,7 @@ is refused, with a hint to move the entries there (`set <file>... --source
 
 ```
 git assetsync source map [URL|SOURCE [DIR]] [--flat] [--pattern PATTERN] [--sort date|name]
-                         [--global] [--unset]
+                         [--global] [--unset] [--color[=WHEN] | --no-color]
 ```
 
 Takes the releases of a source from the local folder `DIR` instead of
@@ -861,6 +857,7 @@ git assetsync source map acme/tool --unset                # remove it again
 
 ```
 git assetsync source releases URL|SOURCE [--assets] [--max-count N | --all] [--type github|gitlab] [--remote]
+                              [--color[=WHEN] | --no-color]
 ```
 
 Lists the releases of a project, newest first: tag, date and title,
@@ -890,15 +887,16 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
 ### `filter`
 
 ```
-git assetsync filter
-git assetsync filter show NAME
-git assetsync filter test NAME (FILE… | --source SOURCE [--release …] [--prerelease] [--type …] [--asset PATTERN]… [--exclude-asset PATTERN]…
-                           [--sourcecode FORMAT]) [-o DIR] [--remote]
-git assetsync filter add NAME STEP-OPTIONS… [-W] [-n]
-git assetsync filter set NAME [STEP-OPTIONS…] [-W] [-n]
-git assetsync filter set --list
-git assetsync filter rename OLD NEW [-W] [-n]
-git assetsync filter remove NAME [-W] [-n]
+git assetsync filter [--color[=WHEN] | --no-color]
+git assetsync filter show NAME [--color[=WHEN] | --no-color]
+git assetsync filter test NAME (FILE… | --source SOURCE [--release TAG|PATTERN] [--prerelease]
+                           [--type github|gitlab] [--asset PATTERN]… [--exclude-asset PATTERN]…
+                           [--sourcecode FORMAT]) [-o DIR] [--remote] [--color[=WHEN] | --no-color]
+git assetsync filter add NAME STEP-OPTIONS… [-W] [-n] [--color[=WHEN] | --no-color]
+git assetsync filter set NAME [STEP-OPTIONS…] [-W] [-n] [--color[=WHEN] | --no-color]
+git assetsync filter set --list [--color[=WHEN] | --no-color]
+git assetsync filter rename OLD NEW [-W] [-n] [--color[=WHEN] | --no-color]
+git assetsync filter remove NAME [-W] [-n] [--color[=WHEN] | --no-color]
 ```
 
 Lists and changes the [filters](#filters); entries using a changed filter
@@ -938,9 +936,9 @@ include '/*.h' LICENSE  287 -> 16 files
 ### `filter trust`
 
 ```
-git assetsync filter trust
-git assetsync filter trust NAME… | --all
-git assetsync filter trust --revoke NAME…
+git assetsync filter trust [--color[=WHEN] | --no-color]
+git assetsync filter trust (NAME… | --all) [--color[=WHEN] | --no-color]
+git assetsync filter trust --revoke NAME… [--color[=WHEN] | --no-color]
 ```
 
 Filters that run [commands](#commands-in-filters) run only if trusted in
@@ -963,7 +961,7 @@ filter firmware: not trusted (used by src/fw/)
 ### `verify`
 
 ```
-git assetsync verify [PATH…] [-v] [--remote]
+git assetsync verify [PATH…] [-v] [--remote] [--color[=WHEN] | --no-color]
 ```
 
 Checks that the entries are reproducible: for each entry (default: all)
@@ -993,6 +991,7 @@ comes from, as `status -v` does.
 
 ```
 git assetsync cache [list | prune [--older-than DAYS] [--max-size SIZE] [-n] | clear [-n] | dir]
+                    [--color[=WHEN] | --no-color]
 ```
 
 The [download cache](#download-cache), shared by all your repositories:
@@ -1033,9 +1032,9 @@ git config --global assetsync.cacheMaxSize 5G
 ### `hooks`
 
 ```
-git assetsync hooks
-git assetsync hooks install [--force]
-git assetsync hooks uninstall
+git assetsync hooks [--color[=WHEN] | --no-color]
+git assetsync hooks install [--force] [--color[=WHEN] | --no-color]
+git assetsync hooks uninstall [--color[=WHEN] | --no-color]
 ```
 
 `hooks` shows the state of the two hooks – `installed`, `outdated`
