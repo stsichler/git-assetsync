@@ -701,9 +701,9 @@ git assetsync releases [PATH…] [--assets] [--max-count N | --all]
 
 Lists for each entry (all without `PATH`) the releases its [release
 selection](#selecting-the-release) lets it take, newest first, marked as by
-[`source releases`](#source-releases): a pattern's matching ones, a pinned
-tag's one, without a selection all but prereleases (unless it takes them)
-and drafts. `--assets` lists the assets the entry takes from each.
+[`source releases`](#source-releases): no drafts, prereleases only if it
+takes them; of those a pattern's matching ones, without a selection all; a
+pinned tag: that one. `--assets` lists the assets the entry takes from each.
 
 ```console
 $ git assetsync releases bin/tool --assets --max-count 2
@@ -889,8 +889,8 @@ git assetsync filter rename OLD NEW [-W] [-n]
 git assetsync filter remove NAME [-W] [-n]
 ```
 
-Lists and changes the [filters](#filters). Changes are staged; entries
-using a changed filter are pending until `pull`.
+Lists and changes the [filters](#filters); entries using a changed filter
+are pending until `pull`.
 
 | Action | Meaning |
 |---|---|

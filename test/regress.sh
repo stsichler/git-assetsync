@@ -949,7 +949,7 @@ check "filter add -W" \
 git reset -q --hard
 check "edit -W" \
   "$(GIT_EDITOR='f() { git config -f "$1" file.lmw.txt.release v6; }; f' git assetsync edit -W 2>&1) $(git config --blob :.git-assetsync file.lmw.txt.release)" \
-  ".git-assetsync: changed in the working tree only v5"
+  ".git-assetsync changed in the working tree only v5"
 git reset -q --hard
 git mv lmw.txt lmz.txt
 printf 'git config -f "$1" --rename-section file.lmw.txt file.lmz.txt\n' > "$T/ed-mv.sh"
@@ -1828,6 +1828,12 @@ check "releases PATH: pinned, that one" "$(git assetsync releases a.bin | sed 1d
 git reset -q --hard
 check "releases PATH: not synced" "$(git assetsync releases nope 2>&1)" \
   "error: 'nope' is not synced (use 'git assetsync add' to add it)"
+check "releases --max-count: from 1 on" "$(git assetsync releases --max-count 0 2>&1 | tail -1)" \
+  "git assetsync releases: error: argument --max-count: not a number from 1 on: '0'"
+check "source releases --max-count: from 1 on" "$(rc git assetsync source releases acme/rl --max-count -1)" "2"
+new_repo r17e
+check "releases: no entries" "$(git assetsync releases)" "no synced files (.git-assetsync not found or empty)"
+cd "$T/r17"
 check "releases: GitLab, upcoming" "$(asd source releases https://gitlab.com/grp/proj --max-count 2 | oneline)" \
   "v3  2026-10-30  (upcoming) v2  2026-10-11  (latest) (1 more: --all lists them) "
 check "releases: none" "$(asd source releases https://gitlab.com/grp/empty)" "no releases in grp/empty"
@@ -3861,9 +3867,14 @@ check "local folder: formats of the platform" "$(git assetsync add acme/sarc l/ 
   "error: https://github.com/acme/sarc: no source code archive '7z' (formats: zip, tar.gz)"
 rm "$T/loc40/v3/sarc-v3.7z"
 check "local folder: archive missing" "$(git assetsync status -s d 2>/dev/null) $(git assetsync status d 2>&1 | tr '\\' / | grep -c "release v3 of acme/sarc (local folder $T/loc40) has no sarc-v3.tar.gz (its source code archive)")" "E   d/ 1"
+check "releases --assets: the archive missing, an error" \
+  "$(git assetsync releases d --assets 2>&1 >/dev/null | tr '\\' / | grep -c "^error: d/: release v3 of acme/sarc (local folder $T/loc40) has no sarc-v3.tar.gz"; rc git assetsync releases d --assets)" "1
+2"
 mkdir -p "$T/lsrc/x" && printf 'local\n' > "$T/lsrc/x/a.c"
 mkarchive "$T/loc40/v3/sarc-v3.tar.gz" "$T/lsrc"; cp "$F/bin.txt" "$T/loc40/v3/"
 check "... its file" "$(git assetsync status -s d 2>/dev/null)" "P   d/"
+check "releases --assets: the source code archive" "$(git assetsync releases d --assets | sed -n 4p | awk '{print $1}')" \
+  "sarc-v3.tar.gz"
 pullc d
 check "... pulled" "$(cat d/a.c)" "local"
 git assetsync set both --sourcecode tar.gz --asset '*' >/dev/null && git commit -qm set

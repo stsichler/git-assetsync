@@ -213,6 +213,7 @@ Advanced commands:
 | Command | Purpose |
 |---|---|
 | `set PATH… OPTIONS` | change entries: source, release selection, asset, filter |
+| `releases [PATH…]` | list the releases each entry may take, with the assets it takes |
 | `edit` | open `.git-assetsync` in the editor, then check and stage it |
 | `source [ACTION …]` | list sources; rename them, change URL or type |
 | `source map [URL\|SOURCE [DIR]]` | take releases from a local folder, to test a build before publishing it |

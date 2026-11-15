@@ -421,8 +421,8 @@ Advanced commands - change entries, sources and filters; set up:
         --color[=WHEN], --no-color  always, never or auto (default)
         --remote                ignore mappings (source map) this once, use
                                 the upstream URL (status, pull, diff,
-                                difftool, add, verify, source releases,
-                                filter test)
+                                difftool, add, verify, releases, source
+                                releases, filter test)
 
 Exit codes: 0 ok, 1 something to do (status --exit-code, diff, verify), 2 error, 141
 output into a pipe closed early (| head; a command that changes something
@@ -1380,14 +1380,20 @@ def select_release(origin, rule, prerelease):
     return max(cands, key=lambda r: r.order)
 
 
-def select_assets(release, patterns, label, excludes=()):
-    """The assets an entry takes: all matching one of patterns (a list), or
-    all without patterns - but none matching one of excludes (as git-filesync's
-    include / exclude). An error if that is none."""
+def matching_assets(release, patterns, excludes=()):
+    """The assets of release matching one of patterns (a list), or all
+    without patterns - but none matching one of excludes (as git-filesync's
+    include / exclude)."""
     def matches(name, globs):
         return any(fnmatch.fnmatchcase(name, p) for p in globs)
-    found = [a for a in release.assets if (not patterns or matches(a.name, patterns))
-             and not matches(a.name, excludes)]
+    return [a for a in release.assets if (not patterns or matches(a.name, patterns))
+            and not matches(a.name, excludes)]
+
+
+def select_assets(release, patterns, label, excludes=()):
+    """The assets an entry takes (see matching_assets()); an error if that is
+    none."""
+    found = matching_assets(release, patterns, excludes)
     if found:
         return found
     if not release.assets:
@@ -6048,7 +6054,7 @@ def cmd_edit(ctx, repo, args):
                 reg.done.append(("--set-all", key) + tuple(values))
         reg.done += [("--unset-all", k) for k in section_items(old, section) if k not in want]
     reg.finish(stage=not args.worktree)
-    print(f"{REGISTRY}: changed in the working tree only" if args.worktree else REGISTRY_STAGED)
+    print(f"{REGISTRY} {registry_done(False)}" if args.worktree else REGISTRY_STAGED)
     return EXIT_OK
 
 
@@ -6176,24 +6182,24 @@ def cmd_set(ctx, repo, args):
         print("nothing to change")
     elif not args.dry_run:
         reg.finish(stage=not args.worktree)
-        print(pending_note(any(may_pull(repo, e) for e in entries), args))
+        print(pending_note(any(may_pull(repo, e) for e in entries), not args.worktree))
     return EXIT_OK
 
 
-def registry_done(args):
+def registry_done(staged):
     """How a command that changes only the registry says it is written:
-    staged, or with -W in the working tree only."""
-    return "changed in the working tree only" if getattr(args, "worktree", False) else "staged"
+    staged, or (-W) in the working tree only."""
+    return "staged" if staged else "changed in the working tree only"
 
 
-def pending_note(pending, args=None):
+def pending_note(pending, staged):
     """What set, filter set and source set say at the end: staged (-W: in
     the working tree only) - and if pull has something to do, so, with how
     to see it (advice.statusHints)."""
     if not pending:
-        return f"{REGISTRY} {registry_done(args)}"
+        return f"{REGISTRY} {registry_done(staged)}"
     hint = f" ({REGISTRY_PENDING_HINT})" if config_bool("advice.statusHints", True) else ""
-    return f"{REGISTRY} {registry_done(args)} - pending until pull{hint}"
+    return f"{REGISTRY} {registry_done(staged)} - pending until pull{hint}"
 
 
 def may_pull(repo, entry):
@@ -6416,15 +6422,19 @@ def cmd_releases(ctx, repo, args):
     origin = platform_of(url, kind)
     # one more than shown: to know whether there are more
     rels = origin.releases(None if args.all else args.max_count + 1)
-    show_releases(ctx, reg, url, origin, rels, origin.listed is not None, args, set())
+    show_releases(origin, rels, origin.listed is not None, args,
+                  selected_by(ctx, reg, url, set()))
     return EXIT_OK
 
 
 def cmd_entry_releases(ctx, repo, args):
     """releases [PATH...]: per entry the releases its selection lets it take
     (marked as by source releases), with --assets the assets it takes."""
-    reg, warned, rc = Registry(repo), set(), EXIT_OK
-    for i, e in enumerate(select_entries(repo, reg, args.paths, containing=True)):
+    reg, warned, selected, rc = Registry(repo), set(), {}, EXIT_OK
+    entries = select_entries(repo, reg, args.paths, containing=True)
+    if not entries:
+        print(f"no synced files ({REGISTRY} not found or empty)")
+    for i, e in enumerate(entries):
         if i:
             print()
         print(f"{paint(e.shown, 'bold')}: {spec_text(e.spec)} of {e.name}")
@@ -6433,17 +6443,35 @@ def cmd_entry_releases(ctx, repo, args):
             rule, pre = e.spec.get("release"), is_true(e.spec.get("prerelease"))
             rels = [r for r in [origin.by_tag(rule)] if r] if rule and not is_pattern(rule) \
                 else [r for r in origin.releases() if may_take(r, rule, pre)]
-            show_releases(ctx, reg, e.url, origin, rels, True, args, warned, e)
+            if norm_url(e.url) not in selected:
+                selected[norm_url(e.url)] = selected_by(ctx, reg, e.url, warned)
+            show_releases(origin, rels, True, args, selected[norm_url(e.url)], e)
         except FsError as err:
             error(f"{e.shown}: {err}")
             rc = EXIT_ERROR
     return rc
 
 
-def show_releases(ctx, reg, url, origin, rels, complete, args, warned, entry=None):
+def selected_by(ctx, reg, url, warned):
+    """{tag: [entries shown]}: which entries of the source URL select which
+    release; warned: the entries whose selection fails, warned of once."""
+    selected = {}
+    for e in reg.entries() if reg else []:
+        if norm_url(e.url) == norm_url(url):
+            try:
+                selected.setdefault(ctx.release(url, e.spec)[1].tag, []).append(e.shown)
+            except FsError as err:
+                if e.rel not in warned:
+                    warned.add(e.rel)
+                    warn(f"{e.shown}: {err}")
+    return selected
+
+
+def show_releases(origin, rels, complete, args, selected, entry=None):
     """Print releases newest first (at most --max-count, then how many
-    more if complete says the count is known), with --assets their assets
-    - those entry takes, with an entry. warned: entries already warned of."""
+    more if complete says the count is known), marked, selected by whom
+    (see selected_by()); with --assets their assets - those entry takes,
+    with an entry."""
     rels = sorted(rels, key=lambda r: r.order, reverse=True)
     more = 0 if args.all else len(rels) - args.max_count
     if more > 0:
@@ -6454,15 +6482,6 @@ def show_releases(ctx, reg, url, origin, rels, complete, args, warned, entry=Non
         print(f"no {'matching ' if entry else ''}releases in {origin.where}")
         return
     latest = origin.latest()
-    selected = {}
-    for e in reg.entries() if reg else []:
-        if norm_url(e.url) == norm_url(url):
-            try:
-                selected.setdefault(ctx.release(url, e.spec)[1].tag, []).append(e.shown)
-            except FsError as err:
-                if e.rel not in warned:
-                    warned.add(e.rel)
-                    warn(f"{e.shown}: {err}")
     width = max(len(r.tag) for r in rels)
     for r in rels:
         flags = (["latest"] if latest and r.tag == latest.tag else []) + \
@@ -6476,12 +6495,12 @@ def show_releases(ctx, reg, url, origin, rels, complete, args, warned, entry=Non
                                if flags else ""))
         if args.assets:
             assets = r.assets
-            if entry:
-                try:
-                    assets = entry_assets(origin, r, entry.asset, entry.sourcecode,
-                                          entry.exclude_asset)
-                except FsError:
-                    assets = []
+            if entry:     # as entry_assets(), none an error only for pull and add
+                assets = matching_assets(r, entry.asset, entry.exclude_asset) \
+                    if entry.asset or not entry.sourcecode else []
+                if entry.sourcecode:
+                    archive = origin.source_archive(r, entry.sourcecode)
+                    assets = [a for a in assets if a is not archive] + [archive]
             aw = max([len(a.name) for a in assets] or [0])
             for a in assets:
                 print(f"    {a.name:<{aw}}  {human_size(a.size)}".rstrip())
@@ -6941,7 +6960,7 @@ def cmd_source(ctx, repo, args):
         reg.rename_source(args.name, new)
         reg.finish(stage=not args.worktree)
         print(f"would rename {args.name} -> {new}" if args.dry_run else
-              f"{paint(f'renamed {args.name} -> {new}', 'green')}; {REGISTRY} {registry_done(args)}")
+              f"{paint(f'renamed {args.name} -> {new}', 'green')}; {REGISTRY} {registry_done(not args.worktree)}")
         return EXIT_OK
     if args.url:
         url = source_url(args.url)
@@ -6965,7 +6984,7 @@ def cmd_source(ctx, repo, args):
         print(f"{would}{paint(line, 'green')}")
     if not args.dry_run:
         reg.finish(stage=not args.worktree)
-        print(pending_note(bool(reg.source_files(args.name)), args))
+        print(pending_note(bool(reg.source_files(args.name)), not args.worktree))
     return EXIT_OK
 
 
@@ -7051,10 +7070,10 @@ def cmd_filter(ctx, repo, args):
     elif action == "set" and users:
         reg.finish(stage=not args.worktree)
         print(paint(done, "green"))
-        print(pending_note(True, args))
+        print(pending_note(True, not args.worktree))
     else:
         reg.finish(stage=not args.worktree)
-        print(f"{paint(done, 'green')}; {REGISTRY} {registry_done(args)}")
+        print(f"{paint(done, 'green')}; {REGISTRY} {registry_done(not args.worktree)}")
     return EXIT_OK
 
 
@@ -7418,6 +7437,17 @@ def main(argv=None):
     return EXIT_PIPE if PipeGuard.broken and rc == EXIT_OK else rc
 
 
+def positive(text):
+    """argparse type: a whole number from 1 on."""
+    try:
+        n = int(text)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"not a number from 1 on: '{text}'")
+    return n
+
+
 def only_looks(args):
     """Does the command only look (show, list, check) - change nothing?"""
     action = getattr(args, "action", None)
@@ -7667,7 +7697,7 @@ def run(argv):
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
     p.add_argument("--assets", action="store_true", help="also list the assets the entry takes")
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--max-count", type=int, default=10, metavar="N",
+    g.add_argument("--max-count", type=positive, default=10, metavar="N",
                    help="the newest N releases (default: 10)")
     g.add_argument("--all", action="store_true", help="all releases")
 
@@ -7749,7 +7779,7 @@ def run(argv):
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
     a.add_argument("--assets", action="store_true", help="also list the assets")
     g = a.add_mutually_exclusive_group()
-    g.add_argument("--max-count", type=int, default=10, metavar="N",
+    g.add_argument("--max-count", type=positive, default=10, metavar="N",
                    help="the newest N releases (default: 10)")
     g.add_argument("--all", action="store_true", help="all releases")
     a.add_argument("--type", choices=sorted(PLATFORMS),
