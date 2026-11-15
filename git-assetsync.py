@@ -4027,7 +4027,10 @@ def rebuild_base(repo, reg, entry, what):
         repo.known_trees[tree] = True       # there for this run
     else:
         repo.keep_tree(tree)
-    return base_paths(repo, entry)
+    paths = base_paths(repo, entry)
+    if paths is None:         # not expected: the tree is there now
+        raise FsError(f"{what}, and its tree {tree} couldn't be kept")
+    return paths
 
 
 def release_tree(repo, rel, items, paths=None):
@@ -4517,7 +4520,7 @@ def print_long(ctx, repo, sts, verbose):
     section("Changes to be committed:",
             ['use "git commit" to commit them',
              'use "git assetsync restore --staged <file>..." to unstage'],
-            [layer_row(st, *st.below, st.staged) for st in staged], "green")
+            [layer_row(st, st.below[0], st.below[1], st.staged) for st in staged], "green")
     unstaged = [st for st in fine if st.unstaged]
     section("Changes not staged for commit:",
             ['use "git assetsync pull <file>..." to stage them',
@@ -6123,9 +6126,11 @@ def cmd_set(ctx, repo, args):
                                           args.no_exclude_asset))
                 if given is not None or none}
     reg.dry_run = args.dry_run
-    if args.source:           # another project (fork, moved) or [source]
-        url, spec, named = given_source(reg, SimpleNamespace(
-            source=args.source, release=None, prerelease=None, type=args.type))
+    # another project (fork, moved) or [source]
+    url, spec, named = given_source(reg, SimpleNamespace(
+        source=args.source, release=None, prerelease=None, type=args.type)) \
+        if args.source else ("", {}, None)
+    if args.source:
         platform_of(url, spec.get("type"))       # a usable URL and type
     for e in entries:
         sourcecode = None if args.no_sourcecode else args.sourcecode or e.sourcecode
@@ -7047,6 +7052,7 @@ def cmd_filter(ctx, repo, args):
         print(f"({'used by ' + and_list(users) if users else 'not used'})")
         return EXIT_OK
     reg.dry_run = args.dry_run
+    would = None              # rename, remove: their own words for -n
     if action in ("add", "set"):
         steps = filter_steps(args)
         if not steps and action == "set":
@@ -7081,7 +7087,7 @@ def cmd_filter(ctx, repo, args):
     if action == "set" and users:
         done += f" (used by {and_list(users)})"
     if args.dry_run:      # a change of the steps as set shows one, else as git
-        print(would if action in ("rename", "remove") else f"would: {done}")
+        print(would or f"would: {done}")
     elif action == "set" and users:
         reg.finish(stage=not args.worktree)
         print(paint(done, "green"))
