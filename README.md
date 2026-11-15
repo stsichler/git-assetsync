@@ -94,7 +94,7 @@ commit that says what it brings.
 - In a directory, files of your own can sit next to those of the release
 - Follows the latest release, the newest whose tag matches a pattern
   (e.g. `tool-*`), or a pinned one; tags are taken as they are, without a
-  versioning scheme
+  versioning scheme; `releases` lists those an entry may take
 - Proposed commit messages name the release, its date and page, the assets
   and the filter, with the release notes shortened – also those of
   releases skipped, and text from the assets (`changelog` step)

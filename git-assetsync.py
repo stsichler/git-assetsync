@@ -282,6 +282,12 @@ Advanced commands - change entries, sources and filters; set up:
                                 (with pull -W: a whole try)
         -n, --dry-run           only show what would change
 
+    releases [PATH...]          per entry (default: all) the releases its
+                                release selection lets it take, newest
+                                first, marked as by source releases
+        --assets                also the assets the entry takes
+        --max-count N, --all    the newest N releases (default 10), or all
+
     edit                        open .git-assetsync in the editor (like `git
                                 config --edit`), then check it (warnings
                                 about gaps) and stage what changed (a merge
@@ -327,7 +333,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 selected by which entries; also outside a
                                 repository (with a URL)
         --assets                also list the assets, with their sizes
-        --max-count N, --all    the newest N releases (default 10), or all
+        --max-count N, --all    the newest N releases (default 10; the last
+                                line says how many more), or all
         --type github|gitlab    platform of the URL's host
 
     filter                      list the filters (and who uses them)
@@ -1342,6 +1349,14 @@ def is_pattern(rule):
     return any(c in rule for c in "*?[")
 
 
+def may_take(release, rule, prerelease):
+    """Whether a selection (rule, prerelease) lets an entry take release:
+    no draft, a prerelease only with prerelease, a pattern must match (an
+    exact tag is checked by the caller)."""
+    return not release.draft and (prerelease or not release.prerelease) and \
+        (not rule or not is_pattern(rule) or fnmatch.fnmatchcase(release.tag, rule))
+
+
 def select_release(origin, rule, prerelease):
     """The release a source takes: an exact tag (pinned), the newest release
     by date whose tag matches a pattern, or - without rule - the latest.
@@ -1357,8 +1372,7 @@ def select_release(origin, rule, prerelease):
         if not r:
             raise FsError(f"no release in {origin.where}")
         return r
-    cands = [r for r in origin.releases() if not r.draft and (prerelease or not r.prerelease)
-             and (not rule or fnmatch.fnmatchcase(r.tag, rule))]
+    cands = [r for r in origin.releases() if may_take(r, rule, prerelease)]
     if not cands:
         what = f"with a tag matching '{rule}'" if rule else ""
         raise FsError(f"no release {what} in {origin.where}".replace("  ", " ")
@@ -4875,9 +4889,7 @@ def releases_between(st):
         if not old or not old.order or not new.order:
             return None
         rule, pre = entry.spec.get("release"), is_true(entry.spec.get("prerelease"))
-        others = [r for r in listed if r.tag not in (old.tag, new.tag)
-                  and not r.draft and (pre or not r.prerelease)
-                  and (not rule or not is_pattern(rule) or fnmatch.fnmatchcase(r.tag, rule))]
+        others = [r for r in listed if r.tag not in (old.tag, new.tag) and may_take(r, rule, pre)]
     except FsError:
         return None
     if old.order < new.order:
@@ -6393,24 +6405,54 @@ def cmd_cache(args):
 
 
 def cmd_releases(ctx, repo, args):
-    """List releases newest first, marked: latest (as the platform says),
-    prerelease, draft, and which entries of this repository select them -
-    a help for add and set."""
+    """source releases: the releases of a source or project newest first,
+    marked: latest (as the platform says), prerelease, draft, and which
+    entries of this repository select them - a help for add and set."""
     reg = Registry(repo) if repo else None
     if reg and args.source in reg.sources:
         url, kind = reg.sources[args.source].get("url", ""), reg.sources[args.source].get("type")
     else:
         url, kind = source_url(args.source), args.type
     origin = platform_of(url, kind)
-    rels = sorted(origin.releases(None if args.all else args.max_count),
-                  key=lambda r: r.order, reverse=True)
-    if not args.all:
+    # one more than shown: to know whether there are more
+    rels = origin.releases(None if args.all else args.max_count + 1)
+    show_releases(ctx, reg, url, origin, rels, origin.listed is not None, args, set())
+    return EXIT_OK
+
+
+def cmd_entry_releases(ctx, repo, args):
+    """releases [PATH...]: per entry the releases its selection lets it take
+    (marked as by source releases), with --assets the assets it takes."""
+    reg, warned, rc = Registry(repo), set(), EXIT_OK
+    for i, e in enumerate(select_entries(repo, reg, args.paths, containing=True)):
+        if i:
+            print()
+        print(f"{paint(e.shown, 'bold')}: {spec_text(e.spec)} of {e.name}")
+        try:
+            origin = platform_of(e.url, e.spec.get("type"))
+            rule, pre = e.spec.get("release"), is_true(e.spec.get("prerelease"))
+            rels = [r for r in [origin.by_tag(rule)] if r] if rule and not is_pattern(rule) \
+                else [r for r in origin.releases() if may_take(r, rule, pre)]
+            show_releases(ctx, reg, e.url, origin, rels, True, args, warned, e)
+        except FsError as err:
+            error(f"{e.shown}: {err}")
+            rc = EXIT_ERROR
+    return rc
+
+
+def show_releases(ctx, reg, url, origin, rels, complete, args, warned, entry=None):
+    """Print releases newest first (at most --max-count, then how many
+    more if complete says the count is known), with --assets their assets
+    - those entry takes, with an entry. warned: entries already warned of."""
+    rels = sorted(rels, key=lambda r: r.order, reverse=True)
+    more = 0 if args.all else len(rels) - args.max_count
+    if more > 0:
         rels = rels[:args.max_count]
     if isinstance(origin, LocalFolder):
         print(paint(f"releases in the local folder {origin.place} (git assetsync source map)", "cyan"))
     if not rels:
-        print(f"no releases in {origin.where}")
-        return EXIT_OK
+        print(f"no {'matching ' if entry else ''}releases in {origin.where}")
+        return
     latest = origin.latest()
     selected = {}
     for e in reg.entries() if reg else []:
@@ -6418,7 +6460,9 @@ def cmd_releases(ctx, repo, args):
             try:
                 selected.setdefault(ctx.release(url, e.spec)[1].tag, []).append(e.shown)
             except FsError as err:
-                warn(f"{e.shown}: {err}")
+                if e.rel not in warned:
+                    warned.add(e.rel)
+                    warn(f"{e.shown}: {err}")
     width = max(len(r.tag) for r in rels)
     for r in rels:
         flags = (["latest"] if latest and r.tag == latest.tag else []) + \
@@ -6431,12 +6475,20 @@ def cmd_releases(ctx, repo, args):
         print(line.rstrip() + (f"  {paint('(' + ', '.join(flags) + ')', 'cyan')}"
                                if flags else ""))
         if args.assets:
-            aw = max([len(a.name) for a in r.assets] or [0])
-            for a in r.assets:
+            assets = r.assets
+            if entry:
+                try:
+                    assets = entry_assets(origin, r, entry.asset, entry.sourcecode,
+                                          entry.exclude_asset)
+                except FsError:
+                    assets = []
+            aw = max([len(a.name) for a in assets] or [0])
+            for a in assets:
                 print(f"    {a.name:<{aw}}  {human_size(a.size)}".rstrip())
-            if not r.assets:
-                print("    (no assets)")
-    return EXIT_OK
+            if not assets:
+                print(f"    (no {'matching ' if entry else ''}assets)")
+    if more > 0:
+        print(paint(f"({f'{more} ' if complete else ''}more: --all lists them)", "cyan"))
 
 
 def and_list(items):
@@ -7369,7 +7421,7 @@ def main(argv=None):
 def only_looks(args):
     """Does the command only look (show, list, check) - change nothing?"""
     action = getattr(args, "action", None)
-    return args.cmd in ("status", "diff", "difftool", "verify") or \
+    return args.cmd in ("status", "diff", "difftool", "verify", "releases") or \
         action is None and args.cmd in ("source", "filter", "cache", "hooks") or \
         action in ("releases", "show", "list", "dir") or \
         action == "map" and not args.dir and not args.unset or \
@@ -7608,6 +7660,17 @@ def run(argv):
     g.add_argument("--no-filter", action="store_true", help="use no filter")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
+    p = sub.add_parser("releases", parents=[colorp, remotep],
+                       help="list the releases entries may take (and their assets)",
+                       description="List per entry the releases its release selection lets it "
+                                   "take, newest first (and the assets it takes).")
+    p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
+    p.add_argument("--assets", action="store_true", help="also list the assets the entry takes")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--max-count", type=int, default=10, metavar="N",
+                   help="the newest N releases (default: 10)")
+    g.add_argument("--all", action="store_true", help="all releases")
+
     sub.add_parser("edit", parents=[colorp, worktreep],
                    help=f"open {REGISTRY} in the editor, then check and stage it")
 
@@ -7820,10 +7883,11 @@ def run(argv):
         if args.cmd == "hook":
             args.no_fetch = args.name == "post-merge"    # pre-push: online anyway
         ctx = Context(args)
-        if args.cmd in ("status", "hook", "diff", "difftool"):   # they only look
+        if args.cmd in ("status", "hook", "diff", "difftool", "releases"):   # they only look
             with repo.scratch():
                 return {"status": cmd_status, "hook": cmd_hook, "diff": cmd_diff,
-                        "difftool": cmd_difftool}[args.cmd](ctx, repo, args)
+                        "difftool": cmd_difftool, "releases": cmd_entry_releases}[args.cmd](
+                            ctx, repo, args)
         command = cmd_trust if args.cmd == "filter" and args.action == "trust" else {
             "pull": cmd_pull, "add": cmd_add, "edit": cmd_edit, "set": cmd_set,
             "unlink": cmd_unlink, "mv": cmd_mv, "restore": cmd_restore, "rm": cmd_rm,

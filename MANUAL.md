@@ -15,7 +15,7 @@ motivation and installation see the [README](README.md).
   - [Common options](#common-options)
   - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`restore`](#restore) · [`add`](#add) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv)
 - [Advanced commands](#advanced-commands)
-  - [`set`](#set) · [`edit`](#edit) · [`source`](#source) · [`source map`](#source-map) · [`source releases`](#source-releases) · [`filter`](#filter) · [`filter trust`](#filter-trust) · [`verify`](#verify) · [`cache`](#cache) · [`hooks`](#hooks)
+  - [`set`](#set) · [`releases`](#releases) · [`edit`](#edit) · [`source`](#source) · [`source map`](#source-map) · [`source releases`](#source-releases) · [`filter`](#filter) · [`filter trust`](#filter-trust) · [`verify`](#verify) · [`cache`](#cache) · [`hooks`](#hooks)
 - [Further topics](#further-topics)
   - [Selecting the release](#selecting-the-release) · [Filters](#filters) · [Proposed commit messages](#proposed-commit-messages)
   - [GitHub and GitLab access](#github-and-gitlab-access) · [Integrity](#integrity) · [Download cache](#download-cache)
@@ -212,6 +212,7 @@ Basic commands – what you need day to day:
 | Command | Purpose |
 |---|---|
 | [`set PATH… [OPTIONS]`](#set) | change entries: source, release selection, asset, filter; without options: show them |
+| [`releases [PATH…]`](#releases) | list the releases each entry may take, with the assets it takes |
 | [`edit`](#edit) | open `.git-assetsync` in the editor, then check and stage it |
 | [`source [ACTION …]`](#source) | list sources; rename them, show or change URL and type |
 | [`source map [URL\|SOURCE [DIR]]`](#source-map) | take the releases of a source from a local folder |
@@ -280,7 +281,7 @@ this run only.
 | Option | Meaning |
 |---|---|
 | `--color[=WHEN]`, `--no-color` | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
-| `--remote` | ignore [mappings](#source-map) this once and use the upstream URL (`status`, `pull`, `diff`, `difftool`, `add`, `verify`, `source releases`, `filter test`) |
+| `--remote` | ignore [mappings](#source-map) this once and use the upstream URL (`status`, `pull`, `diff`, `difftool`, `add`, `verify`, `releases`, `source releases`, `filter test`) |
 
 ### `status`
 
@@ -692,6 +693,34 @@ git assetsync set bin/tool --asset 'tool-*-linux-arm64'
 git assetsync set third_party/zlib --filter zlib-all
 ```
 
+### `releases`
+
+```
+git assetsync releases [PATH…] [--assets] [--max-count N | --all]
+```
+
+Lists for each entry (all without `PATH`) the releases its [release
+selection](#selecting-the-release) lets it take, newest first, marked as by
+[`source releases`](#source-releases): a pattern's matching ones, a pinned
+tag's one, without a selection all but prereleases (unless it takes them)
+and drafts. `--assets` lists the assets the entry takes from each.
+
+```console
+$ git assetsync releases bin/tool --assets --max-count 2
+bin/tool: newest release matching tool-* of acme/tool
+tool-1.1  2026-10-11  Tool 1.1  (latest, selected by bin/tool)
+    tool-1.1-linux-x64  14.6 MiB
+tool-1.0  2026-09-02  Tool 1.0
+    tool-1.0-linux-x64  14.1 MiB
+(3 more: --all lists them)
+```
+
+| Option | Meaning |
+|---|---|
+| `--assets` | also list the assets the entry takes |
+| `--max-count N` | the newest N releases (default: 10) |
+| `--all` | all releases |
+
 ### `edit`
 
 ```
@@ -825,7 +854,9 @@ git assetsync source releases URL|SOURCE [--assets] [--max-count N | --all] [--t
 Lists the releases of a project, newest first: tag, date and title,
 marked `latest`, `prerelease` (GitLab: `upcoming`), `draft`, and `selected
 by …` with the entries that select it – a help for choosing `--release`
-and `--asset`. With a URL it also works outside a repository.
+and `--asset`. With a URL it also works outside a repository. If there
+are more than shown, the last line says how many. [`releases
+PATH`](#releases) lists only those an entry may take.
 
 ```console
 $ git assetsync source releases acme/tool --assets --max-count 2
@@ -834,6 +865,7 @@ v1.1      2026-10-11  Tool 1.1  (latest, selected by bin/tool)
     tool-1.1-windows.zip   15.2 MiB
 v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
     tool-1.1-rc1-linux-x64  14.5 MiB
+(7 more: --all lists them)
 ```
 
 | Option | Meaning |

@@ -480,7 +480,7 @@ check "help: the command's line first" \
   "$(asd -h | grep -c '^  status  *show the state of the synced files$') $(asd status -h | grep -c '^Show the state of the synced files\.$')" "1 1"
 check "help: basic commands first, then the advanced ones" \
   "$(asd -h | grep -E '^(basic|advanced) commands:$|^  [a-z][a-z-]*  ' | sed 's/^  \([a-z-]*\) .*/\1/' | oneline)" \
-  "basic commands: status pull diff difftool restore add rm unlink mv advanced commands: set edit verify source filter cache hooks "
+  "basic commands: status pull diff difftool restore add rm unlink mv advanced commands: set releases edit verify source filter cache hooks "
 check "help: also for actions" "$(asd source rename -h | grep -c '^Rename a source and all references to it\.$')" "1"
 # with Python 3.14 or later the help is colored - the command list too - when the
 # output would be (--color, color.ui, NO_COLOR); before, it isn't
@@ -567,6 +567,10 @@ reset_calls
 quiet asd add acme/many old.bin --asset old.bin --release 'special-*'
 check "paging: match on page 2" "$(cat old.bin 2>/dev/null)" "old"
 check "paging: 2 pages + download" "$(calls)" "3"
+check "releases: more on the next page, not counted" "$(asd source releases acme/many | tail -1)" \
+  "(more: --all lists them)"
+check "... counted with both pages" "$(asd source releases acme/many --max-count 100 | tail -1)" \
+  "(1 more: --all lists them)"
 
 check "no releases at all" "$(mkdir -p "$GH/github.com/acme/empty"; asd add acme/empty x.bin --asset x 2>&1)" \
   "error: no release in acme/empty"
@@ -1789,7 +1793,9 @@ release --title "Rel 2 RC" --pre acme/rl v2-rc1 12 "$F/small.bin"
 release --draft acme/rl v3 13 "$F/small.bin"
 check "releases outside a repository" "$(asd source releases acme/rl | oneline)" \
   "v3      2026-10-13  (draft) v2-rc1  2026-10-12  Rel 2 RC  (prerelease) v1.1    2026-10-11  (latest) v1      2026-10-10  Rel 1 v0      2026-10-09 "
-check "releases --max-count" "$(asd source releases acme/rl --max-count 2 | lines)" "2"
+check "releases --max-count: and how many more" "$(asd source releases acme/rl --max-count 2 | lines) $(asd source releases acme/rl --max-count 2 | tail -1)" \
+  "3 (3 more: --all lists them)"
+check "... none with --all" "$(asd source releases acme/rl --all | grep -c more)" "0"
 check "releases --assets" "$(asd source releases acme/rl --assets | tail -5 | oneline)" \
   "v1      2026-10-10  Rel 1     kib.bin    2.9 KiB     small.bin  3 bytes v0      2026-10-09     (no assets) "
 new_repo r17
@@ -1799,10 +1805,31 @@ check "releases: selected by entries" "$(git assetsync source releases acme/rl |
   "v2-rc1  2026-10-12  Rel 2 RC  (prerelease, selected by b.bin) "
 check "releases: latest selected" "$(git assetsync source releases acme/rl | grep '^v1.1 ')" \
   "v1.1    2026-10-11  (latest, selected by a.bin)"
-check "releases of a source by name" "$(git assetsync source releases acme/rl --max-count 1)" \
+check "releases of a source by name" "$(git assetsync source releases acme/rl --max-count 1 | head -1)" \
   "v3  2026-10-13  (draft)"
+# releases PATH: the releases an entry's selection lets it take, the assets it takes
+check "releases PATH: a pattern with prereleases, no drafts" \
+  "$(git assetsync releases b.bin | cut -d' ' -f1 | oneline)" "b.bin: v2-rc1 v1.1 v1 v0 "
+check "... the header" "$(git assetsync releases b.bin | head -1)" \
+  "b.bin: newest release matching v* (prereleases too) of acme/rl"
+check "releases PATH: the latest, no prereleases" \
+  "$(git assetsync releases a.bin | cut -d' ' -f1 | oneline)" "a.bin: v1.1 v1 v0 "
+check "releases --assets: those the entry takes" \
+  "$(git assetsync releases a.bin --assets | tail -4 | oneline)" \
+  "v1    2026-10-10  Rel 1     small.bin  3 bytes v0    2026-10-09     (no matching assets) "
+check "releases --max-count: more of those" \
+  "$(git assetsync releases a.bin --max-count 1 | sed 1d | oneline)" \
+  "v1.1  2026-10-11  (latest, selected by a.bin) (2 more: --all lists them) "
+check "releases: all entries, one block each" \
+  "$(git assetsync releases --max-count 1 | oneline)" \
+  "a.bin: latest release of acme/rl v1.1  2026-10-11  (latest, selected by a.bin) (2 more: --all lists them)  b.bin: newest release matching v* (prereleases too) of acme/rl v2-rc1  2026-10-12  Rel 2 RC  (prerelease, selected by b.bin) (3 more: --all lists them) "
+quiet git assetsync set a.bin --release v1
+check "releases PATH: pinned, that one" "$(git assetsync releases a.bin | sed 1d | cut -d' ' -f1)" "v1"
+git reset -q --hard
+check "releases PATH: not synced" "$(git assetsync releases nope 2>&1)" \
+  "error: 'nope' is not synced (use 'git assetsync add' to add it)"
 check "releases: GitLab, upcoming" "$(asd source releases https://gitlab.com/grp/proj --max-count 2 | oneline)" \
-  "v3  2026-10-30  (upcoming) v2  2026-10-11  (latest) "
+  "v3  2026-10-30  (upcoming) v2  2026-10-11  (latest) (1 more: --all lists them) "
 check "releases: none" "$(asd source releases https://gitlab.com/grp/empty)" "no releases in grp/empty"
 check "releases: unknown project" "$(asd source releases acme/nothing 2>&1)" "error: repository acme/nothing not found (or no access)"
 
