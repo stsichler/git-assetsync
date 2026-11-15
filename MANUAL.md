@@ -12,7 +12,7 @@ motivation and installation see the [README](README.md).
   - [No local modifications](#no-local-modifications)
   - [Files of your own in a directory](#files-of-your-own-in-a-directory)
 - [Commands](#commands)
-  - [Common options](#common-options)
+  - [Common options](#common-options) · [Upstream access](#upstream-access)
   - [`status`](#status) · [`pull`](#pull) · [`diff`](#diff) · [`difftool`](#difftool) · [`restore`](#restore) · [`add`](#add) · [`rm`](#rm) · [`unlink`](#unlink) · [`mv`](#mv)
 - [Advanced commands](#advanced-commands)
   - [`set`](#set) · [`releases`](#releases) · [`edit`](#edit) · [`source`](#source) · [`source map`](#source-map) · [`source releases`](#source-releases) · [`filter`](#filter) · [`filter trust`](#filter-trust) · [`verify`](#verify) · [`cache`](#cache) · [`hooks`](#hooks)
@@ -278,15 +278,25 @@ this run only.
 
 ### Common options
 
+All commands take them:
+
 | Option | Meaning |
 |---|---|
 | `--color[=WHEN]`, `--no-color` | colored output: `always`, `never` or `auto` (default), see [Colors](#colors) |
-| `--remote` | ignore [mappings](#source-map) this once and use the upstream URL (`status`, `pull`, `diff`, `difftool`, `add`, `verify`, `releases`, `source releases`, `filter test`) |
+
+### Upstream access
+
+The commands that access upstream (`status`, `pull`, `diff`, `difftool`,
+`add`, `verify`, `releases`, `source releases`, `filter test`) also take:
+
+| Option | Meaning |
+|---|---|
+| `--remote` | ignore [mappings](#source-map) this once and use the upstream URL; the mapping stays |
 
 ### `status`
 
 ```
-git assetsync status [PATH…] [-s] [-v] [--exit-code] [--no-fetch]
+git assetsync status [PATH…] [-s] [-v] [--exit-code] [--no-fetch] [--remote]
 ```
 
 Shows the state of the entries (default: all) in sections like `git
@@ -353,7 +363,7 @@ It exits with 0 unless `--exit-code` is given, and with 2 on errors.
 ### `pull`
 
 ```
-git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [-W] [-v] [-n]
+git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [-W] [-v] [-n] [--remote]
 ```
 
 Updates the entries to what their selected release gives (after the
@@ -415,7 +425,8 @@ to the staged version.
 ### `diff`
 
 ```
-git assetsync diff [PATH…] [--upstream [--release TAG|PATTERN]] [--exit-code | --quiet] [-- OPTS]
+git assetsync diff [PATH…] [--cached | --upstream [--release TAG|PATTERN]] [--exit-code | --quiet]
+                  [--remote] [-- OPTS]
 ```
 
 Shows the local modifications of the entries (default: all): what the
@@ -448,8 +459,8 @@ differences with `--exit-code` or `--quiet`, else 0; 2 on errors.
 ### `difftool`
 
 ```
-git assetsync difftool [PATH…] [--upstream [--release TAG|PATTERN]]
-                       [-d] [-y | --prompt] [-- OPTS]
+git assetsync difftool [PATH…] [--cached | --upstream [--release TAG|PATTERN]]
+                       [-d] [-y | --prompt] [--remote] [-- OPTS]
 ```
 
 The same as [`diff`](#diff), in your difftool (`diff.tool`, e.g. Meld);
@@ -522,6 +533,7 @@ directory](#files-of-your-own-in-a-directory)).
 ```
 git assetsync add SOURCE PATH [--asset PATTERN]… [--exclude-asset PATTERN]… [--sourcecode FORMAT] [--release TAG|PATTERN]
                   [--prerelease] [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-W] [-n]
+                  [--remote]
 ```
 
 Takes the file or directory `PATH` from assets of the release `SOURCE`
@@ -696,7 +708,7 @@ git assetsync set third_party/zlib --filter zlib-all
 ### `releases`
 
 ```
-git assetsync releases [PATH…] [--assets] [--max-count N | --all]
+git assetsync releases [PATH…] [--assets] [--max-count N | --all] [--remote]
 ```
 
 Lists for each entry (all without `PATH`) the releases its [release
@@ -848,7 +860,7 @@ git assetsync source map acme/tool --unset                # remove it again
 ### `source releases`
 
 ```
-git assetsync source releases URL|SOURCE [--assets] [--max-count N | --all] [--type github|gitlab]
+git assetsync source releases URL|SOURCE [--assets] [--max-count N | --all] [--type github|gitlab] [--remote]
 ```
 
 Lists the releases of a project, newest first: tag, date and title,
@@ -881,7 +893,7 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
 git assetsync filter
 git assetsync filter show NAME
 git assetsync filter test NAME (FILE… | --source SOURCE [--release …] [--prerelease] [--type …] [--asset PATTERN]… [--exclude-asset PATTERN]…
-                           [--sourcecode FORMAT]) [-o DIR]
+                           [--sourcecode FORMAT]) [-o DIR] [--remote]
 git assetsync filter add NAME STEP-OPTIONS… [-W] [-n]
 git assetsync filter set NAME [STEP-OPTIONS…] [-W] [-n]
 git assetsync filter set --list
@@ -951,7 +963,7 @@ filter firmware: not trusted (used by src/fw/)
 ### `verify`
 
 ```
-git assetsync verify [PATH…] [-v]
+git assetsync verify [PATH…] [-v] [--remote]
 ```
 
 Checks that the entries are reproducible: for each entry (default: all)
