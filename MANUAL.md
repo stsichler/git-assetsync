@@ -1607,12 +1607,17 @@ git-assetsync can keep a copy of itself in your repository, so everyone
 has the same version:
 
 ```sh
-git assetsync add stsichler/git-assetsync tools/git-assetsync.py --asset git-assetsync.py
-git commit
+mkdir -p tools
+curl -fsSLo tools/git-assetsync.py https://github.com/stsichler/git-assetsync/releases/latest/download/git-assetsync.py
 git config alias.assetsync '!python3 tools/git-assetsync.py'     # each clone, once (Windows: !py …)
+git assetsync add https://github.com/stsichler/git-assetsync tools/git-assetsync.py \
+    --asset git-assetsync.py
+git commit
 ```
 
-The alias in `.git/config` takes precedence over a global one; git runs
-it in the top-level directory, so the relative path works everywhere.
-`status` then shows new releases of git-assetsync too. The same works for
+`add` takes the downloaded file over, as it is the release's asset. The
+repository's alias beats a global one, and git runs it in the top-level
+directory, so it works from any subdirectory. `status` shows a new release
+of git-assetsync as `pending`, and `git assetsync pull
+tools/git-assetsync.py` takes it. The same works for
 [git-filesync](https://github.com/stsichler/git-filesync).
