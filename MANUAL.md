@@ -362,7 +362,8 @@ git assetsync pull (PATH… | --all) [--release TAG|PATTERN] [--overwrite] [-W] 
 
 Updates the entries to what their selected release gives (after the
 filter) and stages them with their entries in `.git-assetsync`, like `git
-merge --squash`. A plain `git commit` offers the [proposed
+merge --squash`. Each entry is named with what it brings to the working
+tree, as `status` notes it (`v1.0 -> v1.1`). A plain `git commit` offers the [proposed
 message](#proposed-commit-messages), one for all entries; `git commit
 --no-edit` takes it as it is:
 
@@ -399,7 +400,7 @@ and a plain `pull` goes back; `pull --release` says so:
 
 ```console
 $ git assetsync pull --release v1.0 bin/tool
-bin/tool: updated and staged. Commit with:
+bin/tool: updated and staged (v1.1 -> v1.0). Commit with:
     git commit
 (it offers the proposed commit message; a copy stays in .git/ASSETSYNC_MSG)
 note: bin/tool: it still selects v1.1 - 'git assetsync pull bin/tool' goes back to it; to stay on v1.0: 'git assetsync set bin/tool --release v1.0'

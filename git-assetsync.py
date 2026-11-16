@@ -5637,6 +5637,17 @@ def pull_message(entries, msgs):
     return "\n\n".join([subject] + [m[len(COMMIT_PREFIX):].rstrip("\n") for m in msgs]) + "\n"
 
 
+def pull_note(st):
+    """What a pull of an entry brings to the working tree, as status notes
+    it: v1.0 -> v1.1, asset replaced, filter changed; otherwise (not synced
+    yet, --overwrite, after pull -W) its release."""
+    old, new = st.entry.synced, st.release.tag
+    if old and old != new:
+        return f"{old} -> {new}"
+    up = upstream_state(st) if old else None
+    return up[1] if up else new
+
+
 def one_off_hint(ctx, st):
     """After pull --release: the source still selects another release, which
     status shows as pending and a plain pull goes back to."""
@@ -5665,7 +5676,7 @@ def cmd_pull(ctx, repo, args):
     prefetch_files(repo, entries)     # each pull changes only its own files
     ctx.override = args.release
     rc, done, worktree_only = EXIT_OK, 0, False
-    pulled, msgs, paths, jobs, hints = [], [], set(), [], []
+    pulled, notes, msgs, paths, jobs, hints = [], [], [], set(), [], []
     keep = ExitStack()        # the fetched files, until installed
     for entry in entries:
         st = evaluate(ctx, repo, entry)
@@ -5720,9 +5731,12 @@ def cmd_pull(ctx, repo, args):
             error(str(installed[job.entry.rel]))
             rc = EXIT_ERROR
             continue
+        # from the working tree, before pull_done changes it (the message: from HEAD)
+        note = pull_note(job.st)
         msg, done_paths, stats = pull_done(repo, reg, job, installed[job.entry.rel])
         if args.worktree and not args.dry_run:     # its entry too: in the working tree only
-            print(f"{job.entry.shown}: {paint('updated in the working tree only', 'green')}")
+            print(f"{job.entry.shown}: {paint('updated in the working tree only', 'green')}"
+                  f" ({note})")
             worktree_only = True
             continue
         if args.dry_run:      # what pull would do: its commit message's subject and files
@@ -5732,11 +5746,12 @@ def cmd_pull(ctx, repo, args):
                 print(f"  {stats_text(stats)}")
             continue
         pulled.append(job.entry)
+        notes.append(note)
         msgs.append(msg)
         paths |= done_paths
     if len(pulled) > 1:       # one: said with the hint to commit
-        for entry in pulled:
-            print(f"{entry.shown}: {paint('updated', 'green')}")
+        for entry, note in zip(pulled, notes):
+            print(f"{entry.shown}: {paint('updated', 'green')} ({note})")
     if args.all and not done and rc == EXIT_OK:
         print(paint("everything up to date", "green"))
     if worktree_only:
@@ -5751,7 +5766,8 @@ def cmd_pull(ctx, repo, args):
             print(f"{name}: {paint('restored', 'green')} - the same as committed, nothing to "
                   "commit")
         else:
-            report_staged(repo, name, pull_message(pulled, msgs), paint("updated and staged", "green"))
+            report_staged(repo, name, pull_message(pulled, msgs), paint("updated and staged", "green")
+                          + (f" ({notes[0]})" if len(pulled) == 1 else ""))
     for st in [] if args.worktree else hints:   # after pull --release: the selection stays
         one_off_hint(ctx, st)
     return rc

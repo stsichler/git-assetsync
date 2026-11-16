@@ -23,7 +23,7 @@ Upstream changes to pull:
 	pending:    bin/tool.bin  (v1.0 -> v1.1)
 
 $ git assetsync pull bin/tool.bin
-bin/tool.bin: updated and staged. Commit with:
+bin/tool.bin: updated and staged (v1.0 -> v1.1). Commit with:
     git commit
 (it offers the proposed commit message; a copy stays in .git/ASSETSYNC_MSG)
 

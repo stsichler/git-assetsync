@@ -642,7 +642,8 @@ asset re.bin "second upload"
 reupload acme/re v1 "$F/re.bin"
 check "asset replaced: pending" "$(st)" "P"
 check "asset replaced: note" "$(git assetsync status | grep -c 'asset replaced in release v1')" "1"
-pullc re.bin
+check "asset replaced: pull names it" "$(pullcm re.bin 2>/dev/null | head -1)" \
+  "re.bin: updated and staged (asset replaced in release v1). Commit with:"
 check "asset replaced: pulled" "$(cat re.bin)" "second upload"
 check "asset replaced: message" "$(git log -1 --format=%s)" "[assetsync] Update re.bin from acme/re v1 (2026-10-10, asset replaced)"
 
@@ -693,6 +694,7 @@ check "... the proposed command fits the current directory" \
   "discard them with 'git assetsync restore -SW ../lm.txt'"
 out=$(pullcm --overwrite lm.txt 2>/dev/null)
 check "pull --overwrite restores" "$(cat lm.txt)" "lm 1"
+check "... names the release" "$(printf '%s\n' "$out" | head -1)" "lm.txt: updated and staged (v1). Commit with:"
 check "pull --overwrite: a committed modification isn't lost, not named" "$(printf '%s\n' "$out" | grep -c '^discarded:')" "0"
 check "pull --overwrite: message" "$(msg)" \
   "[assetsync] Restore lm.txt from acme/lm v1 (2026-10-10) Release: https://github.com/acme/lm/releases/tag/v1 Asset:   lm.txt Local modifications of this repository were discarded. "
@@ -776,7 +778,7 @@ check "directory with the release's files: pull --overwrite, nothing discarded" 
 # pull -W: to try a release - written to the working tree only
 asset lm.txt "lm 6"
 release acme/lm v6 15 "$F/lm.txt"
-check "pull -W: one line" "$(git assetsync pull -W lm.txt 2>/dev/null)" "lm.txt: updated in the working tree only"
+check "pull -W: one line" "$(git assetsync pull -W lm.txt 2>/dev/null)" "lm.txt: updated in the working tree only (v5 -> v6)"
 check "... file and entry in the working tree only" \
   "$(cat lm.txt) $(git status --porcelain | oneline)$(reg file.lm.txt.synced) $(git config --blob :.git-assetsync file.lm.txt.synced)" \
   "lm 6  M .git-assetsync  M lm.txt v6 v5"
@@ -785,26 +787,32 @@ check "... status: not staged" \
   "$(git assetsync status | grep -A3 '^Changes not staged for commit:' | grep -cE "^${TAB}updated:[[:space:]]+lm\.txt  \(v5 -> v6\)\$")" "1"
 check "... diff: no modification" "$(git assetsync diff lm.txt)" ""
 check "... pull -W again" "$(git assetsync pull -W --release v5 lm.txt 2>/dev/null) $(cat lm.txt) $(reg file.lm.txt.synced) $(st lm.txt)" \
-  "lm.txt: updated in the working tree only lm 5 v5 P"
+  "lm.txt: updated in the working tree only (v6 -> v5) lm 5 v5 P"
 quiet git assetsync pull -W lm.txt
 check "... restore goes back to the staged version" \
   "$(git assetsync restore lm.txt) $(cat lm.txt) $(reg file.lm.txt.synced)$(git status --porcelain | oneline)" "lm.txt: restored (acme/lm v5) lm 5 v5"
 quiet git assetsync pull -W lm.txt
 check "... pull stages it" "$(git assetsync pull lm.txt 2>/dev/null | head -1) $(git status --porcelain | oneline)" \
-  "lm.txt: updated and staged. Commit with: M  .git-assetsync M  lm.txt "
+  "lm.txt: updated and staged (v6). Commit with: M  .git-assetsync M  lm.txt "
 check "... the message from what is committed" "$(head -1 .git/ASSETSYNC_MSG | grep -c 'was v5')" "1"
 check "... restore -S unstages it" \
   "$(git assetsync restore -S lm.txt) $(git status --porcelain | oneline)$(git config --blob :.git-assetsync file.lm.txt.synced)" \
   "lm.txt: restored in the index (acme/lm v5)  M .git-assetsync  M lm.txt v5"
 quiet git assetsync pull lm.txt
 commitp
+quiet git assetsync pull --release v4 lm.txt
+check "pull of a staged pull: named from the working tree" \
+  "$(git assetsync pull --release v5 lm.txt 2>/dev/null | head -1)" "lm.txt: updated and staged (v4 -> v5). Commit with:"
+check "... the message from what is committed" "$(head -1 .git/ASSETSYNC_MSG | grep -c 'was v6')" "1"
+quiet git assetsync pull lm.txt
+check "... back: nothing to commit" "$(git status --porcelain)" ""
 check "pull -n -W: as pull -n" "$(git assetsync pull -n -W --release v5 lm.txt 2>&1 | cut -c1-30)" \
   "would: Update lm.txt to acme/l"
 mkdir -p "$T/lmd3" && echo a3 > "$T/lmd3/a.txt" && echo c > "$T/lmd3/c.txt"
 mkarchive "$F/lmd-3.zip" "$T/lmd3"
 release acme/lmd v3 12 "$F/lmd-3.zip"
 check "pull -W of a directory" "$(git assetsync pull -W lmd 2>/dev/null) $(cat lmd/a.txt) $(git status --porcelain lmd | oneline)$(st lmd)" \
-  "lmd/: updated in the working tree only a3  M lmd/a.txt ?? lmd/c.txt   U"
+  "lmd/: updated in the working tree only (v2 -> v3) a3  M lmd/a.txt ?? lmd/c.txt   U"
 check "... restore: back, the new file gone" "$(quiet git assetsync restore lmd; cat lmd/a.txt) $(git status --porcelain | oneline)" "a2 "
 quiet git assetsync pull -W lmd
 check "... pull takes it" \
@@ -1190,7 +1198,7 @@ release acme/p v2 11 "$F/p.txt"
 OUT=$(git assetsync pull p1.txt 2>&1); RC=$?
 check "pull: staged, not committed" "$RC $(git status --porcelain | oneline)$(git log -1 --format=%s)" \
   "0 M  .git-assetsync M  p1.txt another message"
-check "pull: hint" "$(echo "$OUT" | grep -c '^p1.txt: updated and staged. Commit with:')" "1"
+check "pull: hint" "$(echo "$OUT" | grep -c '^p1.txt: updated and staged (v1 -> v2). Commit with:')" "1"
 check "... one entry: said once" "$(echo "$OUT" | grep -c 'updated')" "1"
 check "pull: proposed message in SQUASH_MSG" "$(head -1 .git/SQUASH_MSG)" "[assetsync] Update p1.txt to acme/p v2 (2026-10-11, was v1 of 2026-10-10)"
 git commit -q --no-edit
@@ -1221,7 +1229,7 @@ OUT=$(git assetsync pull --all 2>&1)
 check "pull --all: all staged, one proposal" \
   "$(echo "$OUT" | grep -c '^3 files: updated and staged') $(cat p1.txt p2.txt sub/p3.txt | oneline)$(git status --porcelain | oneline)" \
   "1 p 4 p 4 p 4 M  .git-assetsync A  other.txt M  p1.txt M  p2.txt M  sub/p3.txt "
-check "... each entry named" "$(echo "$OUT" | grep ': updated$' | oneline)" "p1.txt: updated p2.txt: updated sub/p3.txt: updated "
+check "... each entry named" "$(echo "$OUT" | grep ': updated (' | oneline)" "p1.txt: updated (v3 -> v4) p2.txt: updated (v3 -> v4) sub/p3.txt: updated (v1 -> v4) "
 git commit -q --no-edit
 check "... a plain commit takes the proposed message" "$(git log -1 --format=%s)" "[assetsync] Update 3 files from acme/p"
 
