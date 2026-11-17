@@ -561,7 +561,8 @@ the entry in `.git-assetsync` and stages both, like `git add`. A plain
   uploaded asset: it stays.
 - **`--sourcecode FORMAT`** takes the source code archive of the release
   (the tag's files) as an asset named `REPO-TAG.FORMAT`, besides the
-  assets; only the archive: `--no-asset` (a file with both needs a filter).
+  assets – none matching is then no error; only the archive: `--no-asset`
+  (a file with both needs a filter).
   Formats: `zip`, `tar.gz`; GitLab also `tar.bz2`, `tar`. Its top
   directory varies: unpack it with `--extract --strip 1`. The archive
   counts as replaced when the tag is moved to another commit.

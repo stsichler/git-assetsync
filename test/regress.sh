@@ -3882,6 +3882,13 @@ check "with --asset: both" "$(ls both | oneline)" "bin.txt sarc-v1.zip "
 check "without --asset: all assets too" "$(git assetsync add acme/sarc s.zip --sourcecode zip 2>&1)" \
   "error: s.zip: 2 assets (bin.txt, sarc-v1.zip), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
 check "file: one archive" "$(rc git assetsync add acme/sarc s.zip --sourcecode zip --no-asset)|$(head -c 2 s.zip)" "0|PK"
+release --src "$F/sc1" acme/snone v1 10
+check "release without assets: '*' with the archive, no error" \
+  "$(rc git assetsync add acme/snone sn.zip --sourcecode zip)|$(reg file.sn.zip.asset)|$(head -c 2 sn.zip)" "0|'*'|PK"
+check "... a pattern matching nothing: the archive" \
+  "$(rc git assetsync add acme/sarc sp.zip --sourcecode zip --asset '*.deb')|$(head -c 2 sp.zip)" "0|PK"
+check "... without sourcecode: an error" "$(git assetsync add acme/snone sx.bin 2>&1)" \
+  "error: release v1 of acme/snone has no assets"
 git commit -qm s.zip
 : > "$GH/calls.log"
 check "releases --assets: the source code archive by name, no request" \

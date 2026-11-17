@@ -225,7 +225,8 @@ Basic commands - what you need day to day:
         --sourcecode FORMAT     the release's source code archive (zip,
                                 tar.gz; GitLab also tar.bz2, tar) as an
                                 asset REPO-TAG.FORMAT, besides the assets
-                                (only it: --no-asset)
+                                (none matching: no error; only it:
+                                --no-asset)
         --filter NAME           the filter to apply to the assets
         --release TAG|PATTERN   release to take (exact tag: pinned) or the
                                 newest one matching (default: the latest)
@@ -1430,9 +1431,10 @@ def check_sourcecode(url, kind, fmt):
 
 def entry_assets(origin, release, patterns, sourcecode, excludes=(), listing=False):
     """The assets an entry takes (see select_assets()); with sourcecode,
-    the release's source code archive in that format too (and uploaded
-    assets only with patterns). With listing (for releases --assets): none
-    is no error, the archive only named."""
+    the release's source code archive in that format too - then no
+    uploaded asset matching is no error: it takes the archive. With
+    listing (for releases --assets): none is no error, the archive only
+    named."""
     def uploaded():
         return matching_assets(release, patterns, excludes) if listing else \
             select_assets(release, patterns, origin.label, excludes)
@@ -1440,7 +1442,7 @@ def entry_assets(origin, release, patterns, sourcecode, excludes=(), listing=Fal
         return uploaded()
     archive = (origin.listed_archive if listing else origin.source_archive)(release, sourcecode)
     # a local folder's archive is one of its files: not twice
-    assets = [a for a in uploaded() if a is not archive] if patterns else []
+    assets = [a for a in matching_assets(release, patterns, excludes) if a is not archive]
     if any(a.name == archive.name for a in assets):
         raise FsError(f"the source code archive and an asset of release {release.tag} of "
                       f"{origin.label} are both named {archive.name} - take them with two entries")
