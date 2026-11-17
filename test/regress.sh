@@ -1662,11 +1662,6 @@ check "... pulled back to the latest" "$(cat a.txt)" "s1 v1"
 check "unknown source" "$(git assetsync source set nope --url https://github.com/a/b 2>&1)" \
   "error: no source 'nope' in .git-assetsync (known: acme/src)"
 
-# a selection still in the [source] (before 0.16): an error, not the latest release
-git config -f .git-assetsync source.acme/src.release v0
-check "selection in the [source]: an error" "$(git assetsync status -s a.txt 2>&1 | head -1)" \
-  "error: a.txt: [source \"acme/src\"] has release = v0 - the release selection is the entry's now: 'git assetsync set a.txt --release v0', then remove it from the [source] ('git assetsync edit')"
-git checkout -q .git-assetsync
 # rename, set --url, set --type
 check "source rename -n" "$(git assetsync source rename -n acme/src pinned; git status --porcelain)" \
   "would rename acme/src -> pinned"
@@ -2623,11 +2618,9 @@ check "run PATTERN: no match, nothing done" "$(asd add acme/cmd r0/ --filter rp0
   "r0/data.hex r0/fw.bin r0/notes.txt "
 git reset -q --hard; rm -rf r0
 git config -f .git-assetsync filter.old.step "run 'cp -R {in}/. {out}/'"
-check "run without a pattern (before 0.19.0): filter show shows it" "$(git assetsync filter show old 2>&1 | head -1)" \
-  "run 'cp -R {in}/. {out}/'"
-check "run without a pattern (before 0.19.0): what to write now" \
+check "run without a pattern: malformed" \
   "$(git assetsync filter test old "$F/fw.bin" 2>&1 | tail -1)" \
-  "error: filter step 'run 'cp -R {in}/. {out}/'': run needs a pattern first, like the other steps - for all files: run '*' 'cp -R {in}/. {out}/'"
+  "error: malformed filter step 'run 'cp -R {in}/. {out}/''"
 git checkout -q .git-assetsync
 # errors
 filt fail --convert '*.txt' x.out 'echo broken >&2; exit 3'

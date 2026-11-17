@@ -2009,9 +2009,6 @@ def parse_step(step):
           "convert": len(args) == 3 and all(args), "run": len(args) == 2 and all(args)}.get(name)
     if ok is None:
         raise FsError(f"unknown filter step '{step}' (known: {', '.join(STEPS)})")
-    if name == "run" and len(args) == 1:      # before 0.19.0: no pattern
-        raise FsError(f"filter step '{step}': run needs a pattern first, like the other "
-                      f"steps - for all files: {shlex.join(['run', '*'] + args)}")
     if name == "eol" and len(args) == 2 and args[1] not in EOL_MODES:
         raise FsError(f"filter step '{step}': eol takes {', '.join(EOL_MODES)}")
     if not ok:
@@ -4285,15 +4282,6 @@ def evaluate(ctx, repo, entry):
         return st
     if not entry.url:
         st.error = f"incomplete entry in {REGISTRY} (needs a source with url)"
-        return st
-    old = {k: entry.source[k] for k in SPEC_KEYS if entry.source.get(k)}
-    if old:       # since 0.16 the entry's: not silently the latest release instead
-        st.error = (f'[source "{entry.name}"] has {", ".join(f"{k} = {v}" for k, v in old.items())}'
-                    " - the release selection is the entry's now: 'git assetsync set "
-                    f"{path_arg(repo, entry.shown)} " + " ".join(
-                        "--prerelease" if k == "prerelease" else f"--release {shlex.quote(v)}"
-                        for k, v in old.items()) + f"', then remove it from the [source] "
-                    "('git assetsync edit')")
         return st
     try:
         if entry.filter and entry.filter not in entry.reg.filters:
