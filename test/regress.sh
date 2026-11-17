@@ -1501,6 +1501,12 @@ check "... uninstall keeps the others' lines" "$(oneline < .git/hooks/pre-push) 
 rm .git/hooks/pre-push .git/hooks/post-merge
 check "colors: --color=always" "$(git assetsync status -s --color=always | grep -c "$(printf '\033')")" "1"
 check "colors: none in pipes" "$(git assetsync status -s | grep -c "$(printf '\033')")" "0"
+P=$(git assetsync status -s | awk '{print $NF}')
+check "colors: --color alone: always, like git" "$(git assetsync status -s --color | grep -c "$(printf '\033')")" "1"
+check "colors: --color takes no path as its value" "$(git assetsync status -s --color "$P" | grep -c "$(printf '\033')")" "1"
+check "colors: -h shows --color[=WHEN], as it is taken" "$(git assetsync releases -h | grep -c -- '--color\[=WHEN\]')" "2"
+check "colors: --color=WHEN before the action counts too" \
+  "$(git assetsync source --color=always releases "$(git assetsync source | head -1)" | grep -c "$(printf '\033')")" "$(git assetsync source releases "$(git assetsync source | head -1)" | lines)"
 
 
 # =============================================================================

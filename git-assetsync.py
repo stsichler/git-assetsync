@@ -567,19 +567,18 @@ def color_wanted(mode, stream):
 
 
 def color_mode(argv):
-    """The --color mode in argv, as the parser will take it (before parsing,
-    for the colors of the help): the last --color[=WHEN] / --no-color."""
+    """The --color mode in argv (--color alone already --color=always): the
+    last --color=WHEN / --no-color, wherever it stands - also before an
+    action (source --color=always releases), where argparse would let the
+    action's default win."""
     mode = "auto"
-    for i, a in enumerate(argv):
+    for a in argv:
         if a == "--":
             break
         if a == "--no-color":
             mode = "never"
         elif a.startswith("--color="):
             mode = a[len("--color="):]
-        elif a == "--color":
-            nxt = argv[i + 1] if i + 1 < len(argv) else ""
-            mode = nxt if nxt in ("always", "never", "auto") else "always"
     return mode
 
 
@@ -7379,6 +7378,23 @@ THEME_KEYS = ("usage", "prog", "summary_short_option", "summary_long_option", "s
               "heading", "action", "reset")
 
 
+class Parser(argparse.ArgumentParser):
+    """A command's parser: argparse shows an optional value as '--color
+    [WHEN]', but it is taken only as --color=WHEN, like git (see run) -
+    the usage and the help say so. As in git-filesync."""
+    def format_usage(self):
+        return equals_value(super().format_usage())
+
+    def format_help(self):
+        return equals_value(super().format_help())
+
+
+def equals_value(text):
+    """'--color [WHEN]' -> '--color[=WHEN]', also with argparse's colors."""
+    esc = r"((?:\x1b\[[0-9;]*m)*)"
+    return re.sub(rf"--color{esc} {esc}\[{esc}WHEN{esc}\]", r"--color\1\2[=\3WHEN\4]", text)
+
+
 class MainParser(argparse.ArgumentParser):
     """The parser of git assetsync itself: its usage line and the grouped
     command list in the colors argparse uses for the rest of the help
@@ -7519,8 +7535,9 @@ def shows(args):
 
 def run(argv):
     colorp = argparse.ArgumentParser(add_help=False)
-    colorp.add_argument("--color", nargs="?", const="always", default="auto",
-                        choices=["always", "never", "auto"], help="colored output (default: auto)")
+    colorp.add_argument("--color", nargs="?", const="always", default="auto", metavar="WHEN",
+                        choices=["always", "never", "auto"],
+                        help="colored output: always, never or auto (default)")
     remotep = argparse.ArgumentParser(add_help=False)
     remotep.add_argument("--remote", action="store_true",
                          help="ignore mappings (source map) this once, use the upstream URL")
@@ -7538,6 +7555,10 @@ def run(argv):
                         help="same as --color=never")
 
     argv = list(sys.argv[1:] if argv is None else argv)
+    # like git: --color takes a value only as --color=WHEN; alone it is
+    # always, and what follows is no value of it (releases --color a.bin)
+    end = argv.index("--") if "--" in argv else len(argv)
+    argv = [a if a != "--color" else "--color=always" for a in argv[:end]] + argv[end:]
     # the help in colors (argparse: Python 3.14 and later) when the output would be
     color = {}
     import inspect
@@ -7550,9 +7571,9 @@ def run(argv):
                     **color)
     ap.add_argument("--version", action="version", version=f"git-assetsync {__version__}")
     # prog: usage=SUPPRESS would leave the commands' prefix empty; parser_class:
-    # not MainParser for them
+    # not MainParser for them (their actions take it over)
     sub = ap.add_subparsers(dest="cmd", metavar="<command>", prog="git assetsync",
-                            parser_class=argparse.ArgumentParser)
+                            parser_class=Parser)
     ap.commands = sub
 
     p = sub.add_parser("status", parents=[colorp, remotep], help="show the state of the synced files")
@@ -7931,7 +7952,7 @@ def run(argv):
             repo = Repo()
         except FsError:
             repo = None
-        setup_colors(args.color)
+        setup_colors(color_mode(argv))
         if args.cmd == "cache":               # also outside a repository
             return cmd_cache(args)
         if args.cmd == "source" and args.action == "map":   # --global: also outside one
