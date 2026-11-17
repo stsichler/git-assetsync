@@ -338,6 +338,7 @@ Advanced commands - change entries, sources and filters; set up:
         --assets                also list the assets, with their sizes
         --max-count N, --all    the newest N releases (default 10; 0: none;
                                 the last line says how many more), or all
+        --release TAG|PATTERN   only the releases whose tag matches
         --type github|gitlab    platform of the URL's host
 
     filter                      list the filters (and who uses them)
@@ -6467,12 +6468,15 @@ def cmd_releases(ctx, repo, args):
     else:
         url, kind = source_url(args.source), args.type
     origin = platform_of(url, kind)
-    # one more than shown: to know whether there are more
-    rels = origin.releases(None if args.all else args.max_count + 1)
+    # one more than shown: to know whether there are more (--release: all)
+    rels = origin.releases(None if args.all or args.release else args.max_count + 1)
+    if args.release:
+        rels = [r for r in rels if fnmatch.fnmatchcase(r.tag, args.release)]
     # first: the selections may list all releases, then their count is known
     selected = selected_by(ctx, reg, url, set()) if rels else {}
     complete = origin.listed is not None
-    show_releases(origin, origin.listed if complete else rels, complete, args, selected)
+    show_releases(origin, rels if args.release or not complete else origin.listed, complete,
+                  args, selected)
     return EXIT_OK
 
 
@@ -6525,7 +6529,8 @@ def show_releases(origin, rels, complete, args, selected, entry=None):
     if isinstance(origin, LocalFolder):
         print(paint(f"releases in the local folder {origin.place} (git assetsync source map)", "cyan"))
     if not rels:
-        print(f"no {'matching ' if entry else ''}releases in {origin.where}")
+        print(f"no {'matching ' if entry or getattr(args, 'release', None) else ''}releases in "
+              f"{origin.where}")
         return
     more = 0 if args.all else len(rels) - args.max_count
     if more > 0:
@@ -7855,6 +7860,8 @@ def run(argv):
     releases_options(a, "also list the assets, with their sizes (GitLab reports none)")
     a.add_argument("source", metavar="URL|SOURCE",
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
+    a.add_argument("--release", metavar="TAG|PATTERN",
+                   help="only the releases whose tag matches (default: all)")
     a.add_argument("--type", choices=sorted(PLATFORMS), metavar="|".join(sorted(PLATFORMS)),
                    help="platform of the URL's host (default: derived from it)")
 

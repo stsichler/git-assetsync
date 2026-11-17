@@ -858,7 +858,8 @@ git assetsync source map acme/tool --unset                # remove it again
 ### `source releases`
 
 ```
-git assetsync source releases URL|SOURCE [-v] [--assets] [--max-count N | --all] [--type github|gitlab] [--remote]
+git assetsync source releases URL|SOURCE [-v] [--assets] [--max-count N | --all] [--release TAG|PATTERN]
+                              [--type github|gitlab] [--remote]
                               [--color[=WHEN] | --no-color]
 ```
 
@@ -885,6 +886,7 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
 | `--assets` | also list the assets, with their sizes (GitLab reports none) |
 | `--max-count N` | the newest N releases (default: 10; 0: none, as in `git log`) |
 | `--all` | all releases |
+| `--release TAG\|PATTERN` | only the releases whose tag matches – to see which exist before choosing one |
 | `--type github\|gitlab` | platform of the URL's host |
 
 ### `filter`

@@ -1822,6 +1822,14 @@ check "releases outside a repository" "$(asd source releases acme/rl | oneline)"
 check "releases --max-count: and how many more" "$(asd source releases acme/rl --max-count 2 | lines) $(asd source releases acme/rl --max-count 2 | tail -1)" \
   "3 (3 more: --all lists them)"
 check "... none with --all" "$(asd source releases acme/rl --all | grep -c more)" "0"
+check "source releases --release: only matching tags, drafts and prereleases too" \
+  "$(asd source releases acme/rl --release 'v[23]*' | oneline)" \
+  "v3      2026-10-13  (draft) v2-rc1  2026-10-12  Rel 2 RC  (prerelease) "
+check "... with --max-count: how many more of those" \
+  "$(asd source releases acme/rl --release 'v1*' --max-count 1 | oneline)" \
+  "v1.1  2026-10-11  (latest) (1 more: --all lists them) "
+check "... an exact tag: that one" "$(asd source releases acme/rl --release v1 | cut -d' ' -f1)" "v1"
+check "... none matching" "$(asd source releases acme/rl --release 'x*')" "no matching releases in acme/rl"
 check "releases --assets" "$(asd source releases acme/rl --assets | tail -5 | oneline)" \
   "v1      2026-10-10  Rel 1     kib.bin    2.9 KiB     small.bin  3 bytes v0      2026-10-09     (no assets) "
 new_repo r17
