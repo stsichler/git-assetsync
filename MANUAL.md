@@ -49,7 +49,7 @@ Nothing updates automatically: `status` shows that a new release is out,
 
 [`add`](#add) decides the kind of an entry by the path:
 
-Both take all assets (or those matching `--asset`), as they are or
+Both take the assets matching `--asset` (default `'*'`: all), as they are or
 filtered:
 
 - **A file** (`add … bin/tool`): exactly one file – an asset as it is, or
@@ -72,7 +72,7 @@ Git-config format:
 	url = https://github.com/acme/tool
 [file "bin/tool"]
 	source = acme/tool
-	asset = 'tool-*-linux-x64'   # globs; without: all assets
+	asset = 'tool-*-linux-x64'   # globs; '*': all assets
 	synced = v1.1                # tag of the release the file comes from
 	digest = sha256:5b2c…        # SHA-256 of that asset
 	blob = 8d01b7aa…             # the file as committed (git's blob id)
@@ -111,7 +111,8 @@ Git-config format:
   take: `source`, the release (`release`: a tag pins it, a pattern with
   `*`, `?` or `[…]` takes the newest match, none the latest;
   `prerelease = true` lets prereleases count), `asset` (globs, any may
-  match; without: all assets) and `exclude-asset` (but not these).
+  match; `'*'`: all; without: none – but read as `'*'` if `sourcecode` is
+  missing too) and `exclude-asset` (but not these).
   git-assetsync writes the rest, the **base** the file is compared with:
   `synced` (the tag), `digest` (the asset's SHA-256; of several assets,
   one over all), `blob` (the file as `git add` stores it, after line
@@ -123,7 +124,7 @@ Git-config format:
 - **`[dir "PATH"]`** – like `[file]`, but any number of files, and the
   base is `tree`.
 - **`sourcecode = FORMAT`** (`[file]` or `[dir]`) – the release's source
-  code archive, and the assets `asset` matches (without `asset` none).
+  code archive too.
 - **`[filter "NAME"]`** – a [named filter](#filters), one `step` per step.
   Entries use it with `filter = NAME`; `filterhash` records the filter an
   entry was synced with, so a changed filter shows up as pending.
@@ -526,7 +527,7 @@ directory](#files-of-your-own-in-a-directory)).
 ### `add`
 
 ```
-git assetsync add SOURCE PATH [--asset PATTERN]… [--exclude-asset PATTERN]… [--sourcecode FORMAT] [--release TAG|PATTERN]
+git assetsync add SOURCE PATH [(--asset PATTERN)… | --no-asset] [--exclude-asset PATTERN]… [--sourcecode FORMAT] [--release TAG|PATTERN]
                   [--prerelease] [--type github|gitlab] [--filter NAME] [--force] [--overwrite] [-W] [-n]
                   [--remote] [--color[=WHEN] | --no-color]
 ```
@@ -548,7 +549,7 @@ the entry in `.git-assetsync` and stages both, like `git add`. A plain
   `cp`, `add` makes no directories: the one `PATH` goes into must exist.
 - **`--asset PATTERN`** selects the assets by a glob (quote it), recorded
   for later releases too; repeated, those matching any of them – without
-  `--asset` all, listed first if there are several. A file needs exactly
+  `--asset` all (`'*'`), listed first if there are several. A file needs exactly
   one file in the end: one asset, or a filter that leaves one. So
   `--asset '*.zip' --asset '*.hex' --filter fw` with the filter
   `--extract '*.zip' --include '*.hex'` takes the hex file from a ZIP or
@@ -559,15 +560,16 @@ the entry in `.git-assetsync` and stages both, like `git add`. A plain
   part of the digest. The source code archive (`--sourcecode`) is not an
   uploaded asset: it stays.
 - **`--sourcecode FORMAT`** takes the source code archive of the release
-  (the tag's files) as an asset named `REPO-TAG.FORMAT`, and the assets
-  matching `--asset` – without it none (a file with both needs a filter).
+  (the tag's files) as an asset named `REPO-TAG.FORMAT`, besides the
+  assets; only the archive: `--no-asset` (a file with both needs a filter).
   Formats: `zip`, `tar.gz`; GitLab also `tar.bz2`, `tar`. Its top
   directory varies: unpack it with `--extract --strip 1`. The archive
   counts as replaced when the tag is moved to another commit.
 
 | Option | Meaning |
 |---|---|
-| `--asset PATTERN` | the assets to take (repeat for more), see above |
+| `--asset PATTERN` | the assets to take (repeat for more; default `'*'`), see above |
+| `--no-asset` | no uploaded assets, only the source code archive (with `--sourcecode`) |
 | `--exclude-asset PATTERN` | but not these (repeat for more), see above |
 | `--sourcecode FORMAT` | the source code archive, see above |
 | `--release TAG\|PATTERN` | a tag pins the entry, a pattern takes the newest matching release (default: the latest) |
@@ -597,7 +599,7 @@ git assetsync filter add zlib-headers --extract --strip 1 --include '/*.h' LICEN
 git assetsync add madler/zlib third_party/zlib/ --asset 'zlib-*.tar.gz' --filter zlib-headers
 
 git assetsync filter add unpack --extract --strip 1
-git assetsync add acme/lib third_party/lib/ --sourcecode tar.gz --filter unpack
+git assetsync add acme/lib third_party/lib/ --sourcecode tar.gz --no-asset --filter unpack
 ```
 
 ### `rm`
@@ -680,7 +682,7 @@ not cmd.exe).
 | `--release TAG\|PATTERN`, `--latest` | another release selection: a tag pins, a pattern takes the newest match, `--latest` the latest |
 | `--prerelease`, `--no-prerelease` | let prereleases count, or not |
 | `--type github\|gitlab` | with `--source` a new URL: the platform of its host |
-| `--asset PATTERN`, `--no-asset` | other assets (repeat for more; replaces all patterns); `--no-asset`: all (with `sourcecode` none) |
+| `--asset PATTERN`, `--no-asset` | other assets (repeat for more; replaces all patterns; `'*'`: all); `--no-asset`: none, only with `sourcecode` |
 | `--exclude-asset PATTERN`, `--no-exclude-asset` | other assets left out (as `--asset`), or none |
 | `--sourcecode FORMAT`, `--no-sourcecode` | take the source code archive (as for [`add`](#add)), or not |
 | `--filter NAME`, `--no-filter` | another named [filter](#filters), or none |
@@ -895,7 +897,7 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
 git assetsync filter [--color[=WHEN] | --no-color]
 git assetsync filter show NAME [--color[=WHEN] | --no-color]
 git assetsync filter test NAME (FILE… | --source SOURCE [--release TAG|PATTERN] [--prerelease]
-                           [--type github|gitlab] [--asset PATTERN]… [--exclude-asset PATTERN]…
+                           [--type github|gitlab] [(--asset PATTERN)… | --no-asset] [--exclude-asset PATTERN]…
                            [--sourcecode FORMAT]) [-o DIR] [--remote] [--color[=WHEN] | --no-color]
 git assetsync filter add NAME STEP-OPTIONS… [-W] [-n] [--color[=WHEN] | --no-color]
 git assetsync filter set NAME [STEP-OPTIONS…] [-W] [-n] [--color[=WHEN] | --no-color]
@@ -912,7 +914,7 @@ are pending until `pull`.
 | (none) | list the filters, with their steps and users |
 | `show NAME` | the steps of a filter, and who uses it |
 | `test NAME FILE…` | apply a filter to local files as if they were the assets (a directory: its files) and list the result, or write it to an empty directory with `-o DIR` |
-| `test NAME --source SOURCE` | the same with the assets of a release (`--release`, `--prerelease`, `--type`, `--sourcecode` as for [`add`](#add); `--asset`, `--exclude-asset`: only / not the matching ones) |
+| `test NAME --source SOURCE` | the same with the assets of a release (`--release`, `--prerelease`, `--type`, `--sourcecode`, `--no-asset` as for [`add`](#add); `--asset`, `--exclude-asset`: only / not the matching ones) |
 | `add NAME STEP-OPTIONS…` | define a filter with the [step options](#filters), in the order given; names consist of letters, digits, `.`, `+`, `-` and `_` |
 | `set NAME STEP-OPTIONS…` | replace the steps of a filter |
 | `set NAME` | show the filter as the `filter set` command that gives it (as for [`set`](#set)); `--list`: all filters |

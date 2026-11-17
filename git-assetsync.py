@@ -39,9 +39,9 @@ assets of a project on GitHub or GitLab:
                                    ; or 100755 (executable)
     [dir "third_party/zlib"]       ; files of a directory (others may be there)
         source = madler/zlib
-        asset = 'zlib-*.tar.gz'    ; optional: the assets (glob); without: all
-        sourcecode = tar.gz        ; optional: the source code archive (then
-                                   ; without asset: no assets)
+        asset = 'zlib-*.tar.gz'    ; the assets (glob; '*': all; without: none,
+                                   ; read as '*' if sourcecode is missing too)
+        sourcecode = tar.gz        ; optional: the source code archive too
         filter = zlib-headers      ; optional: the filter applied to the assets
         synced = ...; digest = ...; filterhash = <of the filter>
         tree = <id of the directory as committed>
@@ -216,15 +216,16 @@ Basic commands - what you need day to day:
                                 made: the one PATH goes into must exist (a
                                 directory PATH/ itself may be new)
         --asset PATTERN         the assets matching the glob (repeat for
-                                more; default: all); a file needs exactly
-                                one file in the end: one asset, or a
-                                filter that leaves one
+                                more; default: '*', all); a file needs
+                                exactly one file in the end: one asset, or
+                                a filter that leaves one
+        --no-asset              no uploaded assets (with --sourcecode)
         --exclude-asset PATTERN  but not those matching the glob (repeat
                                 for more), e.g. '*.sha256'
         --sourcecode FORMAT     the release's source code archive (zip,
                                 tar.gz; GitLab also tar.bz2, tar) as an
-                                asset REPO-TAG.FORMAT; also the assets
-                                matching --asset (without: none)
+                                asset REPO-TAG.FORMAT, besides the assets
+                                (only it: --no-asset)
         --filter NAME           the filter to apply to the assets
         --release TAG|PATTERN   release to take (exact tag: pinned) or the
                                 newest one matching (default: the latest)
@@ -273,8 +274,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 new one)
         --release TAG|PATTERN, --latest, --prerelease, --no-prerelease
                                 another release selection
-        --asset PATTERN, --no-asset  other assets (repeat for more; --no-asset:
-                                all - with sourcecode none)
+        --asset PATTERN, --no-asset  other assets (repeat for more; '*': all;
+                                --no-asset: none, only with sourcecode)
         --exclude-asset PATTERN, --no-exclude-asset  assets left out, or none
         --sourcecode FORMAT, --no-sourcecode  the source code archive, or not
         --filter NAME, --no-filter  another filter, or none
@@ -351,7 +352,7 @@ Advanced commands - change entries, sources and filters; set up:
         --source SOURCE         instead: the assets of its release (with
                                 --release, --prerelease, --type as for add;
                                 --asset / --exclude-asset PATTERN: only /
-                                not the matching ones;
+                                not the matching ones; --no-asset;
                                 --sourcecode FORMAT as for add)
         -o, --output DIR        write the result to DIR (new or empty)
     filter add NAME STEP-OPTIONS...  define a new filter; the steps in the
@@ -1395,12 +1396,11 @@ def select_release(origin, rule, prerelease):
 
 
 def matching_assets(release, patterns, excludes=()):
-    """The assets of release matching one of patterns (a list), or all
-    without patterns - but none matching one of excludes (as git-filesync's
-    include / exclude)."""
+    """The assets of release matching one of patterns (a list; none: none) -
+    but none matching one of excludes (as git-filesync's include / exclude)."""
     def matches(name, globs):
         return any(fnmatch.fnmatchcase(name, p) for p in globs)
-    return [a for a in release.assets if (not patterns or matches(a.name, patterns))
+    return [a for a in release.assets if matches(a.name, patterns)
             and not matches(a.name, excludes)]
 
 
@@ -1430,9 +1430,9 @@ def check_sourcecode(url, kind, fmt):
 
 def entry_assets(origin, release, patterns, sourcecode, excludes=(), listing=False):
     """The assets an entry takes (see select_assets()); with sourcecode,
-    the release's source code archive in that format too - and the
-    uploaded assets only with patterns (without: none). With listing (for
-    releases --assets): none is no error, the archive only named."""
+    the release's source code archive in that format too (and uploaded
+    assets only with patterns). With listing (for releases --assets): none
+    is no error, the archive only named."""
     def uploaded():
         return matching_assets(release, patterns, excludes) if listing else \
             select_assets(release, patterns, origin.label, excludes)
@@ -3104,10 +3104,18 @@ def split_words(key, value):
     return words
 
 
+def asset_patterns(values):
+    """The asset patterns of an entry (its values): none given, none - but
+    without sourcecode too: '*', all (as written before 0.30.0)."""
+    words = list(split_words("asset", values.get("asset")))
+    return words or ([] if values.get("sourcecode") else ["*"])
+
+
 def entry_patterns(entry, key):
     """The patterns of an entry's asset or exclude-asset; None if unreadable."""
     try:
-        return list(split_words(key, entry.v.get(key)))
+        return asset_patterns(entry.v) if key == "asset" else \
+            list(split_words(key, entry.v.get(key)))
     except FsError:
         return None
 
@@ -3117,6 +3125,14 @@ def patterns_text(entry, key):
     in a shell ('' for none); an unreadable value as it is."""
     patterns = entry_patterns(entry, key)
     return entry.v.get(key, "") if patterns is None else shlex.join(patterns)
+
+
+def asset_option(args):
+    """The asset patterns of add and filter test --source: those of --asset
+    (default: '*', all); --no-asset: none - only with --sourcecode."""
+    if args.no_asset and not args.sourcecode:
+        raise FsError("--no-asset without --sourcecode takes nothing - give --asset")
+    return [] if args.no_asset else given_patterns(args.asset) if args.asset else ["*"]
 
 
 def given_patterns(patterns, option="--asset"):
@@ -3186,12 +3202,13 @@ def origin_text(entry):
     'tool-*.bin from acme/tool, latest release, filter x; synced v1.2'."""
     synced = f"synced {entry.synced}" if entry.synced else "not synced yet"
     patterns, excludes = patterns_text(entry, "asset"), patterns_text(entry, "exclude-asset")
+    patterns = "all assets" if patterns == "'*'" else patterns
     if entry.sourcecode:
         what = f"source code ({entry.sourcecode})" + (f" and {patterns}" if patterns else "")
     else:
-        what = patterns or "all assets"
+        what = patterns
     # the source archive isn't an uploaded asset: excludes don't apply to it
-    what += f" except {excludes}" if excludes and (patterns or not entry.sourcecode) else ""
+    what += f" except {excludes}" if excludes and patterns else ""
     steps = f", filter {entry.filter}" if entry.filter else ""
     return f"{what} from {entry.name}, {spec_text(entry.spec)}{steps}; {synced}"
 
@@ -3843,7 +3860,7 @@ class Entry:
     name = property(lambda self: self.v.get("source", ""))   # key of the [source]
     url = property(lambda self: self.source.get("url", ""))
     spec = property(lambda self: entry_spec(self.v, self.source))
-    asset = property(lambda self: list(split_words("asset", self.v.get("asset"))))   # patterns
+    asset = property(lambda self: asset_patterns(self.v))
     exclude_asset = property(lambda self: list(split_words("exclude-asset",
                                                            self.v.get("exclude-asset"))))
     sourcecode = property(lambda self: self.v.get("sourcecode", ""))   # format of the archive
@@ -4762,7 +4779,7 @@ def push_check(repo, args):
                 _, v, _ = items[0]
                 if v.get("sourcecode"):      # made by the server: no digest to compare
                     continue
-                assets = select_assets(release, list(split_words("asset", v.get("asset"))),
+                assets = select_assets(release, asset_patterns(v),
                                        origin.label,
                                        list(split_words("exclude-asset", v.get("exclude-asset"))))
                 now = assets_digest([(a.name, a.digest) for a in assets])
@@ -5881,14 +5898,14 @@ def cmd_add(ctx, repo, args):
         raise FsError(f"directory '{parent}' does not exist")
     reg.need_filter(args.filter)
     steps = named_steps(args.filter) if args.filter else []
-    patterns = given_patterns(args.asset)
+    patterns = asset_option(args)
     excludes = given_patterns(args.exclude_asset, "--exclude-asset")
     url, spec, named = given_source(reg, args)
     check_sourcecode(url, spec.get("type"), args.sourcecode)
     origin, release = ctx.release(url, spec)
     assets = entry_assets(origin, release, patterns, args.sourcecode, excludes)
     name = named or reg.source_name(url)
-    if not patterns and not args.sourcecode and len(assets) > 1 and (is_dir or steps):
+    if not args.asset and not args.no_asset and len(assets) > 1 and (is_dir or steps):
         print(f"{shown_rel}: {'' if excludes else 'all '}{plural(len(assets), 'asset')} of "
               f"{name} {release.tag}: "
               + ", ".join(a.name + (f" ({human_size(a.size)})" if a.size is not None else "")
@@ -6149,6 +6166,10 @@ def cmd_set(ctx, repo, args):
         platform_of(url, spec.get("type"))       # a usable URL and type
     for e in entries:
         sourcecode = None if args.no_sourcecode else args.sourcecode or e.sourcecode
+        assets = patterns["asset"] if "asset" in patterns else \
+            entry_patterns(e, "asset") if args.no_sourcecode else None
+        if not sourcecode and assets == []:
+            raise FsError(f"{e.shown}: would take nothing - give --asset")
         if sourcecode and (args.sourcecode or args.source):
             if args.source:
                 check_sourcecode(url, spec.get("type"), sourcecode)
@@ -6190,10 +6211,8 @@ def cmd_set(ctx, repo, args):
         for e in entries:
             old = entry_patterns(e, key)          # unreadable (None): replaced
             if old is None or set(old) != set(new):
-                sourcecode = None if args.no_sourcecode else args.sourcecode or e.sourcecode
-                none = "(all)" if key == "asset" and not sourcecode else "(none)"
-                print(f"{would}{e.shown}: {key} {patterns_text(e, key) or none} -> "
-                      f"{shlex.join(new) or none}")
+                print(f"{would}{e.shown}: {key} {patterns_text(e, key) or '(none)'} -> "
+                      f"{shlex.join(new) or '(none)'}")
                 e.set(key, shlex.join(new) if new else None)
                 e.set("synced", None)
                 changed = True
@@ -6202,6 +6221,8 @@ def cmd_set(ctx, repo, args):
             if (e.sourcecode or None) != args.sourcecode:
                 print(f"{would}{e.shown}: source code {e.sourcecode or '(none)'} -> "
                       f"{args.sourcecode or '(none)'}")
+                if "asset" not in patterns:       # its assets as before, also when
+                    e.set("asset", shlex.join(e.asset) or None)   # read as '*'
                 e.set("sourcecode", args.sourcecode)
                 e.set("synced", None)
                 changed = True
@@ -7138,7 +7159,7 @@ def filter_test(ctx, repo, reg, args):
             url, spec, _ = given_source(reg, args)
             check_sourcecode(url, spec.get("type"), args.sourcecode)
             origin, release = ctx.release(url, spec)
-            assets = entry_assets(origin, release, given_patterns(args.asset), args.sourcecode,
+            assets = entry_assets(origin, release, asset_option(args), args.sourcecode,
                                   given_patterns(args.exclude_asset, "--exclude-asset"))
             for a in assets:
                 add_member(files, safe_path(a.name, f"{what}: asset"),
@@ -7702,14 +7723,17 @@ def run(argv):
                    help="file in this repository; with a trailing '/' or an existing "
                         "directory: a directory for the files of the release (files of "
                         "others there stay)")
-    p.add_argument("--asset", metavar="PATTERN", action="append",
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--asset", metavar="PATTERN", action="append",
                    help="the assets of the release to take: those matching the glob pattern "
-                        "(repeat for more; default: all)")
+                        "(repeat for more; default: '*', all)")
+    g.add_argument("--no-asset", action="store_true",
+                   help="no uploaded assets: only the source code archive (--sourcecode)")
     p.add_argument("--exclude-asset", metavar="PATTERN", action="append",
                    help="but not the assets matching the glob pattern (repeat for more)")
     p.add_argument("--sourcecode", metavar="FORMAT",
-                   help="the release's source code archive (zip, tar.gz; GitLab also tar.bz2, "
-                        "tar) - assets then only with --asset")
+                   help="the release's source code archive too (zip, tar.gz; GitLab also "
+                        "tar.bz2, tar)")
     p.add_argument("--release", metavar="TAG|PATTERN",
                    help="release to take: an exact tag (pinned) or the newest matching "
                         "(default: the latest release)")
@@ -7748,9 +7772,9 @@ def run(argv):
                    help="with --source, a new one: platform of its host")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--asset", metavar="PATTERN", action="append",
-                   help="other assets: those matching the glob pattern (repeat for more)")
+                   help="the assets matching the glob pattern (repeat for more; '*': all)")
     g.add_argument("--no-asset", action="store_true",
-                   help="no pattern: all assets (with --sourcecode none)")
+                   help="no uploaded assets: only the source code archive")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--exclude-asset", metavar="PATTERN", action="append",
                    help="but not the assets matching the pattern (repeat for more)")
@@ -7885,9 +7909,12 @@ def run(argv):
     a.add_argument("--release", metavar="TAG|PATTERN", help="with --source: as for add")
     a.add_argument("--prerelease", action="store_true", help="with --source: as for add")
     a.add_argument("--type", choices=sorted(PLATFORMS), metavar="|".join(sorted(PLATFORMS)), help="with --source: as for add")
-    a.add_argument("--asset", metavar="PATTERN", action="append",
+    g = a.add_mutually_exclusive_group()
+    g.add_argument("--asset", metavar="PATTERN", action="append",
                    help="with --source: only the assets matching the pattern (repeat for "
-                        "more; default: all)")
+                        "more; default: '*', all)")
+    g.add_argument("--no-asset", action="store_true",
+                   help="with --source: only the source code archive (--sourcecode)")
     a.add_argument("--exclude-asset", metavar="PATTERN", action="append",
                    help="with --source: not the assets matching the pattern (repeat for more)")
     a.add_argument("--sourcecode", metavar="FORMAT",

@@ -623,13 +623,17 @@ check "... exit code 2" "$(rc git assetsync status)" "2"
 check "... pull fails" "$(rc pullcm app.tgz)" "2"
 cd "$T"
 
-# without --asset: the release's only asset; no asset key recorded
+# without --asset: '*', the release's only asset
 asset single.bin "single 1"
 release acme/single v1 10 "$F/single.bin"
 new_repo r3a
 addc acme/single single.bin
 check "no --asset, one asset: taken" "$(cat single.bin)" "single 1"
-check "no --asset: no asset key" "$(reg file.single.bin.asset)" ""
+check "no --asset: asset '*'" "$(reg file.single.bin.asset)" "'*'"
+git config -f .git-assetsync --unset file.single.bin.asset
+check "no asset key, no sourcecode: read as '*'" "$(git assetsync set single.bin --asset '*') $(git assetsync set single.bin | grep -o -- "--asset '\*'")" \
+  "nothing to change --asset '*'"
+git checkout -q .git-assetsync
 check "no --asset: status -v" "$(git assetsync status -v | grep -c '(all assets from acme/single, latest release; synced v1)')" "1"
 asset single.bin "single 2"
 release acme/single v2 11 "$F/single.bin"
@@ -1794,7 +1798,9 @@ quiet git assetsync set y.bin --asset x.bin
 check "set --asset: pending" "$(st y.bin)" "P"
 pullc y.bin
 check "set --asset + pull" "$(cat y.bin) $(git log -1 --format=%s)" "x v1 [assetsync] Update y.bin to acme/set v1 (2026-10-10)"
-check "set --no-asset" "$(git assetsync set y.bin --no-asset >/dev/null; reg file.y.bin.asset)" ""
+check "set --no-asset: takes nothing" "$(git assetsync set y.bin --no-asset 2>&1; reg file.y.bin.asset)" \
+  "error: y.bin: would take nothing - give --asset
+x.bin"
 git reset -q --hard
 check "set --release and --latest" "$(git assetsync set y.bin --release v1 --latest 2>&1 | tail -1)" \
   "git assetsync set: error: argument --latest: not allowed with argument --release"
@@ -3849,7 +3855,9 @@ asset bin.txt "a binary"; release --src "$F/sc1" acme/sarc v1 10 "$F/bin.txt"
 new_repo r40
 quiet git assetsync filter add unpack --extract --strip 1
 : > "$GH/calls.log"
-addc acme/sarc d/ --sourcecode tar.gz --filter unpack
+check "--no-asset without --sourcecode" "$(git assetsync add acme/sarc n/ --no-asset 2>&1)" \
+  "error: --no-asset without --sourcecode takes nothing - give --asset"
+addc acme/sarc d/ --sourcecode tar.gz --no-asset --filter unpack
 check "sourcecode: only the archive, unpacked" "$(cd d && find . -type f | sort | oneline)" \
   "./README ./lib/a.c "
 check "... the entry" "$(reg dir.d.sourcecode)|$(reg dir.d.asset)|$(reg dir.d.assetid | cut -c1-7)" \
@@ -3871,7 +3879,9 @@ check "... pull takes it" "$(cat d/lib/a.c) $(st)" "two "
 # with assets: both; a file needs one file in the end
 addc acme/sarc both/ --sourcecode zip --asset '*'
 check "with --asset: both" "$(ls both | oneline)" "bin.txt sarc-v1.zip "
-check "file: one archive" "$(rc git assetsync add acme/sarc s.zip --sourcecode zip)|$(head -c 2 s.zip)" "0|PK"
+check "without --asset: all assets too" "$(git assetsync add acme/sarc s.zip --sourcecode zip 2>&1)" \
+  "error: s.zip: 2 assets (bin.txt, sarc-v1.zip), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
+check "file: one archive" "$(rc git assetsync add acme/sarc s.zip --sourcecode zip --no-asset)|$(head -c 2 s.zip)" "0|PK"
 git commit -qm s.zip
 : > "$GH/calls.log"
 check "releases --assets: the source code archive by name, no request" \
@@ -3893,18 +3903,24 @@ check "name taken by an asset" "$(git assetsync pull both 2>&1)" \
   "error: both/: the source code archive and an asset of release v2 of acme/sarc are both named sarc-v2.zip - take them with two entries"
 check "set --no-asset with sourcecode: none" "$(git assetsync set -n both --no-asset)" \
   "would: both/: asset '*' -> (none)"
-check "set --no-sourcecode: the assets" "$(git assetsync set both --no-sourcecode --no-asset | head -2)" \
-  "both/: asset '*' -> (all)
-both/: source code zip -> (none)"
+check "set --no-sourcecode --no-asset: takes nothing" "$(git assetsync set both --no-sourcecode --no-asset 2>&1)" \
+  "error: both/: would take nothing - give --asset"
+check "set --no-sourcecode: the assets" "$(git assetsync set both --no-sourcecode | head -1; reg dir.both.asset)" \
+  "both/: source code zip -> (none)
+'*'"
 git commit -qm set
 pullc both
 check "... pull" "$(ls both | oneline)" "bin.txt sarc-v2.zip "
-check "filter test with --sourcecode" "$(git assetsync filter test unpack --source acme/sarc --sourcecode zip 2>/dev/null | sed 's/^ *[0-9]* bytes  //' | oneline)" \
+git config -f .git-assetsync --unset dir.both.asset
+check "set --sourcecode, no asset key (read as '*'): '*' written" \
+  "$(git assetsync set both --sourcecode zip >/dev/null; reg dir.both.asset)" "'*'"
+git reset -q --hard
+check "filter test with --sourcecode" "$(git assetsync filter test unpack --source acme/sarc --sourcecode zip --no-asset 2>/dev/null | sed 's/^ *[0-9]* bytes  //' | oneline)" \
   "README lib/a.c "
 # GitLab: the commit is in the release
 release --host gitlab.com --src "$F/sc1" grp/gsrc v1 10 "$F/bin.txt"
 : > "$GH/calls.log"
-addc https://gitlab.com/grp/gsrc g/ --sourcecode tar.bz2 --filter unpack
+addc https://gitlab.com/grp/gsrc g/ --sourcecode tar.bz2 --no-asset --filter unpack
 check "GitLab: tar.bz2" "$(cd g && find . -type f | sort | oneline)" "./README ./lib/a.c "
 check "... downloaded by commit, no commit request" "$(grep -c 'projects/grp%2Fgsrc/repository/archive.tar.bz2?sha=[0-9a-f]\{40\}$' "$GH/calls.log") $(grep -c commits "$GH/calls.log")" "1 0"
 check "... clean" "$(st g)" ""
@@ -4010,21 +4026,22 @@ check "a pattern twice: once" "$(asd add -n acme/hexfw y.hex --asset '*.hex' --a
 check "empty pattern: refused" "$(asd add acme/hexfw y.hex --asset '' 2>&1)" \
   "error: --asset: a pattern must not be empty"
 check "a file, all assets, a filter leaves one" \
-  "$(rc asd add acme/hexfw z.hex --filter fw)|$(cat z.hex)|$(reg file.z.hex.asset)" "0|hex 2|"
+  "$(rc asd add acme/hexfw z.hex --filter fw)|$(cat z.hex)|$(reg file.z.hex.asset)" "0|hex 2|'*'"
 git reset -q --hard
 check "set --asset: several, replaced" "$(asd set app.hex --asset '*.hex' --asset 'my app*.zip' | head -1)" \
   "app.hex: asset 'app-*.zip' 'app-*.hex' -> '*.hex' 'my app*.zip'"
 check "... quoted as in a shell" "$(reg file.app.hex.asset)" "'*.hex' 'my app*.zip'"
 check "... the same in another order: no change" "$(asd set app.hex --asset 'my app*.zip' --asset '*.hex')" "nothing to change"
-check "... set --no-asset: all" "$(asd set app.hex --no-asset | head -1; reg file.app.hex.asset)" \
-  "app.hex: asset '*.hex' 'my app*.zip' -> (all)"
+check "... set --asset '*': all" "$(asd set app.hex --asset '*' | head -1; reg file.app.hex.asset)" \
+  "app.hex: asset '*.hex' 'my app*.zip' -> '*'
+'*'"
 git reset -q --hard
 # --exclude-asset: all assets except those (exclude beats --asset)
 quiet asd add acme/hexfw all/ --exclude-asset '*.txt' && git commit -q --no-edit
 check "exclude-asset: all but those" "$(ls all | oneline)|$(reg dir.all.exclude-asset)" "app-2.hex |'*.txt'"
 check "... status -v" "$(git assetsync status -v | grep -c "all assets except '\*.txt' from acme/hexfw")" "1"
-check "... set shows it" "$(asd set all | grep -o -- '--no-asset .* --no-sourcecode')" \
-  "--no-asset --exclude-asset '*.txt' --no-sourcecode"
+check "... set shows it" "$(asd set all | grep -o -- "--asset '\*' .* --no-sourcecode")" \
+  "--asset '*' --exclude-asset '*.txt' --no-sourcecode"
 check "... a file without filter: one left" "$(asd add -n acme/hexfw only.hex --exclude-asset '*.txt' | head -1)" \
   "would add only.hex from acme/hexfw v2 (app-2.hex, latest release)"
 check "... beats --asset: none left" "$(asd add acme/hexfw n.bin --asset '*.txt' --exclude-asset 'app-*' 2>&1)" \
@@ -4076,7 +4093,7 @@ check "verify: 2 files, named once" "$(git assetsync verify h2.hex 2>&1)" \
   "error: h2.hex: the filter gives 2 files, a file needs exactly one - narrow the filter, or add 'h2.hex/' as a directory"
 git checkout -q -- .git-assetsync
 # the source archive isn't an uploaded asset: --exclude-asset doesn't apply to it
-quiet asd add acme/sarc sc/ --sourcecode zip --exclude-asset '*.zip'
+quiet asd add acme/sarc sc/ --sourcecode zip --no-asset --exclude-asset '*.zip'
 check "source code, exclude-asset: not shown" \
   "$(git assetsync status -v --no-fetch | grep -c 'source code (zip) from acme/sarc,')" "1"
 
