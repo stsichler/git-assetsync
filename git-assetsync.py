@@ -287,7 +287,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 first, marked as by source releases
         -v, --verbose           also the description of each release, in full
         --assets                also the assets the entry takes
-        --max-count N, --all    the newest N releases (default 10), or all
+        --max-count N, --all    the newest N releases (default 10; 0: none),
+                                or all
 
     edit                        open .git-assetsync in the editor (like `git
                                 config --edit`), then check it (warnings
@@ -335,8 +336,8 @@ Advanced commands - change entries, sources and filters; set up:
                                 repository (with a URL)
         -v, --verbose           also the description of each release, in full
         --assets                also list the assets, with their sizes
-        --max-count N, --all    the newest N releases (default 10; the last
-                                line says how many more), or all
+        --max-count N, --all    the newest N releases (default 10; 0: none;
+                                the last line says how many more), or all
         --type github|gitlab    platform of the URL's host
 
     filter                      list the filters (and who uses them)
@@ -6521,16 +6522,16 @@ def show_releases(origin, rels, complete, args, selected, entry=None):
     (see selected_by()); with -v their descriptions, with --assets their
     assets - those entry takes, with an entry."""
     rels = sorted(rels, key=lambda r: r.order, reverse=True)
-    more = 0 if args.all else len(rels) - args.max_count
-    if more > 0:
-        rels = rels[:args.max_count]
     if isinstance(origin, LocalFolder):
         print(paint(f"releases in the local folder {origin.place} (git assetsync source map)", "cyan"))
     if not rels:
         print(f"no {'matching ' if entry else ''}releases in {origin.where}")
         return
-    latest = origin.latest()
-    width = max(len(r.tag) for r in rels)
+    more = 0 if args.all else len(rels) - args.max_count
+    if more > 0:
+        rels = rels[:args.max_count]      # --max-count 0: none, as git log -n 0
+    latest = origin.latest() if rels else None
+    width = max((len(r.tag) for r in rels), default=0)
     for r in rels:
         flags = (["latest"] if latest and r.tag == latest.tag else []) + \
             ([("upcoming" if isinstance(origin, GitLab) else "prerelease")] if r.prerelease
@@ -7503,14 +7504,14 @@ def main(argv=None):
     return EXIT_PIPE if PipeGuard.broken and rc == EXIT_OK else rc
 
 
-def positive(text):
-    """argparse type: a whole number from 1 on."""
+def count(text):
+    """argparse type: a whole number from 0 on (--max-count 0: none, as git)."""
     try:
         n = int(text)
     except ValueError:
-        n = 0
-    if n < 1:
-        raise argparse.ArgumentTypeError(f"not a number from 1 on: '{text}'")
+        n = -1
+    if n < 0:
+        raise argparse.ArgumentTypeError(f"not a number from 0 on: '{text}'")
     return n
 
 
@@ -7563,8 +7564,8 @@ def run(argv):
                             help="also the description of each release, in full")
         parser.add_argument("--assets", action="store_true", help=assets)
         g = parser.add_mutually_exclusive_group()
-        g.add_argument("--max-count", type=positive, default=10, metavar="N",
-                       help="the newest N releases (default: 10)")
+        g.add_argument("--max-count", type=count, default=10, metavar="N",
+                       help="the newest N releases (default: 10; 0: none, as in git log)")
         g.add_argument("--all", action="store_true", help="all releases")
     colorp.add_argument("--no-color", dest="color", action="store_const", const="never",
                         help="same as --color=never")

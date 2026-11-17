@@ -727,7 +727,7 @@ tool-1.0  2026-09-02  Tool 1.0
 |---|---|
 | `-v`, `--verbose` | also the description of each release, in full |
 | `--assets` | also list the assets the entry takes |
-| `--max-count N` | the newest N releases (default: 10) |
+| `--max-count N` | the newest N releases (default: 10; 0: none, as in `git log`) |
 | `--all` | all releases |
 
 ### `edit`
@@ -883,7 +883,7 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
 |---|---|
 | `-v`, `--verbose` | also the description of each release, in full |
 | `--assets` | also list the assets, with their sizes (GitLab reports none) |
-| `--max-count N` | the newest N releases (default: 10) |
+| `--max-count N` | the newest N releases (default: 10; 0: none, as in `git log`) |
 | `--all` | all releases |
 | `--type github\|gitlab` | platform of the URL's host |
 

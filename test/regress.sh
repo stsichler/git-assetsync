@@ -1854,9 +1854,13 @@ check "releases PATH: pinned, that one" "$(git assetsync releases a.bin | sed 1d
 git reset -q --hard
 check "releases PATH: not synced" "$(git assetsync releases nope 2>&1)" \
   "error: 'nope' is not synced (use 'git assetsync add' to add it)"
-check "releases --max-count: from 1 on" "$(git assetsync releases --max-count 0 2>&1 | tail -1)" \
-  "git assetsync releases: error: argument --max-count: not a number from 1 on: '0'"
-check "source releases --max-count: from 1 on" "$(rc git assetsync source releases acme/rl --max-count -1)" "2"
+check "releases --max-count 0: none, as git log -n 0" "$(git assetsync releases a.bin --max-count 0 | oneline)" \
+  "a.bin: latest release of acme/rl (3 more: --all lists them) "
+check "source releases --max-count 0: none" "$(asd source releases acme/rl --max-count 0 | oneline)" \
+  "(5 more: --all lists them) "
+check "releases --max-count: from 0 on" "$(git assetsync releases --max-count -1 2>&1 | tail -1)" \
+  "git assetsync releases: error: argument --max-count: not a number from 0 on: '-1'"
+check "source releases --max-count: from 0 on" "$(rc git assetsync source releases acme/rl --max-count x)" "2"
 git config -f .git-assetsync source.e.url https://gitlab.com/grp/empty
 git config -f .git-assetsync file.e.bin.source e
 check "releases: none, no warnings for the entries" "$(git assetsync source releases e 2>&1)" "no releases in grp/empty"
