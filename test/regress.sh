@@ -1817,14 +1817,14 @@ release --title "Rel 1" acme/rl v1 10 "$F/small.bin" "$F/kib.bin"
 release acme/rl v1.1 11 "$F/small.bin"
 release --title "Rel 2 RC" --pre acme/rl v2-rc1 12 "$F/small.bin"
 release --draft acme/rl v3 13 "$F/small.bin"
-check "releases outside a repository" "$(asd source releases acme/rl | oneline)" \
-  "v3      2026-10-13  (draft) v2-rc1  2026-10-12  Rel 2 RC  (prerelease) v1.1    2026-10-11  (latest) v1      2026-10-10  Rel 1 v0      2026-10-09 "
+check "releases outside a repository, no drafts" "$(asd source releases acme/rl | oneline)" \
+  "v2-rc1  2026-10-12  Rel 2 RC  (prerelease) v1.1    2026-10-11  (latest) v1      2026-10-10  Rel 1 v0      2026-10-09 "
 check "releases --max-count: and how many more" "$(asd source releases acme/rl --max-count 2 | lines) $(asd source releases acme/rl --max-count 2 | tail -1)" \
-  "3 (3 more: --all lists them)"
+  "3 (2 more: --all lists them)"
 check "... none with --all" "$(asd source releases acme/rl --all | grep -c more)" "0"
-check "source releases --release: only matching tags, drafts and prereleases too" \
+check "source releases --release: only matching tags, prereleases too, no drafts" \
   "$(asd source releases acme/rl --release 'v[23]*' | oneline)" \
-  "v3      2026-10-13  (draft) v2-rc1  2026-10-12  Rel 2 RC  (prerelease) "
+  "v2-rc1  2026-10-12  Rel 2 RC  (prerelease) "
 check "... with --max-count: how many more of those" \
   "$(asd source releases acme/rl --release 'v1*' --max-count 1 | oneline)" \
   "v1.1  2026-10-11  (latest) (1 more: --all lists them) "
@@ -1840,7 +1840,7 @@ check "releases: selected by entries" "$(git assetsync source releases acme/rl |
 check "releases: latest selected" "$(git assetsync source releases acme/rl | grep '^v1.1 ')" \
   "v1.1    2026-10-11  (latest, selected by a.bin)"
 check "releases of a source by name" "$(git assetsync source releases acme/rl --max-count 1 | head -1)" \
-  "v3  2026-10-13  (draft)"
+  "v2-rc1  2026-10-12  Rel 2 RC  (prerelease, selected by b.bin)"
 # releases PATH: the releases an entry's selection lets it take, the assets it takes
 check "releases PATH: a pattern with prereleases, no drafts" \
   "$(git assetsync releases b.bin | cut -d' ' -f1 | oneline)" "b.bin: v2-rc1 v1.1 v1 v0 "
@@ -1865,7 +1865,7 @@ check "releases PATH: not synced" "$(git assetsync releases nope 2>&1)" \
 check "releases --max-count 0: none, as git log -n 0" "$(git assetsync releases a.bin --max-count 0 | oneline)" \
   "a.bin: latest release of acme/rl (3 more: --all lists them) "
 check "source releases --max-count 0: none" "$(asd source releases acme/rl --max-count 0 | oneline)" \
-  "(5 more: --all lists them) "
+  "(4 more: --all lists them) "
 check "releases --max-count: from 0 on" "$(git assetsync releases --max-count -1 2>&1 | tail -1)" \
   "git assetsync releases: error: argument --max-count: not a number from 0 on: '-1'"
 check "source releases --max-count: from 0 on" "$(rc git assetsync source releases acme/rl --max-count x)" "2"

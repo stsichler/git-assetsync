@@ -331,9 +331,9 @@ Advanced commands - change entries, sources and filters; set up:
         --global                for all repositories (default: this one)
         --unset                 remove the mapping
     source releases URL|SOURCE  list the releases, newest first, marked:
-                                latest, prerelease (GitLab: upcoming), draft,
-                                selected by which entries; also outside a
-                                repository (with a URL)
+                                latest, prerelease (GitLab: upcoming),
+                                selected by which entries (no drafts); also
+                                outside a repository (with a URL)
         -v, --verbose           also the description of each release, in full
         --assets                also list the assets, with their sizes
         --max-count N, --all    the newest N releases (default 10; 0: none;
@@ -800,7 +800,6 @@ class Release:
     date: str                 # publication date, ISO 8601 (UTC)
     url: str                  # web page of the release
     prerelease: bool = False
-    draft: bool = False
     assets: list = field(default_factory=list)
     notes: str = ""           # description / changelog (Markdown)
     local: bool = False       # from a local folder (map), not published
@@ -910,9 +909,10 @@ class Platform:
     def get(self, path):
         """Release at an API path, None if there is none."""
         try:
-            return self.release(self.json(path))
+            d = self.json(path)
         except NotFound:
             return None
+        return None if d.get("draft") else self.release(d)      # drafts: as if not there
 
     def latest(self):
         """The release the platform calls latest, None if there is none."""
@@ -938,7 +938,7 @@ class Platform:
                 raise self.not_found()
             if not isinstance(items, list):
                 raise FsError(f"{self.label}: unexpected answer listing the releases")
-            result += [self.release(d) for d in items]
+            result += [self.release(d) for d in items if not d.get("draft")]   # drafts: none
             if len(items) < self.PER_PAGE:
                 self.listed = result
                 return result
@@ -1001,7 +1001,7 @@ class GitHub(Platform):
         return Release(d.get("tag_name", ""), d.get("name") or "",
                        d.get("published_at") or d.get("created_at") or "",
                        d.get("html_url", ""), bool(d.get("prerelease")),
-                       bool(d.get("draft")), assets, d.get("body") or "")
+                       assets, d.get("body") or "")
 
     def commit_of(self, release):
         """The commit of a release's tag: one more request (the release
@@ -1053,7 +1053,7 @@ class GitLab(Platform):
         return Release(d.get("tag_name", ""), d.get("name") or "",
                        d.get("released_at") or d.get("created_at") or "",
                        (d.get("_links") or {}).get("self", ""),
-                       bool(d.get("upcoming_release")), False, assets,
+                       bool(d.get("upcoming_release")), assets,
                        d.get("description") or "", commit=(d.get("commit") or {}).get("id") or "")
 
     def commit_of(self, release):
@@ -1186,8 +1186,8 @@ class LocalFolder:
     grouped into releases by their names without extension. With a pattern,
     only the matching subdirectories (flat: files) count, so several sources
     can share a folder. A release is dated by its newest file, which makes
-    it newer than others - or by_name (--sort name): its name. No notes, prereleases or
-    drafts; nothing is downloaded (only their digests are remembered, see
+    it newer than others - or by_name (--sort name): its name. No notes or
+    prereleases; nothing is downloaded (only their digests are remembered, see
     local_digest())."""
 
     def __init__(self, folder, url, flat=False, pattern=None, by_name=False):
@@ -1365,17 +1365,17 @@ def is_pattern(rule):
 
 def may_take(release, rule, prerelease):
     """Whether a selection (rule, prerelease) lets an entry take release:
-    no draft, a prerelease only with prerelease, a pattern must match (an
-    exact tag is checked by the caller)."""
-    return not release.draft and (prerelease or not release.prerelease) and \
+    a prerelease only with prerelease, a pattern must match (an exact tag
+    is checked by the caller)."""
+    return (prerelease or not release.prerelease) and \
         (not rule or not is_pattern(rule) or fnmatch.fnmatchcase(release.tag, rule))
 
 
 def select_release(origin, rule, prerelease):
     """The release a source takes: an exact tag (pinned), the newest release
     by date whose tag matches a pattern, or - without rule - the latest.
-    Tags are opaque: never compared or sorted by name. Drafts never count,
-    prereleases only with prerelease (or when pinned to one)."""
+    Tags are opaque: never compared or sorted by name. Prereleases only
+    with prerelease (or when pinned to one); drafts aren't listed at all."""
     if rule and not is_pattern(rule):
         r = origin.by_tag(rule)
         if not r:
@@ -4225,7 +4225,7 @@ def others_modified(repo, st):
 
 def has_release(origin, tag):
     """Has the source the release tag (from its list, if asked already)?"""
-    if any(r.tag == tag and not r.draft for r in origin.listed or []):
+    if any(r.tag == tag for r in origin.listed or []):
         return True
     return origin.by_tag(tag) is not None
 
@@ -4896,7 +4896,7 @@ def synced_release(st):
     anyway) - None if it is gone or can't be asked."""
     try:
         return next((r for r in st.origin.releases()
-                     if r.tag == st.entry.synced and not r.draft), None) or \
+                     if r.tag == st.entry.synced), None) or \
             st.origin.by_tag(st.entry.synced)
     except FsError:
         return None
@@ -4905,7 +4905,7 @@ def synced_release(st):
 def releases_between(st):
     """('Since', [releases]) skipped by updating to st.release - newer than
     the synced one, older than the new one, selected by the source's rule
-    (its pattern, prereleases only if it takes them, no drafts) - or
+    (its pattern, prereleases only if it takes them) - or
     ('Reverted', [releases]) when going back to an older one: the synced one
     and those in between. Newest first; None if unknown."""
     entry, new = st.entry, st.release
@@ -6460,7 +6460,7 @@ def cmd_cache(args):
 
 def cmd_releases(ctx, repo, args):
     """source releases: the releases of a source or project newest first,
-    marked: latest (as the platform says), prerelease, draft, and which
+    marked: latest (as the platform says), prerelease, and which
     entries of this repository select them - a help for add and set."""
     reg = Registry(repo) if repo else None
     if reg and args.source in reg.sources:
@@ -6540,7 +6540,7 @@ def show_releases(origin, rels, complete, args, selected, entry=None):
     for r in rels:
         flags = (["latest"] if latest and r.tag == latest.tag else []) + \
             ([("upcoming" if isinstance(origin, GitLab) else "prerelease")] if r.prerelease
-             else []) + (["draft"] if r.draft else []) + \
+             else []) + \
             ([f"selected by {and_list(selected[r.tag][:3] + ([f'{len(selected[r.tag]) - 3} more'] if len(selected[r.tag]) > 3 else []))}"]
              if r.tag in selected else [])
         title = r.title if r.title and r.title != r.tag else ""

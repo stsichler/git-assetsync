@@ -709,7 +709,7 @@ git assetsync releases [PATH…] [-v] [--assets] [--max-count N | --all] [--remo
 
 Lists for each entry (all without `PATH`) the releases its [release
 selection](#selecting-the-release) lets it take, newest first, marked as by
-[`source releases`](#source-releases): no drafts, prereleases only if it
+[`source releases`](#source-releases): prereleases only if it
 takes them; of those a pattern's matching ones, without a selection those
 that can become latest; a pinned tag: that one. `--assets` lists the assets the entry takes from each.
 
@@ -864,9 +864,9 @@ git assetsync source releases URL|SOURCE [-v] [--assets] [--max-count N | --all]
 ```
 
 Lists the releases of a project, newest first: tag, date and title,
-marked `latest`, `prerelease` (GitLab: `upcoming`), `draft`, and `selected
+marked `latest`, `prerelease` (GitLab: `upcoming`) and `selected
 by …` with the entries that select it – a help for choosing `--release`
-and `--asset`. With a URL it also works outside a repository. If there
+and `--asset`. Drafts are not listed. With a URL it also works outside a repository. If there
 are more than shown, the last line says how many. [`releases
 PATH`](#releases) lists only those an entry may take.
 
@@ -1118,7 +1118,7 @@ Tags are opaque strings: no versioning scheme, never sorted by name.
 one repository under different prefixes. There is no reserved value like
 `latest`.
 
-Drafts never count; prereleases only with `prerelease = true` (`add
+Drafts never count (git-assetsync doesn't see them); prereleases only with `prerelease = true` (`add
 --prerelease`).
 
 If the selected release has no asset matching the entry's pattern, or
