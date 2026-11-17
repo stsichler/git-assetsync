@@ -482,6 +482,14 @@ check "help: basic commands first, then the advanced ones" \
   "$(asd -h | grep -E '^(basic|advanced) commands:$|^  [a-z][a-z-]*  ' | sed 's/^  \([a-z-]*\) .*/\1/' | oneline)" \
   "basic commands: status pull diff difftool restore add rm unlink mv advanced commands: set releases edit verify source filter cache hooks "
 check "help: also for actions" "$(asd source rename -h | grep -c '^Rename a source and all references to it\.$')" "1"
+# every help: choices written as a|b (as in the docs), no argument without an explanation
+ALLHELP=$(for c in status pull diff difftool restore add rm unlink mv set releases edit verify \
+    source "source rename" "source set" "source map" "source releases" filter "filter show" \
+    "filter test" "filter add" "filter set" "filter rename" "filter remove" "filter trust" \
+    cache "cache list" "cache prune" "cache clear" "cache dir" hooks "hooks install" \
+    "hooks uninstall" hook; do asd $c -h; done)
+check "help: choices as a|b, every argument explained" \
+  "$(printf '%s\n' "$ALLHELP" | grep -E '\{[a-z-]+,|^  [A-Za-z|-]+$' | grep -v ACTION | lines)" "0"
 # with Python 3.14 or later the help is colored - the command list too - when the
 # output would be (--color, color.ui, NO_COLOR); before, it isn't
 if "$PYTHON" -c 'import argparse, inspect, sys; sys.exit("color" not in inspect.signature(argparse.ArgumentParser).parameters)'; then

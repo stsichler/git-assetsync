@@ -7557,15 +7557,15 @@ def run(argv):
     worktreep = argparse.ArgumentParser(add_help=False)
     worktreep.add_argument("-W", "--worktree", action="store_true",
                            help=f"change {REGISTRY} in the working tree only, nothing staged")
-    releasesp = argparse.ArgumentParser(add_help=False)     # releases, source releases
-    releasesp.add_argument("-v", "--verbose", action="store_true",
-                           help="also the description of each release, in full")
-    releasesp.add_argument("--assets", action="store_true",
-                           help="also list the assets (of an entry: those it takes)")
-    g = releasesp.add_mutually_exclusive_group()
-    g.add_argument("--max-count", type=positive, default=10, metavar="N",
-                   help="the newest N releases (default: 10)")
-    g.add_argument("--all", action="store_true", help="all releases")
+
+    def releases_options(parser, assets):     # releases, source releases
+        parser.add_argument("-v", "--verbose", action="store_true",
+                            help="also the description of each release, in full")
+        parser.add_argument("--assets", action="store_true", help=assets)
+        g = parser.add_mutually_exclusive_group()
+        g.add_argument("--max-count", type=positive, default=10, metavar="N",
+                       help="the newest N releases (default: 10)")
+        g.add_argument("--all", action="store_true", help="all releases")
     colorp.add_argument("--no-color", dest="color", action="store_const", const="never",
                         help="same as --color=never")
 
@@ -7720,7 +7720,7 @@ def run(argv):
                    help="release to take: an exact tag (pinned) or the newest matching "
                         "(default: the latest release)")
     p.add_argument("--prerelease", action="store_true", help="prereleases count too")
-    p.add_argument("--type", choices=sorted(PLATFORMS),
+    p.add_argument("--type", choices=sorted(PLATFORMS), metavar="|".join(sorted(PLATFORMS)),
                    help="platform of the URL's host (default: derived from it)")
     p.add_argument("--force", action="store_true",
                    help="replace an existing entry")
@@ -7750,7 +7750,7 @@ def run(argv):
                    help="prereleases count too")
     g.add_argument("--no-prerelease", dest="prerelease", action="store_false",
                    help="prereleases don't count")
-    p.add_argument("--type", choices=sorted(PLATFORMS),
+    p.add_argument("--type", choices=sorted(PLATFORMS), metavar="|".join(sorted(PLATFORMS)),
                    help="with --source, a new one: platform of its host")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--asset", metavar="PATTERN", action="append",
@@ -7770,10 +7770,11 @@ def run(argv):
     g.add_argument("--no-filter", action="store_true", help="use no filter")
     p.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
 
-    p = sub.add_parser("releases", parents=[colorp, remotep, releasesp],
+    p = sub.add_parser("releases", parents=[colorp, remotep],
                        help="list the releases entries may take (and their assets)",
                        description="List per entry the releases its release selection lets it "
                                    "take, newest first (and the assets it takes).")
+    releases_options(p, "also list the assets the entry takes")
     p.add_argument("paths", nargs="*", metavar="PATH", help="files or directories (default: all)")
 
     sub.add_parser("edit", parents=[colorp, worktreep],
@@ -7810,7 +7811,7 @@ def run(argv):
     a = actions.add_parser("rename", parents=[colorp, worktreep],
                            help="rename a source and all references to it")
     a.add_argument("name", metavar="OLD", help="key of the [source]")
-    a.add_argument("value", metavar="NEW")
+    a.add_argument("value", metavar="NEW", help="its new key")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("set", parents=[colorp, worktreep],
                            help="change the URL or type of a source; without options: show it",
@@ -7819,7 +7820,7 @@ def run(argv):
     a.add_argument("name", nargs="?", metavar="NAME", help="key of the [source]")
     a.add_argument("--url", metavar="URL", help="another URL, e.g. after the project moved")
     g = a.add_mutually_exclusive_group()
-    g.add_argument("--type", choices=sorted(PLATFORMS), help="platform of the URL's host")
+    g.add_argument("--type", choices=sorted(PLATFORMS), metavar="|".join(sorted(PLATFORMS)), help="platform of the URL's host")
     g.add_argument("--no-type", action="store_true",
                    help="derive the platform from the host again")
     a.add_argument("--list", action="store_true",
@@ -7839,7 +7840,7 @@ def run(argv):
     a.add_argument("--pattern", metavar="PATTERN",
                    help="only the subdirectories (--flat: files) matching it, e.g. 'tool-*': "
                         "several sources can share a folder")
-    a.add_argument("--sort", choices=("date", "name"),
+    a.add_argument("--sort", choices=("date", "name"), metavar="date|name",
                    help="which release is newest: the one with the newest files (date, the "
                         "default) or the greatest name (e.g. rel20261022; compared character by "
                         "character)")
@@ -7847,12 +7848,13 @@ def run(argv):
     a.add_argument("--global", dest="glob", action="store_true",
                    help="in the global git config, for all repositories")
 
-    a = actions.add_parser("releases", parents=[colorp, remotep, releasesp],
+    a = actions.add_parser("releases", parents=[colorp, remotep],
                            help="list the releases of a source or project (and their assets)",
                            description="List the releases of a source or project, newest first (and their assets) - also outside a repository, with a URL.")
+    releases_options(a, "also list the assets, with their sizes (GitLab reports none)")
     a.add_argument("source", metavar="URL|SOURCE",
                    help=f"name of a [source] in {REGISTRY}, or URL (owner/repo: github.com)")
-    a.add_argument("--type", choices=sorted(PLATFORMS),
+    a.add_argument("--type", choices=sorted(PLATFORMS), metavar="|".join(sorted(PLATFORMS)),
                    help="platform of the URL's host (default: derived from it)")
 
     p = sub.add_parser("filter", parents=[colorp],
@@ -7860,10 +7862,10 @@ def run(argv):
     actions = p.add_subparsers(dest="action", metavar="ACTION")
     a = actions.add_parser("show", parents=[colorp], help="the steps of a filter",
                            description="Show the steps of a filter.")
-    a.add_argument("name", metavar="NAME")
+    a.add_argument("name", metavar="NAME", help="name of the filter")
     a = actions.add_parser("add", parents=[colorp, filterp, worktreep],
                            help="define a new filter with the steps given (in this order)")
-    a.add_argument("name", metavar="NAME")
+    a.add_argument("name", metavar="NAME", help="name of the new filter")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("set", parents=[colorp, filterp, worktreep],
                            help="replace the steps of a filter (in the order given); "
@@ -7871,14 +7873,14 @@ def run(argv):
                            description="Replace the steps of a filter (in the order given). "
                                        "Without steps: show it as the filter set command "
                                        "that gives it.")
-    a.add_argument("name", nargs="?", metavar="NAME")
+    a.add_argument("name", nargs="?", metavar="NAME", help="name of the filter")
     a.add_argument("--list", action="store_true",
                    help="show all filters as filter set commands, one per line")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("test", parents=[colorp, remotep],
                            help="apply a filter to local files or to the assets of a release, "
                                 "and list or write the result (nothing else changes)")
-    a.add_argument("name", metavar="NAME")
+    a.add_argument("name", metavar="NAME", help="name of the filter")
     a.add_argument("files", nargs="*", metavar="FILE",
                    help="input files, as if they were the assets (a directory: its files)")
     a.add_argument("--source", metavar="URL|SOURCE",
@@ -7886,7 +7888,7 @@ def run(argv):
                         "--release: another, as for add)")
     a.add_argument("--release", metavar="TAG|PATTERN", help="with --source: as for add")
     a.add_argument("--prerelease", action="store_true", help="with --source: as for add")
-    a.add_argument("--type", choices=sorted(PLATFORMS), help="with --source: as for add")
+    a.add_argument("--type", choices=sorted(PLATFORMS), metavar="|".join(sorted(PLATFORMS)), help="with --source: as for add")
     a.add_argument("--asset", metavar="PATTERN", action="append",
                    help="with --source: only the assets matching the pattern (repeat for "
                         "more; default: all)")
@@ -7898,11 +7900,11 @@ def run(argv):
                    help="write the result to DIR (new or empty) instead of listing it")
     a = actions.add_parser("rename", parents=[colorp, worktreep],
                            help="rename a filter and the steps using it")
-    a.add_argument("name", metavar="OLD")
-    a.add_argument("value", metavar="NEW")
+    a.add_argument("name", metavar="OLD", help="name of the filter")
+    a.add_argument("value", metavar="NEW", help="its new name")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("remove", parents=[colorp, worktreep], help="remove an unused filter")
-    a.add_argument("name", metavar="NAME")
+    a.add_argument("name", metavar="NAME", help="name of the filter")
     a.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     a = actions.add_parser("trust", parents=[colorp],
                            help="list the filters that run commands; trust them in this repository")
@@ -7946,8 +7948,8 @@ def run(argv):
     # what the installed hooks run - not in the list (hooks is for people)
     p = sub.add_parser("hook", parents=[colorp], help=argparse.SUPPRESS,
                        description="Run the checks of an installed hook (called by the hooks).")
-    p.add_argument("name", choices=list(HOOKS))
-    p.add_argument("hook_args", nargs=argparse.REMAINDER, help="the hook's arguments")
+    p.add_argument("name", choices=list(HOOKS), metavar="|".join(HOOKS), help="the hook")
+    p.add_argument("hook_args", nargs=argparse.REMAINDER, metavar="ARG", help="the hook's arguments")
     describe_commands(ap)
     sub.help = argparse.SUPPRESS      # the grouped list (MainParser) instead of argparse's
 
