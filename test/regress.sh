@@ -1857,6 +1857,14 @@ check "releases: no entries" "$(git assetsync releases)" "no synced files (.git-
 cd "$T/r17"
 check "releases: GitLab, upcoming" "$(asd source releases https://gitlab.com/grp/proj --max-count 2 | oneline)" \
   "v3  2026-10-30  (upcoming) v2  2026-10-11  (latest) (1 more: --all lists them) "
+# -v: the description in full (no HTML comments, no repeated blank lines), then the assets
+long=$(printf 'x%.0s' $(seq 100))
+printf '<!-- template -->\r\n## Changes\r\n\r\n\r\n* %s\r\n\r\n' "$long" > "$F/vn-notes.md"
+release --notes "$F/vn-notes.md" acme/vn v1 10 "$F/small.bin"
+release acme/vn v2 11 "$F/small.bin"
+check "source releases -v: the description in full, then the assets" \
+  "$(asd source releases acme/vn -v --assets)" \
+  "$(printf 'v2  2026-10-11  (latest)\n    small.bin  3 bytes\nv1  2026-10-10\n    ## Changes\n\n    * %s\n    small.bin  3 bytes' "$long")"
 check "releases: none" "$(asd source releases https://gitlab.com/grp/empty)" "no releases in grp/empty"
 check "releases: unknown project" "$(asd source releases acme/nothing 2>&1)" "error: repository acme/nothing not found (or no access)"
 
@@ -3110,6 +3118,9 @@ check "skipped: listed (pattern, no prerelease)" "$(git log -1 --format=%B | gre
 check "skipped: their notes too, newest first" \
   "$(git log -1 --format=%B | grep -E '^(Release notes|  Notes)' | oneline)" \
   "Release notes v4 (2026-10-14):   Notes of v4. Release notes v2 (2026-10-12):   Notes of v2. "
+check "releases PATH -v: the descriptions of those it may take" \
+  "$(git assetsync releases s.txt -v --max-count 1 | oneline)" \
+  "s.txt: newest release matching v* of acme/sk v4  2026-10-14  (latest, selected by s.txt)     Notes of v4. (2 more: --all lists them) "
 check "going back: reverted, no notes" "$(pullcm --release v1 s.txt >/dev/null 2>&1; git log -1 --format=%B | grep -cE '^Reverted: v4 \(2026-10-14\), v2 \(2026-10-12\)$|^Release notes|Notes of')" "1"
 quiet git -c assetsync.notesTotalLines=1 assetsync pull s.txt; commitp
 check "notesTotalLines: the rest only linked" "$(git log -1 --format=%B | grep -E '^(Release notes|  Notes|\[\.\.\.)' | oneline)" \

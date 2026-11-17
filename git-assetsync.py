@@ -285,6 +285,7 @@ Advanced commands - change entries, sources and filters; set up:
     releases [PATH...]          per entry (default: all) the releases its
                                 release selection lets it take, newest
                                 first, marked as by source releases
+        -v, --verbose           also the description of each release, in full
         --assets                also the assets the entry takes
         --max-count N, --all    the newest N releases (default 10), or all
 
@@ -332,6 +333,7 @@ Advanced commands - change entries, sources and filters; set up:
                                 latest, prerelease (GitLab: upcoming), draft,
                                 selected by which entries; also outside a
                                 repository (with a URL)
+        -v, --verbose           also the description of each release, in full
         --assets                also list the assets, with their sizes
         --max-count N, --all    the newest N releases (default 10; the last
                                 line says how many more), or all
@@ -4921,21 +4923,29 @@ def releases_between(st):
     return "Reverted", sorted(reverted, key=lambda r: r.order, reverse=True)
 
 
-def notes_lines(notes, max_lines=NOTES_LINES, more_hint="[... see the release page for more]"):
-    """Release notes shortened for a commit message: HTML comments (left
-    over from templates) and repeated blank lines dropped, at most
-    NOTES_LINES lines of NOTES_WIDTH characters. Indented, so that lines
-    like Markdown headings ('## Changes') don't look like comments to `git
-    commit`, which would strip them when the editor opens."""
+def clean_notes(notes):
+    """The lines of release notes without HTML comments (left over from
+    templates), repeated blank lines and trailing blanks."""
     text = notes.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     lines = []
     for line in text.split("\n"):
         line = line.rstrip()
         if line or (lines and lines[-1]):
-            lines.append(line if len(line) <= NOTES_WIDTH else line[:NOTES_WIDTH - 5] + "[...]")
+            lines.append(line)
     while lines and not lines[-1]:
         lines.pop()
+    return lines
+
+
+def notes_lines(notes, max_lines=NOTES_LINES, more_hint="[... see the release page for more]"):
+    """Release notes shortened for a commit message: HTML comments (left
+    over from templates) and repeated blank lines dropped, at most
+    NOTES_LINES lines of NOTES_WIDTH characters. Indented, so that lines
+    like Markdown headings ('## Changes') don't look like comments to `git
+    commit`, which would strip them when the editor opens."""
+    lines = [line if len(line) <= NOTES_WIDTH else line[:NOTES_WIDTH - 5] + "[...]"
+             for line in clean_notes(notes)]
     more = len(lines) > max_lines
     lines = lines[:max_lines]
     while lines and not lines[-1]:
@@ -6508,8 +6518,8 @@ def selected_by(ctx, reg, url, warned):
 def show_releases(origin, rels, complete, args, selected, entry=None):
     """Print releases newest first (at most --max-count, then how many
     more if complete says the count is known), marked, selected by whom
-    (see selected_by()); with --assets their assets - those entry takes,
-    with an entry."""
+    (see selected_by()); with -v their descriptions, with --assets their
+    assets - those entry takes, with an entry."""
     rels = sorted(rels, key=lambda r: r.order, reverse=True)
     more = 0 if args.all else len(rels) - args.max_count
     if more > 0:
@@ -6531,6 +6541,9 @@ def show_releases(origin, rels, complete, args, selected, entry=None):
         line = f"{paint(f'{r.tag:<{width}}', 'yellow')}  {r.date[:10] or '-':<10}  {title}"
         print(line.rstrip() + (f"  {paint('(' + ', '.join(flags) + ')', 'cyan')}"
                                if flags else ""))
+        if args.verbose:
+            for note in clean_notes(r.notes):
+                print(f"    {note}".rstrip())
         if args.assets:
             assets = r.assets
             if entry:
@@ -7545,6 +7558,8 @@ def run(argv):
     worktreep.add_argument("-W", "--worktree", action="store_true",
                            help=f"change {REGISTRY} in the working tree only, nothing staged")
     releasesp = argparse.ArgumentParser(add_help=False)     # releases, source releases
+    releasesp.add_argument("-v", "--verbose", action="store_true",
+                           help="also the description of each release, in full")
     releasesp.add_argument("--assets", action="store_true",
                            help="also list the assets (of an entry: those it takes)")
     g = releasesp.add_mutually_exclusive_group()

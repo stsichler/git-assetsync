@@ -703,7 +703,7 @@ git assetsync set third_party/zlib --filter zlib-all
 ### `releases`
 
 ```
-git assetsync releases [PATH…] [--assets] [--max-count N | --all] [--remote]
+git assetsync releases [PATH…] [-v] [--assets] [--max-count N | --all] [--remote]
                        [--color[=WHEN] | --no-color]
 ```
 
@@ -725,6 +725,7 @@ tool-1.0  2026-09-02  Tool 1.0
 
 | Option | Meaning |
 |---|---|
+| `-v`, `--verbose` | also the description of each release, in full |
 | `--assets` | also list the assets the entry takes |
 | `--max-count N` | the newest N releases (default: 10) |
 | `--all` | all releases |
@@ -857,7 +858,7 @@ git assetsync source map acme/tool --unset                # remove it again
 ### `source releases`
 
 ```
-git assetsync source releases URL|SOURCE [--assets] [--max-count N | --all] [--type github|gitlab] [--remote]
+git assetsync source releases URL|SOURCE [-v] [--assets] [--max-count N | --all] [--type github|gitlab] [--remote]
                               [--color[=WHEN] | --no-color]
 ```
 
@@ -880,6 +881,7 @@ v1.1-rc1  2026-10-04  Tool 1.1 RC  (prerelease)
 
 | Option | Meaning |
 |---|---|
+| `-v`, `--verbose` | also the description of each release, in full |
 | `--assets` | also list the assets, with their sizes (GitLab reports none) |
 | `--max-count N` | the newest N releases (default: 10) |
 | `--all` | all releases |
