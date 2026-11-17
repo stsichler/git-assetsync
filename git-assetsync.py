@@ -7957,7 +7957,18 @@ def run(argv):
     if argv and argv[0] in ("diff", "difftool") and "--" in argv:
         i = argv.index("--")
         argv, extra = argv[:i], argv[i + 1:]
-    args = ap.parse_args(argv)
+    # argparse (3.14+) colors only on a terminal: decided here instead, like
+    # for all other output (--color=always also in a pipe); as git-filesync
+    saved = os.environ.get("PYTHON_COLORS")
+    if color:
+        os.environ["PYTHON_COLORS"] = "1" if color["color"] else "0"
+    try:
+        args = ap.parse_args(argv)
+    finally:
+        if color:
+            os.environ.pop("PYTHON_COLORS", None)
+            if saved is not None:
+                os.environ["PYTHON_COLORS"] = saved
     if not args.cmd:
         args = ap.parse_args(["status"])
     args.extra = extra
