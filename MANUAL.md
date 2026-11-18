@@ -1576,7 +1576,7 @@ jobs:
 ```
 
 To pin a version, download
-`https://github.com/stsichler/git-assetsync/releases/download/v0.30.1/git-assetsync.py`
+`https://github.com/stsichler/git-assetsync/releases/download/v0.31.0/git-assetsync.py`
 instead. `gh` is preinstalled on GitHub's runners; for sources in other
 private repositories use a token with read access. For private GitLab
 sources give `GITLAB_TOKEN` (`glab` isn't needed).
