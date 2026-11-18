@@ -1459,7 +1459,8 @@ only as authenticated HTTP clients: `gh api` ([GitHub
 CLI](https://cli.github.com)) and `glab api` ([GitLab
 CLI](https://gitlab.com/gitlab-org/cli)). So it works with whatever they
 are logged in to – `gh auth login` / `glab auth login`, or `GH_TOKEN` /
-`GITLAB_TOKEN` (e.g. in CI); public GitLab projects need no login. For
+`GITLAB_TOKEN` (e.g. in CI); public GitLab projects need no login, `gh`
+always needs one (read access is enough). For
 GitHub Enterprise or a self-managed GitLab, log in to that host
 (`--hostname HOST`); the host is always passed on, so `GH_HOST` doesn't
 redirect requests. Only the tool for the platforms you use is needed.
@@ -1629,3 +1630,16 @@ directory, so it works from any subdirectory. `status` shows a new release
 of git-assetsync as `pending`, and `git assetsync pull
 tools/git-assetsync.py` takes it. The same works for
 [git-filesync](https://github.com/stsichler/git-filesync).
+
+Or ship it with git-filesync, which takes the file from the tags of this
+repository with git alone – no `gh` and no login needed:
+
+```sh
+mkdir -p tools
+git filesync add https://github.com/stsichler/git-assetsync.git tools/git-assetsync.py \
+    -p git-assetsync.py --tag 'v*'
+git config alias.assetsync '!python3 tools/git-assetsync.py'     # each clone, once (Windows: !py …)
+git commit
+```
+
+`git filesync pull tools/git-assetsync.py` then takes a new version.
