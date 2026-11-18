@@ -1466,11 +1466,13 @@ GitHub Enterprise or a self-managed GitLab, log in to that host
 redirect requests.
 
 Without the tool, git-assetsync asks the API directly, with a token from
-the variables the tool would read: `GH_TOKEN` / `GITHUB_TOKEN` (GitHub
-Enterprise: `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN`),
-`GITLAB_TOKEN` / `GITLAB_ACCESS_TOKEN`. Without a token it reaches public
-projects only, and GitHub allows 60 requests per hour. A proxy is taken
-from `HTTPS_PROXY`.
+the variables the tool would read: `GH_TOKEN` / `GITHUB_TOKEN` for
+github.com, `GITLAB_TOKEN` / `GITLAB_ACCESS_TOKEN` for gitlab.com. Other
+hosts get a token only when named: `GH_ENTERPRISE_TOKEN` /
+`GITHUB_ENTERPRISE_TOKEN` for the host in `GH_HOST`, the GitLab token for
+the host in `GITLAB_HOST` – so a `.git-assetsync` can't send it elsewhere.
+Without a token it reaches public projects only, and GitHub allows 60
+requests per hour. A proxy is taken from `HTTPS_PROXY`.
 
 On GitHub, assets are downloaded through their API URL. On GitLab, the
 assets of a release are its **links** (not the generated source
@@ -1639,7 +1641,7 @@ tools/git-assetsync.py` takes it. The same works for
 [git-filesync](https://github.com/stsichler/git-filesync).
 
 Or ship it with git-filesync, which takes the file from the tags of this
-repository with git alone – no `gh` and no login needed:
+repository:
 
 ```sh
 mkdir -p tools

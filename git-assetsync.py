@@ -448,9 +448,10 @@ GitHub is accessed through the GitHub CLI (`gh api`, logged in with `gh
 auth login` or GH_TOKEN), GitLab through the GitLab CLI (`glab api`,
 `glab auth login` or GITLAB_TOKEN); ASSETSYNC_GH / ASSETSYNC_GLAB set
 other commands for them. Without the CLI, the API is asked directly,
-with GH_TOKEN / GITHUB_TOKEN (Enterprise: GH_ENTERPRISE_TOKEN /
-GITHUB_ENTERPRISE_TOKEN), GITLAB_TOKEN / GITLAB_ACCESS_TOKEN, or without
-a token (public projects only).
+with GH_TOKEN / GITHUB_TOKEN (github.com), GITLAB_TOKEN /
+GITLAB_ACCESS_TOKEN (gitlab.com; other hosts: GH_ENTERPRISE_TOKEN for
+GH_HOST, the GitLab token for GITLAB_HOST), or without a token (public
+projects only).
 
 Requires Python >= 3.8 and Git >= 2.28 (git-lfs for LFS files, 7-Zip for
 7z archives).
@@ -811,6 +812,12 @@ class Release:
     sort_key: str = ""        # a local folder sorted by name: the tag
     commit: str = ""          # commit of the tag, if the answer has it (GitLab)
 
+    def __post_init__(self):
+        # text of others, shown on terminals: no control characters (escape
+        # sequences), line breaks and tabs stay
+        self.title = re.sub(r"[\x00-\x1f\x7f-\x9f]", "?", self.title)
+        self.notes = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "?", self.notes)
+
     @property
     def order(self):
         """What decides which release is newer: its date, or its name."""
@@ -823,16 +830,25 @@ class NotFound(FsError):
 
 def cli_command(var, default):
     """A platform CLI command: the environment variable var (split like a
-    shell would, e.g. 'python3 fake_gh.py' for tests) or default - None if
-    it isn't installed (then the API is asked directly)."""
-    cmd = shlex.split(os.environ.get(var, "")) or [default]
-    return cmd if shutil.which(cmd[0]) else None
+    shell would, e.g. 'python3 fake_gh.py' for tests), else default if it
+    is installed - else None: the API is asked directly."""
+    if os.environ.get(TEST_API):
+        return None
+    cmd = shlex.split(os.environ.get(var, ""))
+    return cmd or ([default] if shutil.which(default) else None)
 
 
-# tests: without the CLI, ask $ASSETSYNC_TEST_API/<API URL without https://>
+# tests: ask $ASSETSYNC_TEST_API/<API URL without https://>, never the CLI
 TEST_API = "ASSETSYNC_TEST_API"
 
 
+def env_host(var):
+    """The host an environment variable names (a host or a URL), lowercase."""
+    value = os.environ.get(var, "").strip()
+    return (urlparse(value if "://" in value else "//" + value).hostname or "") if value else ""
+
+
+@functools.lru_cache(maxsize=None)
 def http_opener():
     """urllib opener whose redirects keep the login only to the same
     scheme and host (GitHub redirects downloads to its storage)."""
@@ -849,6 +865,31 @@ def http_opener():
     return urllib.request.build_opener(Redirect)
 
 
+def http_get(url, what, headers=(), dest=None):
+    """GET url (headers: (name, value) pairs): the body, or with dest (an
+    open file) written into it. HTTPError is passed on; other failures
+    (network, connection lost) raise FsError '<what> failed: ...'."""
+    import http.client
+    from urllib.error import HTTPError, URLError    # here: slow to import
+    from urllib.request import Request
+    req = Request(url, headers={"User-Agent": f"git-assetsync/{__version__}"})
+    for name, value in headers:
+        req.add_header(name, value)
+    try:
+        with http_opener().open(req, timeout=60) as r:
+            if dest is None:
+                return r.read()
+            shutil.copyfileobj(r, dest, 1 << 20)
+            return b""
+    except HTTPError:
+        raise
+    except (URLError, OSError, http.client.HTTPException) as e:
+        reason = str(getattr(e, "reason", None) or e) or type(e).__name__
+        hint = " (Python without CA certificates? On macOS run its 'Install " \
+               "Certificates.command')" if "CERTIFICATE_VERIFY_FAILED" in reason else ""
+        raise FsError(f"{what} failed: {reason}{hint}")
+
+
 class Platform:
     """Releases of a project on a hosting platform. The platform's CLI (`gh
     api`, `glab api`) serves only as an authenticated HTTP client - it
@@ -860,7 +901,6 @@ class Platform:
 
     PER_PAGE = 100
     CLI = CLI_VAR = CLI_NAME = CLI_URL = KIND = ""
-    TOKEN_VARS = ()           # the token variables of the CLI, see token_vars()
     SOURCE_FORMATS = ()       # formats of the source code archives
     # API paths, and a release from the API's answer: given by the subclasses
     project_path = list_path = latest_path = property(lambda self: "")
@@ -894,8 +934,14 @@ class Platform:
         raise NotImplementedError
 
     def token_vars(self):
-        """The variables the CLI takes a token from for this host."""
-        return self.TOKEN_VARS
+        """The variables a token is taken from for this host, as the CLI
+        does - only for its default host, or the one its host variable
+        names: a token must not go to any host a registry names."""
+        raise NotImplementedError
+
+    def token_hint(self):
+        """What to set for a token for this host, for messages."""
+        raise NotImplementedError
 
     def token(self):
         """(variable, token) for asking without the CLI; (None, None)
@@ -928,7 +974,9 @@ class Platform:
             p = subprocess.run(self.cli + args + [path], stdout=stdout or subprocess.PIPE,
                                stderr=subprocess.PIPE, env=clean_env())
         except OSError as e:
-            raise FsError(f"cannot run the {self.CLI_NAME} '{self.cli[0]}' ({e.strerror})")
+            raise FsError(f"cannot run the {self.CLI_NAME} '{self.cli[0]}' ({e.strerror})"
+                          + (f" - fix or unset {self.CLI_VAR}" if os.environ.get(self.CLI_VAR)
+                             else ""))
         if p.returncode:
             err = p.stderr.decode("utf-8", "replace").strip()
             if re.search(r"\bHTTP 404\b", err):
@@ -939,21 +987,13 @@ class Platform:
 
     def http_api(self, path, headers, stdout):
         """api() without the CLI: urllib, with a token if there is one."""
-        from urllib.error import HTTPError, URLError    # here: slow to import
-        from urllib.request import Request
-        req = Request(self.url(path), headers={"User-Agent": f"git-assetsync/{__version__}"})
-        for h in headers:
-            name, _, value = h.partition(":")
-            req.add_header(name.strip(), value.strip())
+        from urllib.error import HTTPError                # here: slow to import
+        pairs = [tuple(x.strip() for x in h.split(":", 1)) for h in headers]
         var, token = self.token()
         if token:
-            req.add_header(*self.auth_header(token))
+            pairs.append(self.auth_header(token))
         try:
-            with http_opener().open(req, timeout=60) as r:
-                if not stdout:
-                    return r.read()
-                shutil.copyfileobj(r, stdout, 1 << 20)
-                return b""
+            return http_get(self.url(path), f"{self.label}: {self.shown(path)}", pairs, stdout)
         except HTTPError as e:
             if e.code == 404:
                 raise NotFound(f"HTTP 404 ({self.shown(path)})")
@@ -963,16 +1003,11 @@ class Platform:
                 what = "rate limit" if limited else "no access"
                 if not var:
                     hint = f" ({what} - install the {self.CLI_NAME} ({self.CLI_URL}) and log " \
-                           f"in, or set {self.token_vars()[0]})"
+                           f"in, or set {self.token_hint()})"
                 else:
                     hint = f" (is {var} valid?)" if e.code == 401 else f" ({what})"
             raise FsError(f"{self.label}: {self.shown(path)} failed: HTTP {e.code} {e.reason}"
                           + hint)
-        except (URLError, OSError) as e:
-            reason = getattr(e, "reason", e)
-            hint = " (Python without CA certificates? On macOS run its 'Install " \
-                   "Certificates.command')" if "CERTIFICATE_VERIFY_FAILED" in str(reason) else ""
-            raise FsError(f"{self.label}: {self.shown(path)} failed: {reason}{hint}")
 
     def json(self, path):
         """The answer to a GET request - asked once per run: release lists
@@ -991,7 +1026,7 @@ class Platform:
 
     def not_found(self):
         hint = "" if self.cli or self.token()[1] else \
-            f" - without the {self.CLI_NAME}, set {self.token_vars()[0]}"
+            f" - without the {self.CLI_NAME}, set {self.token_hint()}"
         return FsError(f"{self.KIND} {self.label} not found (or no access{hint})")
 
     def check_project(self):
@@ -1087,9 +1122,14 @@ class GitHub(Platform):
     def api_url(self):
         return f"https://api.{self.host}/" if self.cloud() else f"https://{self.host}/api/v3/"
 
-    def token_vars(self):       # as gh: only these, for github.com
-        return ("GH_TOKEN", "GITHUB_TOKEN") if self.cloud() else \
-            ("GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+    def token_vars(self):
+        if self.cloud():
+            return ("GH_TOKEN", "GITHUB_TOKEN")
+        return ("GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN") \
+            if self.host == env_host("GH_HOST") else ()
+
+    def token_hint(self):
+        return "GH_TOKEN" if self.cloud() else f"GH_ENTERPRISE_TOKEN and GH_HOST={self.host}"
 
     def auth_header(self, token):
         return "Authorization", f"Bearer {token}"
@@ -1143,10 +1183,17 @@ class GitLab(Platform):
     CLI, CLI_VAR, CLI_NAME, CLI_URL, KIND = \
         "glab", "ASSETSYNC_GLAB", "GitLab CLI", "https://gitlab.com/gitlab-org/cli", "project"
     SOURCE_FORMATS = ("zip", "tar.gz", "tar.bz2", "tar")
-    TOKEN_VARS = ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN")    # as glab: for each host
 
     def api_url(self):
         return f"https://{self.host}/api/v4/"
+
+    def token_vars(self):
+        return ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN") \
+            if self.host in ("gitlab.com", env_host("GITLAB_HOST"), env_host("GL_HOST")) else ()
+
+    def token_hint(self):
+        return "GITLAB_TOKEN" + ("" if self.host == "gitlab.com" else
+                                 f" and GITLAB_HOST={self.host}")
 
     def auth_header(self, token):
         return "Private-Token", token
@@ -1216,22 +1263,21 @@ class GitLab(Platform):
 
 def http_download(url, dest, what):
     """Plain download of a URL elsewhere (no login: public files only)."""
-    from urllib.error import HTTPError, URLError    # here: slow to import
-    from urllib.request import urlopen
+    from urllib.error import HTTPError                # here: slow to import
     scheme = urlparse(url).scheme
     if scheme not in ("https", "http"):
         raise FsError(f"{what}: cannot download '{url}'")
     if scheme == "http":
         warn(f"{what}: downloading over unencrypted http ({url})")
     try:
-        with urlopen(url, timeout=60) as r, open(dest, "wb") as f:
-            shutil.copyfileobj(r, f, 1 << 20)
+        with open(dest, "wb") as f:
+            http_get(url, f"{what}: download of {url}", dest=f)
     except HTTPError as e:
         raise FsError(f"{what}: download of {url} failed: HTTP {e.code} (only links to API "
                       "URLs, job artifacts and uploads of the project are downloaded with "
                       "your login)")
-    except (URLError, OSError) as e:
-        raise FsError(f"{what}: download of {url} failed: {getattr(e, 'reason', e)}")
+    except OSError as e:
+        raise FsError(f"{what}: download of {url} failed: {e}")
 
 
 class LocalAsset(Asset):
@@ -5607,8 +5653,10 @@ def too_many_assets(entry, assets):
     downloading; else None."""
     if entry.is_dir or entry.steps or len(assets) < 2:
         return None
+    only = "; only the source code archive: --no-asset" \
+        if any(isinstance(a, SourceArchive) for a in assets) else ""
     return (f"{len(assets)} assets ({', '.join(a.name for a in assets)}), a file needs exactly "
-            "one - narrow them with --asset / --exclude-asset (add, set), or give a filter")
+            f"one - narrow them with --asset / --exclude-asset (add, set{only}), or give a filter")
 
 
 def pull_done(repo, reg, job, base):
@@ -6324,8 +6372,10 @@ def cmd_set(ctx, repo, args):
             if (e.sourcecode or None) != args.sourcecode:
                 print(f"{would}{e.shown}: source code {e.sourcecode or '(none)'} -> "
                       f"{args.sourcecode or '(none)'}")
-                if "asset" not in patterns:       # its assets as before, also when
-                    e.set("asset", shlex.join(e.asset) or None)   # read as '*'
+                # its assets written (as given, or as before - also when read
+                # as '*'): with sourcecode, no asset would mean none
+                assets = patterns["asset"] if "asset" in patterns else e.asset
+                e.set("asset", shlex.join(assets) or None)
                 e.set("sourcecode", args.sourcecode)
                 e.set("synced", None)
                 changed = True
@@ -6585,7 +6635,7 @@ def cmd_releases(ctx, repo, args):
     if args.release:
         rels = [r for r in rels if fnmatch.fnmatchcase(r.tag, args.release)]
     # first: the selections may list all releases, then their count is known
-    selected = selected_by(ctx, reg, url, set()) if rels else {}
+    selected = selected_by(ctx, reg, url, set()) if rels and (args.all or args.max_count) else {}
     complete = origin.listed is not None
     show_releases(origin, rels if args.release or not complete else origin.listed, complete,
                   args, selected)
@@ -6608,7 +6658,7 @@ def cmd_entry_releases(ctx, repo, args):
             rule, pre = e.spec.get("release"), is_true(e.spec.get("prerelease"))
             rels = [r for r in [origin.by_tag(rule)] if r] if rule and not is_pattern(rule) \
                 else [r for r in origin.releases() if may_take(r, rule, pre)]
-            if rels and norm_url(e.url) not in selected:
+            if rels and (args.all or args.max_count) and norm_url(e.url) not in selected:
                 selected[norm_url(e.url)] = selected_by(ctx, reg, e.url, warned)
             show_releases(origin, rels, True, args, selected.get(norm_url(e.url), {}), e)
         except FsError as err:

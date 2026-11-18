@@ -1868,6 +1868,8 @@ check "releases --max-count 0: none, as git log -n 0" "$(git assetsync releases 
   "a.bin: latest release of acme/rl (3 more: --all lists them) "
 check "source releases --max-count 0: none" "$(asd source releases acme/rl --max-count 0 | oneline)" \
   "(4 more: --all lists them) "
+reset_calls
+check "... the selections not asked" "$(asd source releases acme/rl --max-count 0 >/dev/null; calls)" "1"
 check "releases --max-count: from 0 on" "$(git assetsync releases --max-count -1 2>&1 | tail -1)" \
   "git assetsync releases: error: argument --max-count: not a number from 0 on: '-1'"
 check "source releases --max-count: from 0 on" "$(rc git assetsync source releases acme/rl --max-count x)" "2"
@@ -3882,7 +3884,7 @@ check "... pull takes it" "$(cat d/lib/a.c) $(st)" "two "
 addc acme/sarc both/ --sourcecode zip --asset '*'
 check "with --asset: both" "$(ls both | oneline)" "bin.txt sarc-v1.zip "
 check "without --asset: all assets too" "$(git assetsync add acme/sarc s.zip --sourcecode zip 2>&1)" \
-  "error: s.zip: 2 assets (bin.txt, sarc-v1.zip), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
+  "error: s.zip: 2 assets (bin.txt, sarc-v1.zip), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set; only the source code archive: --no-asset), or give a filter"
 check "file: one archive" "$(rc git assetsync add acme/sarc s.zip --sourcecode zip --no-asset)|$(head -c 2 s.zip)" "0|PK"
 release --src "$F/sc1" acme/snone v1 10
 check "release without assets: '*' with the archive, no error" \
@@ -3896,7 +3898,7 @@ git commit -qm s.zip
 check "releases --assets: the source code archive by name, no request" \
   "$(git assetsync releases s.zip --assets | sed -n 3p | awk '{print $1}') $(grep -c commits "$GH/calls.log")" "sarc-v1.zip 0"
 check "file: with --asset, no filter" "$(git assetsync add acme/sarc s2.zip --sourcecode zip --asset 'bin*' 2>&1)" \
-  "error: s2.zip: 2 assets (bin.txt, sarc-v1.zip), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set), or give a filter"
+  "error: s2.zip: 2 assets (bin.txt, sarc-v1.zip), a file needs exactly one - narrow them with --asset / --exclude-asset (add, set; only the source code archive: --no-asset), or give a filter"
 filt only-bin --include bin.txt
 addc acme/sarc s2.txt --sourcecode zip --asset 'bin*' --filter only-bin
 check "file: with --asset and a filter" "$(cat s2.txt)|$(reg file.s2.txt.asset)" "$(cat "$F/bin.txt")|'bin*'"
@@ -3923,6 +3925,12 @@ check "... pull" "$(ls both | oneline)" "bin.txt sarc-v2.zip "
 git config -f .git-assetsync --unset dir.both.asset
 check "set --sourcecode, no asset key (read as '*'): '*' written" \
   "$(git assetsync set both --sourcecode zip >/dev/null; reg dir.both.asset)" "'*'"
+git reset -q --hard; git config -f .git-assetsync --unset dir.both.asset
+check "... with --asset '*' too" \
+  "$(git assetsync set both --sourcecode zip --asset '*' >/dev/null; reg dir.both.asset)" "'*'"
+git reset -q --hard; git config -f .git-assetsync --unset dir.both.asset
+check "... with --no-asset: none" \
+  "$(git assetsync set both --sourcecode zip --no-asset >/dev/null; reg dir.both.asset; echo "[$(reg dir.both.sourcecode)]")" "[zip]"
 git reset -q --hard
 check "filter test with --sourcecode" "$(git assetsync filter test unpack --source acme/sarc --sourcecode zip --no-asset 2>/dev/null | sed 's/^ *[0-9]* bytes  //' | oneline)" \
   "README lib/a.c "
@@ -4109,11 +4117,10 @@ check "source code, exclude-asset: not shown" \
 # =============================================================================
 section "43. Without gh / glab: the APIs directly (urllib)"
 # =============================================================================
-# a CLI that isn't installed: the API directly - here http_server.py, which
+# without the CLI, the API directly - here (ASSETSYNC_TEST_API) http_server.py, which
 # answers with fake_gh.py / fake_glab.py (they log to calls.log too) and logs
 # each request to http.log ("PATH auth=TOKEN")
-direct() { ASSETSYNC_GH=/nonexistent/gh ASSETSYNC_GLAB=/nonexistent/glab \
-  ASSETSYNC_TEST_API=$FAKE_HTTP/api "$@"; }
+direct() { ASSETSYNC_TEST_API=$FAKE_HTTP/api "$@"; }
 hlog() { grep -c "$1" "$GH/http.log"; }
 mkdir -p "$F/sc43/lib"; printf 'src\n' > "$F/sc43/lib/a.c"
 asset d1.txt "direct 1"; asset d2.txt "direct 2"
@@ -4153,7 +4160,7 @@ check "rate limit, anonymous" "$(direct asd add -n acme/direct x.txt --asset d1.
 check "rate limit, with a token" "$(GH_TOKEN=t1 direct asd add -n acme/direct x.txt --asset d1.txt 2>&1)" \
   "error: acme/direct: GET $FAKE_HTTP/api/api.github.com/repos/acme/direct/releases/latest failed: HTTP 403 Forbidden (rate limit)"
 rm "$GH/ratelimit"
-check "no connection" "$(ASSETSYNC_GH=/nonexistent/gh ASSETSYNC_TEST_API=http://127.0.0.1:1/api asd add -n acme/direct x.txt --asset d1.txt 2>&1 | sed 's/ failed: .*/ failed: .../')" \
+check "no connection" "$(ASSETSYNC_TEST_API=http://127.0.0.1:1/api asd add -n acme/direct x.txt --asset d1.txt 2>&1 | sed 's/ failed: .*/ failed: .../')" \
   "error: acme/direct: GET http://127.0.0.1:1/api/api.github.com/repos/acme/direct/releases/latest failed: ..."
 # GitHub Enterprise: /api/v3, its own token variables
 asset e43.txt "enterprise 43"; release --host ghe.example.com acme/ent43 v1 10 "$F/e43.txt"
@@ -4163,7 +4170,12 @@ check "GitHub Enterprise: the asset" "$(cat e43.txt 2>/dev/null)" "enterprise 43
 check "... /api/v3, GH_TOKEN not sent" "$(hlog '^/api/ghe.example.com/api/v3/repos/acme/ent43/releases/latest auth=-$')" "1"
 git reset -q --hard; : > "$GH/http.log"
 GH_ENTERPRISE_TOKEN=e1 direct quiet asd add -n https://ghe.example.com/acme/ent43 e43.txt --type github
-check "... GH_ENTERPRISE_TOKEN sent" "$(hlog 'releases/latest auth=e1$')" "1"
+check "... GH_ENTERPRISE_TOKEN: not without GH_HOST" "$(hlog 'releases/latest auth=-$')" "1"
+: > "$GH/http.log"
+GH_HOST=GHE.example.com GH_ENTERPRISE_TOKEN=e1 direct quiet asd add -n https://ghe.example.com/acme/ent43 e43.txt --type github
+check "... with GH_HOST: sent" "$(hlog 'releases/latest auth=e1$')" "1"
+check "... not found: the hint" "$(direct asd add https://ghe.example.com/acme/nothing x.txt --type github 2>&1)" \
+  "error: repository acme/nothing not found (or no access - without the GitHub CLI, set GH_ENTERPRISE_TOKEN and GH_HOST=ghe.example.com)"
 # GitLab: /api/v4, the token also through the redirect of permalink/latest
 # (the same host)
 asset g43.txt "gitlab 43"; release --host gitlab.com --src "$F/sc43" grp/direct v1 10 "$F/g43.txt"
@@ -4180,8 +4192,24 @@ check "GitLab: not found, anonymous" "$(direct asd add https://gitlab.com/grp/no
   "error: project grp/nothing not found (or no access - without the GitLab CLI, set GITLAB_TOKEN)"
 asset s43.txt "self-managed"; release --host git.example.org grp/sm v1 10 "$F/s43.txt"
 : > "$GH/http.log"
-direct quiet asd add https://git.example.org/grp/sm s43.txt --type gitlab
+GITLAB_TOKEN=g1 direct quiet asd add https://git.example.org/grp/sm s43.txt --type gitlab
 check "GitLab self-managed: /api/v4" "$(cat s43.txt 2>/dev/null) $(hlog '^/api/git.example.org/api/v4/projects/grp%2Fsm/')" "self-managed 3"
+check "... GITLAB_TOKEN: not without GITLAB_HOST" "$(hlog 'auth=g1$')" "0"
+git reset -q --hard; : > "$GH/http.log"
+GITLAB_HOST=https://git.example.org GITLAB_TOKEN=g1 direct quiet asd add -n https://git.example.org/grp/sm s43.txt --type gitlab
+check "... with GITLAB_HOST: sent" "$(hlog 'releases/permalink/latest auth=g1$')" "1"
+check "... not found: the hint" "$(direct asd add https://git.example.org/grp/nothing x.bin --type gitlab 2>&1)" \
+  "error: project grp/nothing not found (or no access - without the GitLab CLI, set GITLAB_TOKEN and GITLAB_HOST=git.example.org)"
+# a CLI set, but not there: an error, not asked without it
+check "gh missing" "$(ASSETSYNC_GH=/nonexistent/gh asd add acme/direct x.txt 2>&1 | sed 's/ (.*) / /')" \
+  "error: cannot run the GitHub CLI '/nonexistent/gh' - fix or unset ASSETSYNC_GH"
+check "glab missing" "$(ASSETSYNC_GLAB=/nonexistent/glab asd add https://gitlab.com/grp/direct x.bin 2>&1 | sed 's/ (.*) / /')" \
+  "error: cannot run the GitLab CLI '/nonexistent/glab' - fix or unset ASSETSYNC_GLAB"
+# text of others on the terminal: no control characters
+printf 'note \033[2J end\n' > "$F/esc.md"
+release --title 'T\u001b]0;x\u0007' --notes "$F/esc.md" acme/esc v1 10 "$F/d1.txt"
+check "releases -v: control characters replaced" "$(asd source releases acme/esc -v | oneline)" \
+  "v1  2026-10-10  T?]0;x?  (latest)     note ?[2J end "
 
 # =============================================================================
 echo
