@@ -1463,12 +1463,19 @@ are logged in to – `gh auth login` / `glab auth login`, or `GH_TOKEN` /
 always needs one (read access is enough). For
 GitHub Enterprise or a self-managed GitLab, log in to that host
 (`--hostname HOST`); the host is always passed on, so `GH_HOST` doesn't
-redirect requests. Only the tool for the platforms you use is needed.
+redirect requests.
+
+Without the tool, git-assetsync asks the API directly, with a token from
+the variables the tool would read: `GH_TOKEN` / `GITHUB_TOKEN` (GitHub
+Enterprise: `GH_ENTERPRISE_TOKEN` / `GITHUB_ENTERPRISE_TOKEN`),
+`GITLAB_TOKEN` / `GITLAB_ACCESS_TOKEN`. Without a token it reaches public
+projects only, and GitHub allows 60 requests per hour. A proxy is taken
+from `HTTPS_PROXY`.
 
 On GitHub, assets are downloaded through their API URL. On GitLab, the
 assets of a release are its **links** (not the generated source
 archives). Links on the project's host – the generic package registry,
-job artifacts, uploads – are downloaded through `glab api`, with your
+job artifacts, uploads – are downloaded through the API, with your
 login; links to other servers plainly, so they must be public (`http://`
 works, with a warning). GitLab releases with a future release date
 ("upcoming") count as prereleases; there are no drafts.
@@ -1569,8 +1576,8 @@ jobs:
 To pin a version, download
 `https://github.com/stsichler/git-assetsync/releases/download/v0.30.1/git-assetsync.py`
 instead. `gh` is preinstalled on GitHub's runners; for sources in other
-private repositories use a token with read access. For GitLab sources,
-install `glab` (and give `GITLAB_TOKEN` for private projects).
+private repositories use a token with read access. For private GitLab
+sources give `GITLAB_TOKEN` (`glab` isn't needed).
 
 ### Exit codes
 

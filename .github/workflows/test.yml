@@ -6,7 +6,8 @@ on:
   workflow_dispatch:
 
 # The tests need no network, gh or glab: test/fake_gh.py and test/fake_glab.py
-# play GitHub and GitLab, test/http_server.py other servers. 7-Zip (for 7z
+# play GitHub and GitLab, test/http_server.py other servers and the APIs
+# without the CLIs. 7-Zip (for 7z
 # archives) is installed where it is missing; Windows runners have it.
 jobs:
   regress:

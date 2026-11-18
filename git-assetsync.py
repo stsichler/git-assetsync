@@ -447,10 +447,13 @@ is recorded as `git add` stores it. Output is colored like git's
 GitHub is accessed through the GitHub CLI (`gh api`, logged in with `gh
 auth login` or GH_TOKEN), GitLab through the GitLab CLI (`glab api`,
 `glab auth login` or GITLAB_TOKEN); ASSETSYNC_GH / ASSETSYNC_GLAB set
-other commands for them.
+other commands for them. Without the CLI, the API is asked directly,
+with GH_TOKEN / GITHUB_TOKEN (Enterprise: GH_ENTERPRISE_TOKEN /
+GITHUB_ENTERPRISE_TOKEN), GITLAB_TOKEN / GITLAB_ACCESS_TOKEN, or without
+a token (public projects only).
 
-Requires Python >= 3.8, Git >= 2.28, and gh or glab (git-lfs for LFS
-files, 7-Zip for 7z archives).
+Requires Python >= 3.8 and Git >= 2.28 (git-lfs for LFS files, 7-Zip for
+7z archives).
 Works on Linux, macOS and Windows.
 Manual: https://github.com/stsichler/git-assetsync/blob/main/MANUAL.md
 """
@@ -820,20 +823,44 @@ class NotFound(FsError):
 
 def cli_command(var, default):
     """A platform CLI command: the environment variable var (split like a
-    shell would, e.g. 'python3 fake_gh.py' for tests) or default."""
-    cmd = os.environ.get(var, "").strip()
-    return shlex.split(cmd) if cmd else [default]
+    shell would, e.g. 'python3 fake_gh.py' for tests) or default - None if
+    it isn't installed (then the API is asked directly)."""
+    cmd = shlex.split(os.environ.get(var, "")) or [default]
+    return cmd if shutil.which(cmd[0]) else None
+
+
+# tests: without the CLI, ask $ASSETSYNC_TEST_API/<API URL without https://>
+TEST_API = "ASSETSYNC_TEST_API"
+
+
+def http_opener():
+    """urllib opener whose redirects keep the login only to the same
+    scheme and host (GitHub redirects downloads to its storage)."""
+    import urllib.request          # here: slow to import
+
+    class Redirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            new = super().redirect_request(req, fp, code, msg, headers, newurl)
+            if new and urlparse(newurl)[:2] != urlparse(req.full_url)[:2]:
+                for name in ("Authorization", "Private-token"):
+                    new.remove_header(name)
+            return new
+
+    return urllib.request.build_opener(Redirect)
 
 
 class Platform:
     """Releases of a project on a hosting platform. The platform's CLI (`gh
     api`, `glab api`) serves only as an authenticated HTTP client - it
     handles login, self-hosted instances and SSO; the REST semantics are
-    ours, so the CLI's own output formats don't matter. Subclasses give the
-    API paths and turn the answers into Releases."""
+    ours, so the CLI's own output formats don't matter. Without the CLI,
+    the API is asked directly (urllib), with a token from the variables the
+    CLI reads, or anonymously. Subclasses give the API paths and turn the
+    answers into Releases."""
 
     PER_PAGE = 100
     CLI = CLI_VAR = CLI_NAME = CLI_URL = KIND = ""
+    TOKEN_VARS = ()           # the token variables of the CLI, see token_vars()
     SOURCE_FORMATS = ()       # formats of the source code archives
     # API paths, and a release from the API's answer: given by the subclasses
     project_path = list_path = latest_path = property(lambda self: "")
@@ -858,30 +885,94 @@ class Platform:
         self.host, self.project, self.label = host, project, label
         self.answers = {}         # see json(): each asked once per run
         self.listed = None        # see releases(): all of them, once per run
+        self.cli = cli_command(self.CLI_VAR, self.CLI)
 
     where = property(lambda self: self.label)    # for messages
+
+    def api_url(self):
+        """Base URL of the REST API on the host (without the CLI)."""
+        raise NotImplementedError
+
+    def token_vars(self):
+        """The variables the CLI takes a token from for this host."""
+        return self.TOKEN_VARS
+
+    def token(self):
+        """(variable, token) for asking without the CLI; (None, None)
+        without one: anonymous."""
+        return next(((v, os.environ[v]) for v in self.token_vars() if os.environ.get(v)),
+                    (None, None))
+
+    def auth_header(self, token):
+        raise NotImplementedError
+
+    def shown(self, path):
+        """The request, for messages."""
+        return f"'{self.CLI} api {path}'" if self.cli else f"GET {self.url(path)}"
+
+    def url(self, path):
+        base = self.api_url()
+        test = os.environ.get(TEST_API)
+        return f"{test.rstrip('/')}/{base.split('://', 1)[1]}{path}" if test else base + path
 
     def api(self, path, headers=(), stdout=None):
         """Raw response of a GET request; NotFound for HTTP 404. The host is
         always given: the CLIs would otherwise take it from the environment
         (GH_HOST) or from the repository they run in."""
-        cli = cli_command(self.CLI_VAR, self.CLI)
+        if not self.cli:
+            return self.http_api(path, headers, stdout)
         args = ["api", "--hostname", self.host]
         for h in headers:
             args += ["-H", h]
         try:
-            p = subprocess.run(cli + args + [path], stdout=stdout or subprocess.PIPE,
+            p = subprocess.run(self.cli + args + [path], stdout=stdout or subprocess.PIPE,
                                stderr=subprocess.PIPE, env=clean_env())
         except OSError as e:
-            raise FsError(f"cannot run the {self.CLI_NAME} '{cli[0]}' ({e.strerror}) - install "
-                          f"it from {self.CLI_URL} and log in with '{self.CLI} auth login'")
+            raise FsError(f"cannot run the {self.CLI_NAME} '{self.cli[0]}' ({e.strerror})")
         if p.returncode:
             err = p.stderr.decode("utf-8", "replace").strip()
             if re.search(r"\bHTTP 404\b", err):
                 raise NotFound(err)
             last = err.splitlines()[-1] if err else f"exit code {p.returncode}"
-            raise FsError(f"{self.label}: '{self.CLI} api {path}' failed: {last}")
+            raise FsError(f"{self.label}: {self.shown(path)} failed: {last}")
         return p.stdout
+
+    def http_api(self, path, headers, stdout):
+        """api() without the CLI: urllib, with a token if there is one."""
+        from urllib.error import HTTPError, URLError    # here: slow to import
+        from urllib.request import Request
+        req = Request(self.url(path), headers={"User-Agent": f"git-assetsync/{__version__}"})
+        for h in headers:
+            name, _, value = h.partition(":")
+            req.add_header(name.strip(), value.strip())
+        var, token = self.token()
+        if token:
+            req.add_header(*self.auth_header(token))
+        try:
+            with http_opener().open(req, timeout=60) as r:
+                if not stdout:
+                    return r.read()
+                shutil.copyfileobj(r, stdout, 1 << 20)
+                return b""
+        except HTTPError as e:
+            if e.code == 404:
+                raise NotFound(f"HTTP 404 ({self.shown(path)})")
+            hint = ""
+            if e.code in (401, 403, 429):
+                limited = e.code == 429 or (e.headers or {}).get("X-RateLimit-Remaining") == "0"
+                what = "rate limit" if limited else "no access"
+                if not var:
+                    hint = f" ({what} - install the {self.CLI_NAME} ({self.CLI_URL}) and log " \
+                           f"in, or set {self.token_vars()[0]})"
+                else:
+                    hint = f" (is {var} valid?)" if e.code == 401 else f" ({what})"
+            raise FsError(f"{self.label}: {self.shown(path)} failed: HTTP {e.code} {e.reason}"
+                          + hint)
+        except (URLError, OSError) as e:
+            reason = getattr(e, "reason", e)
+            hint = " (Python without CA certificates? On macOS run its 'Install " \
+                   "Certificates.command')" if "CERTIFICATE_VERIFY_FAILED" in str(reason) else ""
+            raise FsError(f"{self.label}: {self.shown(path)} failed: {reason}{hint}")
 
     def json(self, path):
         """The answer to a GET request - asked once per run: release lists
@@ -893,13 +984,15 @@ class Platform:
             except NotFound as e:
                 self.answers[path] = e
             except ValueError as e:
-                raise FsError(f"{self.label}: unexpected answer to '{self.CLI} api {path}': {e}")
+                raise FsError(f"{self.label}: unexpected answer to {self.shown(path)}: {e}")
         if isinstance(self.answers[path], NotFound):
             raise self.answers[path]
         return self.answers[path]
 
     def not_found(self):
-        return FsError(f"{self.KIND} {self.label} not found (or no access)")
+        hint = "" if self.cli or self.token()[1] else \
+            f" - without the {self.CLI_NAME}, set {self.token_vars()[0]}"
+        return FsError(f"{self.KIND} {self.label} not found (or no access{hint})")
 
     def check_project(self):
         """Error if the project doesn't exist (or isn't accessible)."""
@@ -988,6 +1081,19 @@ class GitHub(Platform):
         "gh", "ASSETSYNC_GH", "GitHub CLI", "https://cli.github.com", "repository"
     SOURCE_FORMATS = ("zip", "tar.gz")
 
+    def cloud(self):
+        return self.host == "github.com" or self.host.endswith(".ghe.com")
+
+    def api_url(self):
+        return f"https://api.{self.host}/" if self.cloud() else f"https://{self.host}/api/v3/"
+
+    def token_vars(self):       # as gh: only these, for github.com
+        return ("GH_TOKEN", "GITHUB_TOKEN") if self.cloud() else \
+            ("GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+
+    def auth_header(self, token):
+        return "Authorization", f"Bearer {token}"
+
     project_path = property(lambda self: f"repos/{self.project}")
     list_path = property(lambda self: f"repos/{self.project}/releases")
     # marked as latest, or the newest that is neither a prerelease nor a draft
@@ -1037,6 +1143,13 @@ class GitLab(Platform):
     CLI, CLI_VAR, CLI_NAME, CLI_URL, KIND = \
         "glab", "ASSETSYNC_GLAB", "GitLab CLI", "https://gitlab.com/gitlab-org/cli", "project"
     SOURCE_FORMATS = ("zip", "tar.gz", "tar.bz2", "tar")
+    TOKEN_VARS = ("GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN")    # as glab: for each host
+
+    def api_url(self):
+        return f"https://{self.host}/api/v4/"
+
+    def auth_header(self, token):
+        return "Private-Token", token
 
     pid = property(lambda self: quote(self.project, safe=""))
     project_path = property(lambda self: f"projects/{self.pid}")
@@ -1068,9 +1181,9 @@ class GitLab(Platform):
         return f"projects/{self.pid}/repository/archive.{fmt}?sha={sha}"
 
     def api_path(self, url):
-        """API path for downloading a link on this host - with the login of
-        the CLI, as private projects need: API URLs (e.g. generic packages),
-        and job artifact and upload URLs, which have API equivalents. None
+        """API path for downloading a link on this host - with the login, as
+        private projects need: API URLs (e.g. generic packages), and job
+        artifact and upload URLs, which have API equivalents. None
         for other URLs."""
         u = urlparse(url)
         if (u.hostname or "").lower() != self.host or u.scheme not in ("https", "http"):

@@ -12,9 +12,10 @@
 # test/fake_gh.py (via ASSETSYNC_GH), GitLab by test/fake_glab.py (via
 # ASSETSYNC_GLAB): they answer 'gh api' / 'glab api' calls from a fixture
 # directory ($GH) that the 'release' helper fills; asset links to other
-# servers are served by test/http_server.py on 127.0.0.1 - no network
-# needed. Each check prints "ok   <name>" or "FAIL <name>: got [...]
-# expected [...]"; the exit code is 1 if any check failed. The Git LFS
+# servers are served by test/http_server.py on 127.0.0.1, which also plays
+# the APIs without the CLIs (section 43) - no network needed. Each check
+# prints "ok   <name>" or "FAIL <name>: got [...] expected [...]"; the exit
+# code is 1 if any check failed. The Git LFS
 # section is skipped when git-lfs is not installed.
 #
 # With the oldest supported Python and Git (see test/minver.Containerfile):
@@ -63,6 +64,8 @@
 #   39. The synced release gone from the server
 #   40. Source code archives of releases (--sourcecode)
 #   41. Current directory reached through a link: junction, subst drive, symlink
+#   42. Several asset patterns; a file takes all matching assets
+#   43. Without gh / glab: the APIs directly (urllib)
 #
 # Adding a test: put it into the section it belongs to, or add a new
 # section at the end that starts with 'section' and 'cd "$T"'.
@@ -97,6 +100,8 @@ mkdir -p "$HOME" "$GH" "$F"
 export FAKE_GH_DIR=$GH
 export ASSETSYNC_GH="\"$PYTHON\" \"$TD/fake_gh.py\""
 export ASSETSYNC_GLAB="\"$PYTHON\" \"$TD/fake_glab.py\""
+# tokens of the user or CI: not here (section 43 sets its own)
+unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GITLAB_TOKEN GITLAB_ACCESS_TOKEN
 # the "other server" for GitLab asset links: serves the fixture directory
 "$PYTHON" "$TD/http_server.py" "$GH" "$T/http.port" &
 HTTP_PID=$!
@@ -1386,8 +1391,6 @@ printf '[file "x\n' > .git-assetsync
 check "unparsable registry" "$(git assetsync status 2>&1 | grep -c '^error: .git-assetsync: cannot parse')" "1"
 rm .git-assetsync
 check "not a repository" "$(cd "$T" && git assetsync status 2>&1)" "error: not inside a Git working tree"
-check "gh missing" "$(ASSETSYNC_GH=/nonexistent/gh asd add acme/rb r.txt --asset r.txt 2>&1 | sed 's/ (.*) / /')" \
-  "error: cannot run the GitHub CLI '/nonexistent/gh' - install it from https://cli.github.com and log in with 'gh auth login'"
 check "gh fails" "$(ASSETSYNC_GH="\"$PYTHON\" -c 'import sys; sys.stderr.write(\"gh: Bad credentials (HTTP 401)\\n\"); sys.exit(1)'" asd add acme/rb r.txt --asset r.txt 2>&1)" \
   "error: acme/rb: 'gh api repos/acme/rb/releases/latest' failed: gh: Bad credentials (HTTP 401)"
 check "add: path outside the repository" "$(asd add acme/rb ../r.txt --asset r.txt 2>&1)" \
@@ -1629,8 +1632,6 @@ check "GitLab: no releases" "$(mkdir -p "$GH/gitlab.com/grp/empty"; asd add http
   "error: no release in grp/empty"
 check "GitLab: not a project URL" "$(asd add https://gitlab.com/grp x.bin 2>&1)" \
   "error: 'https://gitlab.com/grp' is not a GitLab project URL (https://gitlab.com/group/project)"
-check "glab missing" "$(ASSETSYNC_GLAB=/nonexistent/glab asd add https://gitlab.com/grp/proj x.bin 2>&1 | sed 's/ (.*) / /')" \
-  "error: cannot run the GitLab CLI '/nonexistent/glab' - install it from https://gitlab.com/gitlab-org/cli and log in with 'glab auth login'"
 
 
 # =============================================================================
@@ -4104,6 +4105,83 @@ git checkout -q -- .git-assetsync
 quiet asd add acme/sarc sc/ --sourcecode zip --no-asset --exclude-asset '*.zip'
 check "source code, exclude-asset: not shown" \
   "$(git assetsync status -v --no-fetch | grep -c 'source code (zip) from acme/sarc,')" "1"
+
+# =============================================================================
+section "43. Without gh / glab: the APIs directly (urllib)"
+# =============================================================================
+# a CLI that isn't installed: the API directly - here http_server.py, which
+# answers with fake_gh.py / fake_glab.py (they log to calls.log too) and logs
+# each request to http.log ("PATH auth=TOKEN")
+direct() { ASSETSYNC_GH=/nonexistent/gh ASSETSYNC_GLAB=/nonexistent/glab \
+  ASSETSYNC_TEST_API=$FAKE_HTTP/api "$@"; }
+hlog() { grep -c "$1" "$GH/http.log"; }
+mkdir -p "$F/sc43/lib"; printf 'src\n' > "$F/sc43/lib/a.c"
+asset d1.txt "direct 1"; asset d2.txt "direct 2"
+release --src "$F/sc43" acme/direct v1 10 "$F/d1.txt" "$F/d2.txt"
+new_repo r43
+: > "$GH/http.log"
+direct addc acme/direct d1.txt --asset d1.txt
+check "GitHub: the asset" "$(cat d1.txt)" "direct 1"
+check "... api.github.com, anonymous" "$(hlog '^/api/api.github.com/repos/acme/direct/releases/latest auth=-$')" "1"
+check "... downloaded from the storage" "$(hlog '^/storage/api.github.com/repos/acme/direct/releases/assets/[0-9]* auth=-$')" "1"
+check "... clean" "$(direct st)" ""
+: > "$GH/http.log"
+GH_TOKEN=t1 GITHUB_TOKEN=t2 direct quiet asd add acme/direct d2.txt --asset d2.txt
+check "GH_TOKEN: sent" "$(hlog 'releases/latest auth=t1$')" "1"
+check "... not to the storage (another host)" "$(hlog '^/storage/.* auth=-$')" "1"
+git reset -q --hard; : > "$GH/http.log"
+GITHUB_TOKEN=t2 direct quiet asd add -n acme/direct d2.txt --asset d2.txt
+check "GITHUB_TOKEN: sent" "$(hlog 'releases/latest auth=t2$')" "1"
+quiet git assetsync filter add unpack --extract --strip 1
+: > "$GH/http.log"
+direct quiet asd add acme/direct src/ --sourcecode tar.gz --no-asset --filter unpack
+check "source code archive" "$(cat src/lib/a.c 2>/dev/null)" "src"
+check "... the commit of the tag" "$(hlog '^/api/api.github.com/repos/acme/direct/commits/refs/tags/v1 auth=-$')" "1"
+git commit -q --no-edit
+asset d1.txt "direct 1 v2"; release acme/direct v2 11 "$F/d1.txt" "$F/d2.txt"
+direct quiet git assetsync pull d1.txt
+check "pull" "$(cat d1.txt)" "direct 1 v2"
+check "not found, anonymous" "$(direct asd add acme/nothing x.txt 2>&1)" \
+  "error: repository acme/nothing not found (or no access - without the GitHub CLI, set GH_TOKEN)"
+check "not found, with a token" "$(GH_TOKEN=t1 direct asd add acme/nothing x.txt 2>&1)" \
+  "error: repository acme/nothing not found (or no access)"
+check "a bad token" "$(GH_TOKEN=bad direct asd add -n acme/direct x.txt --asset d1.txt 2>&1)" \
+  "error: acme/direct: GET $FAKE_HTTP/api/api.github.com/repos/acme/direct/releases/latest failed: HTTP 401 Unauthorized (is GH_TOKEN valid?)"
+touch "$GH/ratelimit"
+check "rate limit, anonymous" "$(direct asd add -n acme/direct x.txt --asset d1.txt 2>&1)" \
+  "error: acme/direct: GET $FAKE_HTTP/api/api.github.com/repos/acme/direct/releases/latest failed: HTTP 403 Forbidden (rate limit - install the GitHub CLI (https://cli.github.com) and log in, or set GH_TOKEN)"
+check "rate limit, with a token" "$(GH_TOKEN=t1 direct asd add -n acme/direct x.txt --asset d1.txt 2>&1)" \
+  "error: acme/direct: GET $FAKE_HTTP/api/api.github.com/repos/acme/direct/releases/latest failed: HTTP 403 Forbidden (rate limit)"
+rm "$GH/ratelimit"
+check "no connection" "$(ASSETSYNC_GH=/nonexistent/gh ASSETSYNC_TEST_API=http://127.0.0.1:1/api asd add -n acme/direct x.txt --asset d1.txt 2>&1 | sed 's/ failed: .*/ failed: .../')" \
+  "error: acme/direct: GET http://127.0.0.1:1/api/api.github.com/repos/acme/direct/releases/latest failed: ..."
+# GitHub Enterprise: /api/v3, its own token variables
+asset e43.txt "enterprise 43"; release --host ghe.example.com acme/ent43 v1 10 "$F/e43.txt"
+: > "$GH/http.log"
+GH_TOKEN=t1 direct quiet asd add https://ghe.example.com/acme/ent43 e43.txt --type github
+check "GitHub Enterprise: the asset" "$(cat e43.txt 2>/dev/null)" "enterprise 43"
+check "... /api/v3, GH_TOKEN not sent" "$(hlog '^/api/ghe.example.com/api/v3/repos/acme/ent43/releases/latest auth=-$')" "1"
+git reset -q --hard; : > "$GH/http.log"
+GH_ENTERPRISE_TOKEN=e1 direct quiet asd add -n https://ghe.example.com/acme/ent43 e43.txt --type github
+check "... GH_ENTERPRISE_TOKEN sent" "$(hlog 'releases/latest auth=e1$')" "1"
+# GitLab: /api/v4, the token also through the redirect of permalink/latest
+# (the same host)
+asset g43.txt "gitlab 43"; release --host gitlab.com --src "$F/sc43" grp/direct v1 10 "$F/g43.txt"
+: > "$GH/http.log"
+GITLAB_TOKEN=g1 direct quiet asd add https://gitlab.com/grp/direct g43.txt
+check "GitLab: the asset" "$(cat g43.txt 2>/dev/null)" "gitlab 43"
+check "... the latest, redirected" "$(hlog '^/api/gitlab.com/api/v4/projects/grp%2Fdirect/releases/permalink/latest auth=g1$') $(hlog '^/api/gitlab.com/api/v4/projects/grp%2Fdirect/releases/v1 auth=g1$')" "1 1"
+check "... downloaded with the token" "$(hlog '^/api/gitlab.com/api/v4/projects/grp%2Fdirect/packages/generic/.* auth=g1$')" "1"
+: > "$GH/http.log"
+GITLAB_ACCESS_TOKEN=g2 direct quiet asd add https://gitlab.com/grp/direct gsrc/ --sourcecode zip --no-asset --filter unpack
+check "GitLab: source code archive" "$(cat gsrc/lib/a.c 2>/dev/null)" "src"
+check "... GITLAB_ACCESS_TOKEN sent" "$(hlog '/repository/archive.zip?sha=.* auth=g2$')" "1"
+check "GitLab: not found, anonymous" "$(direct asd add https://gitlab.com/grp/nothing x.bin 2>&1)" \
+  "error: project grp/nothing not found (or no access - without the GitLab CLI, set GITLAB_TOKEN)"
+asset s43.txt "self-managed"; release --host git.example.org grp/sm v1 10 "$F/s43.txt"
+: > "$GH/http.log"
+direct quiet asd add https://git.example.org/grp/sm s43.txt --type gitlab
+check "GitLab self-managed: /api/v4" "$(cat s43.txt 2>/dev/null) $(hlog '^/api/git.example.org/api/v4/projects/grp%2Fsm/')" "self-managed 3"
 
 # =============================================================================
 echo

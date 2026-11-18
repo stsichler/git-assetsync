@@ -114,11 +114,11 @@ commit that says what it brings.
 
 ## Installation
 
-Requirements: Python ≥ 3.8 and Git ≥ 2.28; for GitHub sources the
-[GitHub CLI](https://cli.github.com) `gh`, for GitLab sources the
-[GitLab CLI](https://gitlab.com/gitlab-org/cli) `glab`, logged in (`gh auth
-login`, `glab auth login`) or with a token in `GH_TOKEN` / `GITLAB_TOKEN`;
-`git-lfs` for files in Git LFS; 7-Zip for 7z archives. Linux, macOS and
+Requirements: Python ≥ 3.8 and Git ≥ 2.28; for private sources a token
+in `GH_TOKEN` / `GITLAB_TOKEN`, or the [GitHub CLI](https://cli.github.com)
+`gh` / [GitLab CLI](https://gitlab.com/gitlab-org/cli) `glab` logged in
+(used when installed); `git-lfs` for files in Git LFS; 7-Zip for 7z
+archives. Linux, macOS and
 Windows (Git for Windows).
 
 Download `git-assetsync.py` from the
@@ -237,7 +237,8 @@ test/regress.sh            # bash (on Windows: Git Bash); needs git, python3, gi
 
 The script builds throwaway repositories and plays GitHub and GitLab with
 `test/fake_gh.py` and `test/fake_glab.py`, which answer `gh api` / `glab
-api` calls from fixture files – no network or account needed. GitHub
+api` calls from fixture files (without the CLIs through
+`test/http_server.py`) – no network or account needed. GitHub
 Actions runs it on every push, on Linux (also with the oldest supported
 Python and Git), macOS and Windows.
 
