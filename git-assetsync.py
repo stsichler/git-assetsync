@@ -3002,11 +3002,6 @@ class Repo:
             return oid
         return self.store(self.read_content(oid, rel))
 
-    def head_mode(self, rel):
-        """Mode of the file rel in HEAD, None if HEAD has none."""
-        head = self.head_entry(rel)
-        return head[0] if head and head[1] == "blob" else None
-
     def index_items(self, *rels):
         """[(mode, id, path)] of the files at or below these paths in the
         index (a git command per 100 of them)."""
@@ -3871,8 +3866,7 @@ class Entry:
     assetid = property(lambda self: self.v.get("assetid", ""))
     # the base: blob of a file, tree of a directory, as committed
     blob = property(lambda self: self.v.get(BASE_KEY[self.kind], ""))
-    # a [file]'s mode, as its filter gave it (a [dir]'s are in its tree);
-    # None for an entry synced before 0.21.0: not known, doesn't count
+    # a [file]'s mode, as its filter gave it (a [dir]'s are in its tree)
     mode = property(lambda self: self.v.get("mode") or None)
     filterhash = property(lambda self: self.v.get("filterhash") or None)
 
@@ -3959,14 +3953,14 @@ def base_unavailable(st, e):
 
 def base_files(repo, entry):
     """[(mode, id, path in the repository)] of the files an entry got from
-    its release - its base; mode None where it isn't recorded (a [file]
-    synced before 0.21.0).
+    its release - its base.
     None if the base tree of a directory isn't in this clone (committed
     together with files of others, it never is: see ensure_base)."""
     if not entry.blob:
         return []
     if not entry.is_dir:
-        return [(entry.mode, entry.blob, entry.rel)]
+        # no mode recorded (synced before 0.21.0, no step made files executable)
+        return [(entry.mode or "100644", entry.blob, entry.rel)]
     if not repo.has_tree(entry.blob):
         return None
     return [(m, o, f"{entry.rel}/{p}") for m, k, o, p in repo.tree_entries(entry.blob)
@@ -3989,7 +3983,7 @@ def items_match_base(repo, st, items, drop=(), entry=None, quiet=False):
     try:
         base = {p: (m, o) for m, o, p in base_files(repo, entry) or [] if p not in drop}
         now = {p: (m, o) for m, o, p in items}
-        if base.keys() != now.keys() or any(m and m != now[p][0] for p, (m, _) in base.items()):
+        if base.keys() != now.keys() or any(m != now[p][0] for p, (m, _) in base.items()):
             return False
         differ = [p for p, (_, o) in now.items() if o != base[p][1]]
         if not differ:
@@ -5030,12 +5024,6 @@ def entry_paths(repo, items):
     return [(m, repo.content_id(o, path), path) for m, o, path in items]
 
 
-def base_items(repo, entry):
-    """[(mode, id, path)] of the base, to show or write it: base_files(),
-    where no mode is recorded (a [file]) the committed one, else 100644."""
-    return [(m or repo.head_mode(p) or "100644", o, p) for m, o, p in base_files(repo, entry) or []]
-
-
 def diff_items(ctx, repo, reg, args):
     """(rc, [(state, base items, other items)]) of all entries that differ:
     other = the working tree or what pull would install
@@ -5045,7 +5033,7 @@ def diff_items(ctx, repo, reg, args):
 
     def differing(entry, st, other):
         # files the same on both sides aren't shown: not read (LFS) at all
-        base = base_items(repo, entry)
+        base = base_files(repo, entry) or []
         same = set(base) & set(other)
         if set(base) != same or set(other) != same:
             raw.append((entry, st, [i for i in base if i not in same],
@@ -6642,27 +6630,19 @@ def restore_plan(repo, entry, sources, staged, index):
         put = [(m, o, p) for p, (m, o) in sorted(below.items()) if have.get(p) != (m, o)]
         plan[side] = (base, have, put, {p for p in rest - below.keys() if p in have})
     check = {(oid, path) for base, have, _, _ in plan.values() for mode, oid, path in base
-             if not restore_same((mode, oid), have.get(path, (None, None)))}
+             if have.get(path) != (mode, oid)}
     return plan, check
-
-
-def restore_same(item, current):
-    """Is current (mode, id) the item (mode, id) - its mode only if known?"""
-    return item[1] == current[1] and item[0] in (None, current[0])
 
 
 def restore_fixes(repo, plan, now):
     """{side: [(mode, id, path)]} to write: the files that are neither their
-    base blob nor that stored as it would be now (now: stored_now()) - a
-    mode not recorded (a [file]): the committed one, else 100644 -, and
+    base blob nor that stored as it would be now (now: stored_now()), and
     the files of others to put back."""
     fixes = {}
     for side, (base, have, put, _) in plan.items():
-        fix = [(mode or repo.head_mode(path) or "100644", now[(oid, path)], path)
-               for mode, oid, path in base
-               if (oid, path) in now
-               and not restore_same((mode, oid), have.get(path, (None, None)))
-               and not restore_same((mode, now[(oid, path)]), have.get(path, (None, None)))]
+        fix = [(mode, now[(oid, path)], path) for mode, oid, path in base
+               if (oid, path) in now and have.get(path) not in ((mode, oid),
+                                                                (mode, now[(oid, path)]))]
         if fix or put:
             fixes[side] = fix + put
     return fixes
